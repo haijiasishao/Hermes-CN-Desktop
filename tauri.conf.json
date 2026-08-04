@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegoodthings/tauri-schema/main/tauri.conf.schema.json",
-  "productName": "Hermes Agent CN Desktop",
+  "productName": "Hermes Agent CN Mobile",
   "version": "0.7.0",
-  "identifier": "cn.org.hermesagent.desktop",
+  "identifier": "cn.org.hermesagent.mobile",
   "build": {
     "beforeDevCommand": "pnpm --filter @hermes/web dev",
     "beforeBuildCommand": "pnpm --filter @hermes/web build:desktop",
@@ -10,69 +10,29 @@
     "frontendDist": "./web/dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Hermes Agent 中文社区桌面版",
-        "width": 1240,
-        "height": 820,
-        "minWidth": 960,
-        "minHeight": 680,
-        "titleBarStyle": "Transparent"
-      }
-    ],
+    "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc://localhost http://ipc.localhost http://localhost:* http://127.0.0.1:* ws://127.0.0.1:* wss://127.0.0.1:* ws://localhost:* wss://localhost:*; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' http://localhost:* http://127.0.0.1:*"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc://localhost http://ipc.localhost http://localhost:* http://127.0.0.1:* ws://127.0.0.1:* wss://127.0.0.1:* ws://localhost:* wss://localhost:* http://* https://* ws://* wss://*; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' http://localhost:* http://127.0.0.1:*"
     }
   },
   "bundle": {
     "active": true,
     "targets": [
-      "nsis",
-      "dmg",
-      "deb",
-      "appimage"
+      "apk"
     ],
     "icon": [
-      "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.png"
     ],
     "publisher": "Hermes Agent CN Contributors",
     "homepage": "https://hermesagent.org.cn",
     "copyright": "Copyright © 2026 Hermes Agent CN Contributors",
-    "category": "DeveloperTool",
-    "shortDescription": "Hermes Agent Chinese Community Desktop",
-    "longDescription": "Desktop app for Hermes Agent Chinese Community Edition.",
-    "licenseFile": "legal/EULA.zh-CN.rtf",
-    "resources": {
-      "static/bundled-runtime/": "bundled-runtime/",
-      "static/dashboard/": "dashboard/",
-      "static/bundled-skills/": "bundled-skills/",
-      "static/bundled-plugins/": "bundled-plugins/",
-      "legal/agency-agents.MIT.txt": "agency-agents.MIT.txt",
-      "legal/HarmonyOS_Sans_LICENSE.txt": "HarmonyOS_Sans_LICENSE.txt"
-    },
-    "windows": {
-      "nsis": {
-        "installMode": "currentUser",
-        "installerHooks": "installer/nsis/hooks.nsh",
-        "languages": [
-          "SimpChinese"
-        ],
-        "customLanguageFiles": {
-          "SimpChinese": "installer/nsis/SimpChinese.nsh"
-        },
-        "displayLanguageSelector": false
-      },
-      "webviewInstallMode": {
-        "type": "downloadBootstrapper"
-      }
-    },
-    "macOS": {
-      "minimumSystemVersion": "10.15"
+    "category": "Communication",
+    "shortDescription": "Hermes Agent Mobile Client",
+    "longDescription": "Mobile client for Hermes Agent - connect to your Hermes backend remotely.",
+    "android": {
+      "minSdkVersion": 24
     }
   }
 }
