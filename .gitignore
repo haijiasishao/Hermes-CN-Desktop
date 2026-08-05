@@ -7,6 +7,11 @@ web/dist/
 
 # Tauri generated
 /gen/
+# Android: commit the generated project (gradle wrapper etc), ignore build output
+/gen/android/app/build/
+/gen/android/.gradle/
+/gen/android/local.properties
+/gen/android/app/src/main/assets/
 
 # OS
 .DS_Store
