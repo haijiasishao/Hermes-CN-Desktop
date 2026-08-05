@@ -74,9 +74,17 @@
 - [x] Playwright 验证：375/390/720/721/768/1280 视口无横向溢出、抽屉视口内打开、桌面回归干净
 - [x] typecheck + build:desktop 通过；app-shell 测试 23/23
 
+### ✅ 已完成（web/ 前端深度适配）
+- [x] **安全区**：--h-safe-* 变量 + topbar/statusbar/sidebar inset 适配（Android 刘海/手势导航）
+- [x] **触摸**：44px 最小点击目标、momentum 滚动、tap-highlight 透明、touch-action
+- [x] **聊天组件**：assistant-profile-card 紧凑卡片、subagent-panel 全屏抽屉、cli-delegation-card/stall-notice 移动布局
+- [x] **detail 路由**：workArea 纵向堆叠、composer 全宽
+- [x] 验证：typecheck/build 通过；布局断言 390/768/1280 OK；路由扫描 24/24 干净；测试 154/154
+
 ### 📋 待做
-- [ ] **web/ 前端**：页面内部深度适配（Composer/会话详情/设置页等，部分已有 @media）
-- [ ] 触摸交互优化（长按、滚动惯性、安全区 inset）
+- [ ] **触摸交互**：长按菜单、下拉刷新、Composer 键盘弹出适配（visualViewport）
+- [ ] 各设置页深度验证（有数据时的表格/表单）
+- [ ] **tauri android init** + 首次 APK 构建 + 真机验证
 - [ ] 构建环境配置（ARM 服务器 140.245.96.94 Docker）
 - [ ] `tauri android init` 初始化
 - [ ] 首次 APK 构建调试
