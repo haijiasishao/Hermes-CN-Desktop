@@ -205,7 +205,8 @@
 
 @media (max-width: 720px) {
   .statusbar {
-    padding: 0 8px;
+    height: calc(var(--h-statusbar-h) + var(--h-safe-bottom, 0px));
+    padding: 0 8px var(--h-safe-bottom, 0px);
     gap: 8px;
     overflow-x: auto;
     overflow-y: hidden;

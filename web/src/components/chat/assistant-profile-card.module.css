@@ -131,3 +131,43 @@
 .action:hover {
   background: var(--h-bg-soft);
 }
+
+
+/* Mobile — compact profile card: smaller avatar, tighter rows. */
+@media (max-width: 720px) {
+  .card {
+    padding: 16px;
+  }
+
+  .head {
+    gap: 12px;
+  }
+
+  .bigAvatarButton,
+  .bigAvatar {
+    width: 56px;
+    height: 56px;
+  }
+
+  .name {
+    font-size: 17px;
+  }
+
+  .infoRow {
+    gap: 8px;
+  }
+
+  .infoLabel {
+    flex-basis: 44px;
+  }
+
+  .actions {
+    flex-wrap: wrap;
+  }
+
+  .action {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-height: 44px;
+  }
+}

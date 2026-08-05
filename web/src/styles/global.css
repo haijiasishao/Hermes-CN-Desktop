@@ -113,3 +113,49 @@ body[data-hermes-window-type="electron"] :where(button, input, textarea, select,
 ::-webkit-scrollbar-thumb:hover {
   background: var(--h-text-3);
 }
+
+/* ─── Mobile / touch — safe-area insets, momentum scroll, tap targets ─────
+   Android webviews render into notches / gesture-nav areas; these insets keep
+   the shell chrome (topbar + statusbar) clear of them. Also enlarge the
+   minimum tap target to a thumb-friendly 44px and enable momentum scrolling
+   on scrollable panes. */
+
+@supports (padding: env(safe-area-inset-top)) {
+  :root {
+    --h-safe-top: env(safe-area-inset-top, 0px);
+    --h-safe-right: env(safe-area-inset-right, 0px);
+    --h-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --h-safe-left: env(safe-area-inset-left, 0px);
+  }
+}
+
+@media (max-width: 720px) {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #root :where(button, [role="button"], a, select, [contenteditable="true"], input[type="text"], textarea) {
+    touch-action: manipulation;
+  }
+
+  /* Thumb-friendly minimum tap target (44px) for icon-only controls. */
+  #root :where(button, [role="button"], a) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Momentum scrolling on scrollable panes. */
+  #root :where([class*="scroll"], [class*="overflow"], [class*="timeline"], [class*="messages"]) {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  /* Prevent iOS/Android double-tap zoom on quick taps. */
+  #root :where(button, a, [role="button"]) {
+    touch-action: manipulation;
+  }
+}

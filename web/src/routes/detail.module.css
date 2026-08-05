@@ -158,8 +158,21 @@
   border-color: var(--h-accent-border);
 }
 
+/* Mobile — subagent monitor overlays the chat (component-level full-screen
+   panel), conversation area becomes edge-to-edge. */
 @media (max-width: 720px) {
+  .workArea {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .chatColumn {
+    min-height: 100%;
+  }
+
   .composerArea {
-    padding: 8px 16px 0;
+    padding: 8px 10px 0;
+    max-width: 100%;
   }
 }
+

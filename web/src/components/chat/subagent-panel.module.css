@@ -417,3 +417,30 @@
   gap: 12px;
   padding-left: 20px;
 }
+
+
+/* Mobile — full-screen subagent monitor: edge-to-edge, wider text. */
+@media (max-width: 720px) {
+  .panel {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    max-height: none;
+    border-radius: 0;
+    z-index: 40;
+  }
+
+  .row {
+    padding: 10px 12px;
+  }
+
+  .streamLine {
+    font-size: 12px;
+  }
+
+  .cliDetailRow {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}

@@ -261,3 +261,36 @@
     opacity: 0.35;
   }
 }
+
+
+/* Mobile — compact delegation card. */
+@media (max-width: 720px) {
+  .card {
+    padding: 12px;
+  }
+
+  .header {
+    gap: 8px;
+  }
+
+  .prompt {
+    font-size: 12px;
+  }
+
+  .timelineRow {
+    gap: 8px;
+  }
+
+  .timelineText {
+    font-size: 12px;
+  }
+
+  .actions {
+    flex-wrap: wrap;
+  }
+
+  .actionButton {
+    min-height: 44px;
+    flex: 1 1 auto;
+  }
+}

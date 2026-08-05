@@ -44,3 +44,16 @@
   opacity: 0.6;
   cursor: default;
 }
+
+
+/* Mobile — compact stall notice. */
+@media (max-width: 720px) {
+  .notice {
+    margin: 8px 12px;
+    padding: 12px;
+  }
+
+  .action {
+    min-height: 44px;
+  }
+}

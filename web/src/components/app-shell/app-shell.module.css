@@ -216,6 +216,7 @@
 @media (max-width: 720px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: calc(var(--h-topbar-h) + var(--h-safe-top, 0px)) 1fr calc(var(--h-statusbar-h) + var(--h-safe-bottom, 0px));
   }
 
   .shell[data-sidebar-visible="false"] {
@@ -228,8 +229,8 @@
 
   .sidebarSlot {
     position: fixed;
-    top: var(--h-topbar-h);
-    bottom: var(--h-statusbar-h);
+    top: calc(var(--h-topbar-h) + var(--h-safe-top, 0px));
+    bottom: calc(var(--h-statusbar-h) + var(--h-safe-bottom, 0px));
     left: 0;
     z-index: 20;
     width: min(84vw, var(--h-sidebar-w));
@@ -246,6 +247,6 @@
   }
 
   .sidebarRestoreButton {
-    bottom: calc(var(--h-statusbar-h) + 6px);
+    bottom: calc(var(--h-statusbar-h) + var(--h-safe-bottom, 0px) + 6px);
   }
 }

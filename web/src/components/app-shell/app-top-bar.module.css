@@ -262,7 +262,8 @@
 
 @media (max-width: 720px) {
   .topbar {
-    padding: var(--h-window-control-safe-top, 0px) 8px 0;
+    height: calc(var(--h-topbar-h) + var(--h-window-control-safe-top, 0px) + var(--h-safe-top, 0px));
+    padding: calc(var(--h-window-control-safe-top, 0px) + var(--h-safe-top, 0px)) 8px 0;
     gap: 8px;
     overflow-x: auto;
     overflow-y: hidden;
