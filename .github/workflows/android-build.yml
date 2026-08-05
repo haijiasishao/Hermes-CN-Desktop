@@ -34,8 +34,11 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Install pnpm
-        run: corepack enable
+      - name: Enable pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+          pnpm --version
 
       - name: Install Rust stable + Android targets
         uses: dtolnay/rust-toolchain@stable
