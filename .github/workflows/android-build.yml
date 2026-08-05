@@ -66,6 +66,11 @@ jobs:
       - name: Build web (frontendDist)
         run: pnpm --filter @hermes/web build:desktop
 
+      - name: Install Rust tauri-cli (cargo subcommand required by Gradle BuildTask)
+        run: |
+          cargo install tauri-cli --version 2.11.1
+          cargo tauri --version
+
       - name: Build APK (aarch64)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
