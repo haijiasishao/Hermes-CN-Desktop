@@ -5,8 +5,9 @@
 node_modules/
 web/dist/
 
-# Tauri generated
-/gen/
+# Tauri generated (desktop schemas etc) — but commit the Android project
+/gen/*
+!/gen/android/
 # Android: commit the generated project (gradle wrapper etc), ignore build output
 /gen/android/app/build/
 /gen/android/.gradle/
