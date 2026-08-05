@@ -67,12 +67,14 @@ jobs:
         run: pnpm --filter @hermes/web build:desktop
 
       - name: Build APK (aarch64)
-        uses: tauri-apps/tauri-action@v0
-        with:
-          projectPath: .
-          args: android build --apk --target aarch64
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export ANDROID_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          export NDK_ROOT="$ANDROID_NDK_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          pnpm tauri android build --apk --target aarch64
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
