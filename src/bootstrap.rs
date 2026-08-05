@@ -11,14 +11,18 @@
 //   - local: an attach-only handle to a loopback Hermes Agent CLI dashboard
 //   - remote: an attach-only handle to a remote Hermes Agent
 
+#[cfg(feature = "desktop")]
 use std::path::{Path, PathBuf};
 
 use tauri::Emitter;
 
 use crate::connection::{ConnectionMode, LocalBackend, RemoteBackend};
+#[cfg(feature = "desktop")]
 use crate::environment;
 use crate::error::AppError;
+#[cfg(feature = "desktop")]
 use crate::process::{dashboard, runtime};
+use crate::android_compat::{self as compat};
 use crate::state::{AppState, DashboardHandle};
 
 /// Emit a "runtime-status" event for the frontend overlay to consume.
@@ -53,6 +57,7 @@ pub fn record_bootstrap_error(app: &tauri::AppHandle, message: String) -> String
 /// stopped or uninstalled. The renderer still needs the profile/home metadata
 /// and a ready event so it can mount recovery surfaces, but no backend URL is
 /// invented and no runtime payload is installed.
+#[cfg(feature = "desktop")]
 pub fn finalize_offline_bootstrap(app: &tauri::AppHandle) {
     use tauri::Manager;
 
@@ -70,6 +75,7 @@ pub fn finalize_offline_bootstrap(app: &tauri::AppHandle) {
     log::info!("Hermes Agent 中文社区桌面版 ready (managed runtime offline)");
 }
 
+#[cfg(feature = "desktop")]
 pub async fn install_bundled_runtime_for_bootstrap(
     app: &tauri::AppHandle,
     resource_dir: Option<&Path>,
@@ -116,6 +122,7 @@ pub async fn install_bundled_runtime_for_bootstrap(
 ///
 /// `install_bundled` controls whether the bundled-runtime install runs here;
 /// the synchronous fallback already does it up front and passes `false`.
+#[cfg(feature = "desktop")]
 pub async fn acquire_managed_dashboard(
     app: &tauri::AppHandle,
     options: dashboard::EnsureDashboardOptions,
@@ -192,7 +199,7 @@ pub async fn connect_remote_backend(
         remote.source.as_str(),
         remote.base_url
     );
-    if !dashboard::probe_dashboard(&remote.base_url).await {
+    if !compat::probe_dashboard(&remote.base_url).await {
         log::warn!(
             "Remote Hermes Agent not reachable at {} during bootstrap; continuing — \
              the gateway client retries and Settings → 连接 can fix the URL",
@@ -246,14 +253,14 @@ pub async fn connect_local_backend(
         "正在连接本地 Hermes Agent CLI...",
     );
     log::info!("Local connection mode: attaching to {}", local.base_url);
-    if !dashboard::probe_attached_dashboard(&local.base_url).await {
+    if !compat::probe_attached_dashboard(&local.base_url).await {
         log::warn!(
             "Local Hermes Agent CLI dashboard not reachable at {} during bootstrap; continuing — \
              Settings → 连接 can fix the URL or switch back to managed runtime",
             local.base_url
         );
     }
-    let token = dashboard::fetch_session_token(&local.base_url).await;
+    let token = compat::fetch_session_token(&local.base_url).await;
     if token.is_none() {
         log::warn!(
             "Local Hermes Agent CLI dashboard at {} did not expose a session token",
@@ -301,15 +308,15 @@ pub async fn finalize_bootstrap(
                 .or_else(|| std::env::var("HERMES_DASHBOARD_SESSION_TOKEN").ok())
             {
                 Some(token) => Some(token),
-                None => dashboard::fetch_session_token(&handle.api_base_url).await,
+                None => compat::fetch_session_token(&handle.api_base_url).await,
             },
         }
     };
     // OAuth gateway URL carries no token; the relay mints a ticket per connect.
-    let gateway_url = dashboard::build_gateway_url(&handle.api_base_url, session_token.as_deref());
+    let gateway_url = compat::build_gateway_url(&handle.api_base_url, session_token.as_deref());
     let (effective_home, effective_home_base, effective_profile) = if mode == ConnectionMode::Local
     {
-        match dashboard::fetch_attached_dashboard_hermes_home(&handle.api_base_url)
+        match compat::fetch_attached_dashboard_hermes_home(&handle.api_base_url)
             .await
             .filter(|h| !h.trim().is_empty())
         {
@@ -336,7 +343,7 @@ pub async fn finalize_bootstrap(
         inner.session_token = session_token;
         inner.current_profile = effective_profile;
         inner.yolo_mode = match mode {
-            ConnectionMode::Managed => dashboard::yolo_mode_effective(&inner.hermes_home),
+            ConnectionMode::Managed => compat::yolo_mode_effective(&inner.hermes_home),
             // YOLO is a managed-runtime launch flag; it has no meaning for a
             // backend this desktop doesn't own.
             ConnectionMode::Local | ConnectionMode::Remote => false,

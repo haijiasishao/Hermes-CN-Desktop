@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::error::AppError;
-use crate::process::dashboard::{build_gateway_url, fetch_session_token};
+use crate::android_compat::{build_gateway_url, fetch_session_token};
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -27,15 +27,15 @@ pub struct RuntimeConfig {
 #[tauri::command]
 pub fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeConfig, AppError> {
     let inner = state.inner.lock()?;
-    let control = crate::desktop_control::read();
-    let installed = crate::process::runtime::read_current_record().is_some();
+    let control = crate::android_compat::desktop_ctrl::read();
+    let installed = crate::android_compat::read_current_record().is_some();
     let managed_running = inner.connection_mode == crate::connection::ConnectionMode::Managed
         && inner
             .dashboard_handle
             .as_ref()
             .is_some_and(|handle| handle.owns_process);
     let lifecycle =
-        crate::desktop_control::managed_runtime_lifecycle_state(installed, managed_running);
+        crate::android_compat::desktop_ctrl::managed_runtime_lifecycle_state(installed, managed_running);
     Ok(RuntimeConfig {
         api_base_url: inner.api_base_url.clone(),
         gateway_url: inner.gateway_url.clone(),
@@ -46,7 +46,7 @@ pub fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeConfig, A
         guide_state: control.guide_state.as_str().to_string(),
         managed_runtime_desired_state: control.managed_runtime_desired_state.as_str().to_string(),
         managed_runtime_lifecycle_state: lifecycle.to_string(),
-        portable: crate::process::runtime::portable_mode_active(),
+        portable: crate::android_compat::portable_mode_active(),
     })
 }
 

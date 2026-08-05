@@ -18,7 +18,7 @@ use tauri::State;
 
 use crate::cron_runs;
 use crate::error::AppError;
-use crate::process::dashboard::{build_gateway_url, fetch_session_token};
+use crate::android_compat::{build_gateway_url, fetch_session_token};
 use crate::session_archive;
 use crate::session_log;
 use crate::state::AppState;
@@ -498,7 +498,7 @@ async fn api_request_impl_inner(
 
     // 4. Runtime update intercept
     if url_p == "/api/hermes/update" && method.to_uppercase() == "POST" {
-        let result = crate::process::runtime::install_runtime_update(None).await;
+        let result = crate::android_compat::install_runtime_update(None).await;
         let status = if result.ok { 200 } else { 503 };
         let status_text = if result.ok {
             "OK"

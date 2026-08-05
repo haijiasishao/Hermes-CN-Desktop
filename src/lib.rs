@@ -1,3 +1,4 @@
+pub mod android_compat;
 pub mod bootstrap;
 pub mod commands;
 pub mod connection;

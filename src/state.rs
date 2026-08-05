@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::Notify;
 
-use crate::process::port_lock::PortLock;
+use crate::android_compat::PortLock;
 
 /// Handle to the live Rust→runtime `/api/ws` relay (see commands/ws_proxy.rs).
 /// Holds only std/tokio types so this module stays decoupled from the WS crate.
@@ -165,7 +165,7 @@ impl DashboardHandle {
             .as_ref()
             .map(|child| child.id())
             .or(self.attached_pid);
-        let stopped = crate::process::dashboard::terminate_owned_dashboard_tree(
+        let stopped = crate::android_compat::terminate_owned_dashboard_tree(
             &self.api_base_url,
             self.child.as_mut(),
             fallback_pid,
@@ -179,7 +179,7 @@ impl DashboardHandle {
         self.job_handle = None;
         self.attached_pid = None;
         self.owns_process = false;
-        crate::process::dashboard::remove_ownership_marker_path(
+        crate::android_compat::remove_ownership_marker_path(
             self.ownership_marker_path.as_deref(),
         );
         // Explicitly release port locks so another Hermes instance can claim

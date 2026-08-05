@@ -33,7 +33,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::error::AppError;
-use crate::process::dashboard::{
+use crate::android_compat::{
     build_gateway_url, build_gateway_ws_url_with_ticket, fetch_session_token,
 };
 use crate::state::{AppState, GatewayWsHandle};

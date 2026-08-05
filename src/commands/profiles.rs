@@ -9,16 +9,20 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(any(feature = "desktop", test))]
 use std::sync::LazyLock;
 
+#[cfg(any(feature = "desktop", test))]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+#[cfg(feature = "desktop")]
 use crate::commands::restart::{self, RespawnOutcome};
 use crate::error::AppError;
 use crate::state::AppState;
 
+#[cfg(any(feature = "desktop", test))]
 static PROFILE_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$").expect("valid profile name regex")
 });
@@ -49,6 +53,7 @@ pub struct SwitchProfileResult {
     pub recovered_previous_profile: Option<bool>,
 }
 
+#[cfg(any(feature = "desktop", test))]
 fn profile_hermes_home(base: &str, profile: &str) -> PathBuf {
     if profile == "default" {
         PathBuf::from(base)
@@ -61,6 +66,7 @@ fn active_profile_sticky_path(base: &str) -> PathBuf {
     Path::new(base).join("active_profile")
 }
 
+#[cfg(any(feature = "desktop", test))]
 fn write_active_profile_sticky(base: &str, profile: &str) {
     let path = active_profile_sticky_path(base);
     if profile == "default" {
@@ -85,11 +91,13 @@ pub fn read_active_profile_sticky(base: &str) -> String {
     }
 }
 
+#[cfg(any(feature = "desktop", test))]
 fn is_valid_profile_name(name: &str) -> bool {
     PROFILE_NAME_RE.is_match(name)
 }
 
 #[tauri::command]
+#[cfg(feature = "desktop")]
 pub async fn switch_profile(
     input: SwitchProfileInput,
     state: State<'_, AppState>,
@@ -186,6 +194,22 @@ pub async fn switch_profile(
     Ok(result)
 }
 
+
+#[cfg(not(feature = "desktop"))]
+#[tauri::command]
+pub async fn switch_profile(
+    input: SwitchProfileInput,
+    _state: State<'_, AppState>,
+) -> Result<SwitchProfileResult, AppError> {
+    let _ = input;
+    Ok(SwitchProfileResult {
+        ok: false,
+        error: Some("Android 版暂不支持切换本地 Profile（仅远程连接）".to_string()),
+        ..Default::default()
+    })
+}
+
+#[cfg(feature = "desktop")]
 async fn do_switch_profile(
     state: &State<'_, AppState>,
     name: &str,

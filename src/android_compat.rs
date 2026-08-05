@@ -1,0 +1,397 @@
+// Android-compatible replacements for desktop-only utility functions.
+//
+// On desktop builds, these re-export from the real process modules.
+// On Android (non-desktop), minimal stub implementations are provided.
+
+// ─── dashboard utilities ──────────────────────────────────────────────
+
+#[cfg(feature = "desktop")]
+pub use crate::process::dashboard::{
+    build_gateway_url, build_gateway_ws_url_with_ticket, dashboard_supports_ws,
+    dashboard_supports_ws_ticket,
+    ensure_hermes_dashboard, external_agent_allowed, fetch_attached_dashboard_hermes_home,
+    fetch_session_token, probe_attached_dashboard, probe_dashboard, remove_ownership_marker_path,
+    terminate_owned_dashboard_tree, yolo_mode_effective, DashboardOwnershipMarker,
+    EnsureDashboardOptions,
+};
+
+#[cfg(not(feature = "desktop"))]
+mod dashboard_stubs {
+    use std::sync::LazyLock;
+    use std::time::Duration;
+
+    static PROBE_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("valid probe HTTP client")
+    });
+
+    static SESSION_TOKEN_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("valid session token HTTP client")
+    });
+
+    static SESSION_TOKEN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"window\.__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)""#)
+            .expect("valid session token regex")
+    });
+
+    pub async fn probe_dashboard(api_base_url: &str) -> bool {
+        let url = format!("{}/api/status", api_base_url);
+        match PROBE_HTTP_CLIENT
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(res) => res.status().is_success() || res.status().as_u16() == 401,
+            Err(_) => false,
+        }
+    }
+
+    pub async fn probe_attached_dashboard(api_base_url: &str) -> bool {
+        probe_dashboard(api_base_url).await
+    }
+
+    pub async fn fetch_session_token(api_base_url: &str) -> Option<String> {
+        let url = format!("{}/", api_base_url);
+        let res = SESSION_TOKEN_HTTP_CLIENT
+            .get(&url)
+            .header("Accept", "text/html")
+            .send()
+            .await
+            .ok()?;
+        if !res.status().is_success() {
+            return None;
+        }
+        let html = res.text().await.ok()?;
+        SESSION_TOKEN_RE
+            .captures(&html)
+            .map(|c| c[1].to_string())
+    }
+
+    pub fn build_gateway_url(api_base_url: &str, token: Option<&str>) -> String {
+        let ws_url = api_base_url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
+        match token {
+            Some(t) => format!(
+                "{}/api/ws?token={}",
+                ws_url.trim_end_matches('/'),
+                urlencoding::encode(t)
+            ),
+            None => format!("{}/api/ws", ws_url.trim_end_matches('/')),
+        }
+    }
+
+    pub fn build_gateway_ws_url_with_ticket(api_base_url: &str, ticket: &str) -> String {
+        let ws_url = api_base_url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
+        format!(
+            "{}/api/ws?ticket={}",
+            ws_url.trim_end_matches('/'),
+            urlencoding::encode(ticket)
+        )
+    }
+
+    pub async fn fetch_attached_dashboard_hermes_home(api_base_url: &str) -> Option<String> {
+        let url = format!("{}/api/status", api_base_url);
+        match PROBE_HTTP_CLIENT
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(res) => match res.json::<serde_json::Value>().await {
+                Ok(data) => data
+                    .get("hermes_home")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .filter(|s| !s.trim().is_empty()),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        }
+    }
+
+    pub fn yolo_mode_effective(_hermes_home: &str) -> bool {
+        false
+    }
+
+    pub fn external_agent_allowed() -> bool {
+        false
+    }
+
+    pub async fn dashboard_supports_ws(_api_base_url: &str, _token: Option<&str>) -> bool {
+        true
+    }
+
+    pub async fn dashboard_supports_ws_ticket(_api_base_url: &str, _ticket: &str) -> bool {
+        true
+    }
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DashboardOwnershipMarker {
+        pub hermes_home: String,
+    }
+
+    pub struct EnsureDashboardOptions {
+        pub host: String,
+        pub port: u16,
+        pub hermes_home: String,
+        pub allow_external_agent: bool,
+        pub allow_port_fallback: bool,
+        pub connection_mode: crate::connection::ConnectionMode,
+        pub remote_base_url: Option<String>,
+    }
+
+    pub fn terminate_owned_dashboard_tree(
+        _api_base_url: &str,
+        _child: Option<&mut std::process::Child>,
+        _fallback_pid: Option<u32>,
+        _session_token: Option<&str>,
+    ) -> bool {
+        true
+    }
+
+    pub fn remove_ownership_marker_path(_path: Option<&str>) {}
+}
+
+#[cfg(not(feature = "desktop"))]
+pub use dashboard_stubs::*;
+
+// ─── runtime utilities ────────────────────────────────────────────────
+
+#[cfg(feature = "desktop")]
+pub use crate::process::runtime::{
+    bundled_runtime_available, current_bundled_plugins_dir, current_bundled_skills_dir,
+    current_dashboard_web_dist_dir, current_record_path_display, gateway_runtime_dir,
+    get_runtime_info, hermes_home_dir, install_bundled_runtime_if_needed, install_runtime_update,
+    portable_mode_active, read_current_record, runtime_root, sync_runtime_resources_if_available,
+    RuntimeInfo, RuntimeProcessInfo,
+};
+
+#[cfg(not(feature = "desktop"))]
+mod runtime_stubs {
+    use std::path::PathBuf;
+
+    pub fn hermes_home_dir() -> PathBuf {
+        std::env::var("HERMES_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::data_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("hermes-agent-cn-mobile")
+            })
+    }
+
+    pub fn runtime_root() -> PathBuf {
+        hermes_home_dir()
+    }
+
+    pub fn portable_mode_active() -> bool {
+        false
+    }
+
+    pub fn read_current_record() -> Option<RuntimeRecord> {
+        None
+    }
+
+    pub fn current_record_path_display() -> String {
+        "<not available on Android>".to_string()
+    }
+
+    pub fn current_bundled_skills_dir() -> Option<PathBuf> {
+        None
+    }
+
+    pub fn current_bundled_plugins_dir() -> Option<PathBuf> {
+        None
+    }
+
+    pub fn current_dashboard_web_dist_dir() -> Option<PathBuf> {
+        None
+    }
+
+    pub fn gateway_runtime_dir() -> PathBuf {
+        hermes_home_dir().join("gateway-runtime")
+    }
+
+    pub fn bundled_runtime_available(_resource_dir: Option<&std::path::Path>) -> bool {
+        false
+    }
+
+    pub fn get_runtime_info(_home: Option<String>) -> RuntimeInfo {
+        RuntimeInfo {
+            current: None,
+            updates_configured: false,
+            process: None,
+        }
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct RuntimeInfo {
+        pub current: Option<RuntimeRecord>,
+        pub updates_configured: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub process: Option<RuntimeProcessInfo>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct RuntimeProcessInfo {
+        pub api_base_url: String,
+        pub gateway_url: String,
+        pub hermes_home: String,
+        pub hermes_home_base: String,
+        pub current_profile: String,
+        pub connection_mode: String,
+        pub yolo_mode: bool,
+        pub last_runtime_error: Option<String>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct RuntimeRecord {
+        pub runtime_version: String,
+        pub path: PathBuf,
+        pub executable_path: String,
+        pub kernel_version: String,
+        pub runtime_flavor: String,
+        pub runtime_revision: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct InstallResult {
+        pub ok: bool,
+        pub error: Option<String>,
+        pub installed: Option<InstalledInfo>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct InstalledInfo {
+        pub runtime_version: String,
+    }
+
+    pub async fn install_runtime_update(_home: Option<&str>) -> InstallResult {
+        InstallResult {
+            ok: false,
+            error: Some("Runtime management not available on Android".into()),
+            installed: None,
+        }
+    }
+
+    pub async fn install_bundled_runtime_if_needed(
+        _resource_dir: Option<&std::path::Path>,
+    ) -> InstallResult {
+        InstallResult {
+            ok: false,
+            error: Some("Bundled runtime not available on Android".into()),
+            installed: None,
+        }
+    }
+
+    pub fn sync_runtime_resources_if_available(
+        _resource_dir: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Android stub — profile restart is not supported.
+    #[derive(Debug, Clone)]
+    pub enum RespawnOutcome {
+        Spawned,
+        Recovered { error: String },
+        Down { error: String },
+    }
+}
+
+#[cfg(not(feature = "desktop"))]
+pub use runtime_stubs::*;
+
+// ─── desktop_control utilities ────────────────────────────────────────
+
+#[cfg(feature = "desktop")]
+pub use crate::desktop_control::{self as desktop_ctrl, ManagedRuntimeDesiredState};
+
+#[cfg(not(feature = "desktop"))]
+pub mod desktop_ctrl {
+    pub struct DesktopControlState {
+        pub guide_state: GuideState,
+        pub managed_runtime_desired_state: ManagedRuntimeDesiredState,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum GuideState {
+        Hidden,
+    }
+
+    impl GuideState {
+        pub fn as_str(self) -> &'static str {
+            "hidden"
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ManagedRuntimeDesiredState {
+        Stopped,
+        Running,
+        Uninstalled,
+    }
+
+    impl ManagedRuntimeDesiredState {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Stopped => "stopped",
+                Self::Running => "running",
+                Self::Uninstalled => "uninstalled",
+            }
+        }
+    }
+
+    pub fn read() -> DesktopControlState {
+        DesktopControlState {
+            guide_state: GuideState::Hidden,
+            managed_runtime_desired_state: ManagedRuntimeDesiredState::Stopped,
+        }
+    }
+
+    pub fn managed_runtime_lifecycle_state(_installed: bool, _running: bool) -> String {
+        "unavailable".to_string()
+    }
+
+    pub fn set_managed_runtime_desired_state(
+        _state: ManagedRuntimeDesiredState,
+    ) -> Result<(), crate::error::AppError> {
+        Ok(())
+    }
+}
+
+#[cfg(not(feature = "desktop"))]
+pub use desktop_ctrl::ManagedRuntimeDesiredState;
+
+// ─── tray constants ──────────────────────────────────────────────────
+
+#[cfg(feature = "desktop")]
+pub use crate::tray::MAIN_WINDOW_LABEL;
+
+#[cfg(not(feature = "desktop"))]
+pub const MAIN_WINDOW_LABEL: &str = "main";
+
+// ─── port_lock stub ──────────────────────────────────────────────────
+
+#[cfg(feature = "desktop")]
+pub use crate::process::port_lock::PortLock;
+
+#[cfg(not(feature = "desktop"))]
+pub struct PortLock;
+
+#[cfg(not(feature = "desktop"))]
+impl PortLock {
+    pub fn release(self) {}
+}

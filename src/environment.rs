@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::process::{dashboard, runtime};
+use crate::android_compat as dashboard;
+use crate::android_compat as runtime;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]

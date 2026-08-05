@@ -11,7 +11,7 @@ use tauri::State;
 use zip::write::SimpleFileOptions;
 
 use crate::error::{AppError, AppResult};
-use crate::process::runtime;
+use crate::android_compat as runtime;
 use crate::state::AppState;
 
 const MAX_TEXT_FILE_BYTES: u64 = 25 * 1024 * 1024;
@@ -87,6 +87,7 @@ pub struct ExportDebugBundleResult {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 struct RuntimeProcessSnapshot {
     api_base_url: String,
     gateway_url: String,
@@ -125,15 +126,21 @@ pub async fn export_debug_bundle(
     let snapshot = capture_debug_state(&state)?;
     let input = input.unwrap_or_default();
 
+    #[cfg_attr(not(feature = "desktop"), allow(unused_mut))]
     let mut result =
         tauri::async_runtime::spawn_blocking(move || build_debug_bundle(snapshot, input))
             .await
             .map_err(|e| AppError::Internal(format!("Debug bundle task failed: {e}")))??;
 
+    #[cfg(feature = "desktop")]
     if let Err(err) = open::that(&result.directory_path) {
         result
             .warnings
             .push(format!("导出成功，但自动打开文件夹失败: {err}"));
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = &result.directory_path;
     }
 
     Ok(result)
@@ -209,26 +216,34 @@ fn capture_debug_state(state: &State<'_, AppState>) -> AppResult<DebugStateSnaps
         (inner.last_runtime_error.clone(), process, desktop_state)
     };
 
+    #[cfg_attr(not(feature = "desktop"), allow(unused_mut))]
     let mut runtime_info = runtime::get_runtime_info(last_error);
     if let Some(process) = process.clone() {
-        runtime_info.process = Some(runtime::RuntimeProcessInfo {
-            api_base_url: process.api_base_url,
-            gateway_url: process.gateway_url,
-            hermes_home: process.hermes_home.clone(),
-            hermes_home_base: process.hermes_home_base.clone(),
-            current_profile: process.current_profile.clone(),
-            owns_process: process.owns_process,
-            pid: process.pid,
-            command_program: process.command_program,
-            command_args: process.command_args,
-            command_line: process.command_line,
-            gateway_runtime_dir: process.gateway_runtime_dir,
-            gateway_lock_dir: process.gateway_lock_dir,
-            ownership_marker_path: process.ownership_marker_path,
-            ownership_state: process.ownership_state,
-            session_token_present: process.session_token_present,
-            gateway_ws_relay_active: process.gateway_ws_relay_active,
-        });
+        #[cfg(feature = "desktop")]
+        {
+            runtime_info.process = Some(runtime::RuntimeProcessInfo {
+                api_base_url: process.api_base_url,
+                gateway_url: process.gateway_url,
+                hermes_home: process.hermes_home.clone(),
+                hermes_home_base: process.hermes_home_base.clone(),
+                current_profile: process.current_profile.clone(),
+                owns_process: process.owns_process,
+                pid: process.pid,
+                command_program: process.command_program,
+                command_args: process.command_args,
+                command_line: process.command_line,
+                gateway_runtime_dir: process.gateway_runtime_dir,
+                gateway_lock_dir: process.gateway_lock_dir,
+                ownership_marker_path: process.ownership_marker_path,
+                ownership_state: process.ownership_state,
+                session_token_present: process.session_token_present,
+                gateway_ws_relay_active: process.gateway_ws_relay_active,
+            });
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            let _ = &process;
+        }
     }
 
     let runtime_info_value = serde_json::to_value(&runtime_info)

@@ -9,7 +9,7 @@
 
 use tauri::{AppHandle, Manager};
 
-use crate::tray::MAIN_WINDOW_LABEL;
+use crate::android_compat::MAIN_WINDOW_LABEL;
 
 /// Toggle the WebView devtools for the main window. No-op if the window is gone.
 #[tauri::command]

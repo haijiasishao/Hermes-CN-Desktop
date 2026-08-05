@@ -69,20 +69,31 @@ async fn choose_session_save_path(
     app: tauri::AppHandle,
     file_name: String,
 ) -> AppResult<Option<PathBuf>> {
-    use tauri_plugin_dialog::DialogExt;
+    #[cfg(feature = "desktop")]
+    {
+        use tauri_plugin_dialog::DialogExt;
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("导出 Hermes 会话")
-        .set_file_name(file_name)
-        .add_filter("JSON 会话文件", &["json"])
-        .save_file(move |path| {
-            let result = path.and_then(|value| value.as_path().map(|path| path.to_path_buf()));
-            let _ = tx.send(result);
-        });
-    rx.await
-        .map_err(|error| AppError::Internal(error.to_string()))
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.dialog()
+            .file()
+            .set_title("导出 Hermes 会话")
+            .set_file_name(file_name)
+            .add_filter("JSON 会话文件", &["json"])
+            .save_file(move |path| {
+                let result = path.and_then(|value| value.as_path().map(|path| path.to_path_buf()));
+                let _ = tx.send(result);
+            });
+        return rx
+            .await
+            .map_err(|error| AppError::Internal(error.to_string()));
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = app;
+        let dir = crate::android_compat::hermes_home_dir().join("exports");
+        std::fs::create_dir_all(&dir).map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(Some(dir.join(file_name)))
+    }
 }
 
 fn safe_file_name(file_name: &str) -> String {

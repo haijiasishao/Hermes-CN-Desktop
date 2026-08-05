@@ -17,14 +17,40 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+#[cfg(feature = "desktop")]
+use tauri::Manager;
+use tauri::State;
 
-use crate::commands::restart;
 use crate::connection::{self, ConnectionConfig, ConnectionMode, SanitizedConnectionConfig};
 use crate::error::{AppError, AppResult};
-use crate::process::dashboard;
-use crate::process::runtime;
+use crate::android_compat as dashboard;
+#[cfg(feature = "desktop")]
+use crate::android_compat as runtime;
+#[cfg(feature = "desktop")]
+use crate::android_compat::desktop_ctrl;
 use crate::state::{AppState, DashboardHandle};
+#[cfg(not(feature = "desktop"))]
+mod restart_compat {
+    use crate::error::AppResult;
+    use crate::state::AppState;
+    use tauri::State;
+
+    pub fn try_begin_restart(_state: &State<'_, AppState>) -> AppResult<bool> {
+        Ok(true)
+    }
+    pub fn end_restart(_state: &State<'_, AppState>) {}
+    #[allow(dead_code)]
+    pub fn host_and_port() -> (String, u16) {
+        ("127.0.0.1".to_string(), 9119)
+    }
+}
+#[cfg(not(feature = "desktop"))]
+use restart_compat as restart;
+
+#[cfg(feature = "desktop")]
+use crate::commands::restart;
+#[cfg(feature = "desktop")]
+use crate::bootstrap;
 
 static CONNECTION_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -854,6 +880,19 @@ pub(crate) async fn apply_managed(
     app: &tauri::AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<ApplyConnectionResult, AppError> {
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = (app, state);
+        return Ok(ApplyConnectionResult {
+            ok: false,
+            mode: "managed".to_string(),
+            error: Some("Android 版不支持本地托管内核，请使用远程连接".to_string()),
+            ..Default::default()
+        });
+    }
+
+    #[cfg(feature = "desktop")]
+    {
     let (already_managed, api_base_url, gateway_url, session_token) = {
         let inner = state.inner.lock()?;
         (
@@ -864,8 +903,8 @@ pub(crate) async fn apply_managed(
         )
     };
     if already_managed {
-        crate::desktop_control::set_managed_runtime_desired_state(
-            crate::desktop_control::ManagedRuntimeDesiredState::Running,
+        desktop_ctrl::set_managed_runtime_desired_state(
+            desktop_ctrl::ManagedRuntimeDesiredState::Running,
         )?;
         return Ok(ApplyConnectionResult {
             ok: true,
@@ -915,7 +954,7 @@ pub(crate) async fn apply_managed(
     let resource_dir = app.path().resource_dir().ok();
 
     let handle =
-        match crate::bootstrap::acquire_managed_dashboard(app, options, resource_dir, true).await {
+        match bootstrap::acquire_managed_dashboard(app, options, resource_dir, true).await {
             Ok(handle) => handle,
             Err(err) => {
                 return Ok(ApplyConnectionResult {
@@ -955,8 +994,8 @@ pub(crate) async fn apply_managed(
     }
 
     log::info!("Connection switched back to desktop managed runtime");
-    crate::desktop_control::set_managed_runtime_desired_state(
-        crate::desktop_control::ManagedRuntimeDesiredState::Running,
+    desktop_ctrl::set_managed_runtime_desired_state(
+        desktop_ctrl::ManagedRuntimeDesiredState::Running,
     )?;
     Ok(ApplyConnectionResult {
         ok: true,
@@ -966,7 +1005,9 @@ pub(crate) async fn apply_managed(
         session_token: token,
         error: None,
     })
+    } // cfg desktop
 }
+
 
 #[cfg(test)]
 mod tests {

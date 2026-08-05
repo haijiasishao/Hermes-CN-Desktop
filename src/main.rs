@@ -63,9 +63,6 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(app_state)
         .setup(move |app| {
-            use tauri::Manager;
-            let state = app.state::<AppState>();
-
             // Resolve the remote backend: env override → connection.json.
             // An env URL without a token is the one fatal misconfiguration.
             let backend = match connection::resolve_connection_backend() {

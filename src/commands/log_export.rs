@@ -19,6 +19,7 @@ impl LogSnapshotFormat {
         }
     }
 
+    #[cfg(feature = "desktop")]
     fn filter_label(self) -> &'static str {
         match self {
             LogSnapshotFormat::Log => "日志文件",
@@ -96,25 +97,35 @@ async fn choose_log_save_path(
     app: tauri::AppHandle,
     file_name: String,
 ) -> AppResult<Option<PathBuf>> {
-    use tauri_plugin_dialog::DialogExt;
+    #[cfg(feature = "desktop")]
+    {
+        use tauri_plugin_dialog::DialogExt;
 
-    let format = if file_name.to_lowercase().ends_with(".jsonl") {
-        LogSnapshotFormat::Jsonl
-    } else {
-        LogSnapshotFormat::Log
-    };
-    let extensions = [format.extension()];
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("导出 Hermes 日志")
-        .set_file_name(file_name)
-        .add_filter(format.filter_label(), &extensions)
-        .save_file(move |path| {
-            let result = path.and_then(|p| p.as_path().map(|path| path.to_path_buf()));
-            let _ = tx.send(result);
-        });
-    rx.await.map_err(|e| AppError::Internal(e.to_string()))
+        let format = if file_name.to_lowercase().ends_with(".jsonl") {
+            LogSnapshotFormat::Jsonl
+        } else {
+            LogSnapshotFormat::Log
+        };
+        let extensions = [format.extension()];
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.dialog()
+            .file()
+            .set_title("导出 Hermes 日志")
+            .set_file_name(file_name)
+            .add_filter(format.filter_label(), &extensions)
+            .save_file(move |path| {
+                let result = path.and_then(|p| p.as_path().map(|path| path.to_path_buf()));
+                let _ = tx.send(result);
+            });
+        return rx.await.map_err(|e| AppError::Internal(e.to_string()));
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = app;
+        let dir = crate::android_compat::hermes_home_dir().join("exports");
+        std::fs::create_dir_all(&dir).map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(Some(dir.join(file_name)))
+    }
 }
 
 fn safe_file_name(file_name: &str, format: LogSnapshotFormat) -> String {
