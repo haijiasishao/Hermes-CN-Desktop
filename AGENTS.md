@@ -65,8 +65,18 @@
 - [x] 各 command 模块桌面引用修复（debug_bundle/profiles/log_export 等）
 - [x] `cargo check --no-default-features` 与 `cargo check --features desktop` 双 feature 0 错误 0 警告
 
+### ✅ 已完成（web/ 前端移动端适配——骨架级）
+- [x] **useMediaQuery/useIsMobile** hook（720px 断点，2026-08-05）
+- [x] **AppShell**：移动端 sidebar 变抽屉（overlay + backdrop 点击关闭）、导航后自动收起、data-mobile 驱动 CSS
+- [x] **app-shell.module.css**：单列 grid（minmax(0,1fr)）、fixed 抽屉定位
+- [x] **app-top-bar**：移动端隐藏品牌 meta/导航数字/搜索 kbd，横向滚动兜底
+- [x] **app-status-bar**：移动端紧凑条（隐藏重启标签/错误文本）
+- [x] Playwright 验证：375/390/720/721/768/1280 视口无横向溢出、抽屉视口内打开、桌面回归干净
+- [x] typecheck + build:desktop 通过；app-shell 测试 23/23
+
 ### 📋 待做
-- [ ] **web/ 前端**：移动端适配（响应式布局、触摸交互）
+- [ ] **web/ 前端**：页面内部深度适配（Composer/会话详情/设置页等，部分已有 @media）
+- [ ] 触摸交互优化（长按、滚动惯性、安全区 inset）
 - [ ] 构建环境配置（ARM 服务器 140.245.96.94 Docker）
 - [ ] `tauri android init` 初始化
 - [ ] 首次 APK 构建调试
