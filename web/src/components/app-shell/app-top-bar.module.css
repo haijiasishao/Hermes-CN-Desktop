@@ -255,3 +255,66 @@
 .iconBtn[data-theme-mode="catppuccin-mocha"] {
   color: var(--h-text);
 }
+
+/* ─── Mobile / narrow viewport — slim topbar ───────────────────────────────
+   Hide brand meta, nav numbers and the search placeholder text so the bar
+   fits a phone width while keeping navigation + theme toggle usable. */
+
+@media (max-width: 720px) {
+  .topbar {
+    padding: var(--h-window-control-safe-top, 0px) 8px 0;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    min-width: 0;
+  }
+
+  .topbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .brand {
+    width: auto;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .brandText {
+    min-width: 0;
+  }
+
+  .brandMeta {
+    display: none;
+  }
+
+  .nav {
+    gap: 2px;
+    flex: 0 0 auto;
+  }
+
+  .navLink {
+    padding: 0 8px;
+    font-size: 11.5px;
+  }
+
+  .navNum {
+    display: none;
+  }
+
+  .search {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: none;
+    padding: 0 8px;
+  }
+
+  .searchKbd {
+    display: none;
+  }
+
+  .actions {
+    gap: 4px;
+    flex: 0 0 auto;
+  }
+}

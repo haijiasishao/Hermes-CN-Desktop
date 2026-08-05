@@ -172,7 +172,8 @@
 @media (prefers-reduced-motion: reduce) {
   .shell,
   .sidebarSlot,
-  .sidebarRestoreButton {
+  .sidebarRestoreButton,
+  .sidebarBackdrop {
     transition-duration: 0.01ms;
     transition-delay: 0s;
   }
@@ -181,4 +182,70 @@
 .statusbarSlot {
   grid-column: 1 / -1;
   grid-row: 3;
+}
+
+/* ─── Mobile / narrow viewport — sidebar becomes an overlay drawer ─────────
+   The shell switches to a single column; the sidebar is positioned over the
+   main pane (fixed, translated off-canvas) and a translucent backdrop is shown
+   while open. Mirrors common mobile nav patterns without a second UI tree. */
+
+.sidebarBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
+  background: color-mix(in srgb, var(--h-bg-app) 55%, transparent);
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--h-duration-normal) var(--h-ease-standard),
+    visibility 0s linear var(--h-duration-normal);
+}
+
+.shell[data-sidebar-visible="true"][data-mobile="true"] .sidebarBackdrop {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity var(--h-duration-normal) var(--h-ease-standard),
+    visibility 0s linear 0s;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell[data-sidebar-visible="false"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mainSlot {
+    grid-column: 1;
+  }
+
+  .sidebarSlot {
+    position: fixed;
+    top: var(--h-topbar-h);
+    bottom: var(--h-statusbar-h);
+    left: 0;
+    z-index: 20;
+    width: min(84vw, var(--h-sidebar-w));
+    max-width: calc(100vw - 48px);
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.22);
+  }
+
+  .shell[data-sidebar-visible="false"] .sidebarSlot {
+    transform: translateX(-100%);
+  }
+
+  .shell[data-sidebar-visible="true"] .sidebarSlot {
+    transform: translateX(0);
+  }
+
+  .sidebarRestoreButton {
+    bottom: calc(var(--h-statusbar-h) + 6px);
+  }
 }

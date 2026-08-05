@@ -198,3 +198,31 @@
   background: var(--h-bg-soft);
   outline: 1px solid var(--h-accent-border);
 }
+
+/* ─── Mobile / narrow viewport — compact status strip ──────────────────────
+   Keep gateway + model context visible, collapse the long tail (context,
+   kernel, UI, running, errors, tokens) into the overflow-scrollable strip. */
+
+@media (max-width: 720px) {
+  .statusbar {
+    padding: 0 8px;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .statusbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .restartButton span,
+  .gatewayErrorMsg,
+  .gatewayErrorHint {
+    display: none;
+  }
+
+  .right {
+    margin-left: auto;
+  }
+}
