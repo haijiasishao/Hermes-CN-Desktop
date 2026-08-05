@@ -33,7 +33,6 @@
 ## 工作区结构
 
 ```
-/opt/data/workspace/hermes-android/
 ├── Hermes-CN-Desktop/          ← 源仓库（main，只读）
 ├── wt/desktop-android/         ← 工作树（feat/android-port，在此修改）
 │   ├── src/                    ← Rust 后端
@@ -84,10 +83,7 @@
 ### 📋 待做
 - [ ] **触摸交互**：长按菜单、下拉刷新、Composer 键盘弹出适配（visualViewport）
 - [ ] 各设置页深度验证（有数据时的表格/表单）
-- [ ] **tauri android init** + 首次 APK 构建 + 真机验证
-- [ ] 构建环境配置（ARM 服务器 140.245.96.94 Docker）
-- [ ] `tauri android init` 初始化
-- [ ] 首次 APK 构建调试
+- [ ] 首次 APK 构建成功后的真机验证（Remote 连接、触摸、安全区）
 
 ## 条件编译约定
 
@@ -122,10 +118,11 @@
 
 ## 构建环境
 
-- **目标服务器**：140.245.96.94（ARM64，Ubuntu 24.04，Docker 29.4.0）
-- **内存**：23GB | **磁盘**：145GB（可用116GB）
-- **构建方式**：Docker 容器内安装 Android SDK/NDK + Rust 交叉编译
-- **SSH**：`ssh root@140.245.96.94`（密钥认证）
+- **构建方式**：GitHub Actions CI（`.github/workflows/android-build.yml`）
+- **Runner**：ubuntu-latest（x86_64，匹配官方 NDK 工具链）
+- **依赖**：JDK 17 + Android SDK 35 + NDK 27.2 + Rust Android targets + pnpm
+- **触发**：push 到 `feat/android-port` 分支或手动 dispatch
+- **产物**：APK 上传为 Actions artifact
 
 ## 关键决策记录
 
