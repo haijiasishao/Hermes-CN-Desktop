@@ -56,13 +56,14 @@
 - [x] **src/main.rs**：重写为 Android 入口（去掉托盘/单实例/Managed 内核，只走 Remote）
 - [x] **src/commands/mod.rs**：桌面专属命令模块加 cfg 守卫
 
-### 🔄 下一步（P1 批——编译修复）
-- [ ] **bootstrap.rs**：cfg 守卫（引用了 crate::process）
-- [ ] **state.rs**：检查对 process 的引用
-- [ ] **connection.rs**：检查对 process 的引用
-- [ ] **environment.rs**：检查对 process 的引用
-- [ ] 各 command 模块内的桌面引用修复（api_proxy/gateway/debug_bundle/ws_proxy 等引用了 crate::process）
-- [ ] `cargo check --no-default-features --features android` 首次编译验证
+### ✅ 已完成（P1 批——编译修复）
+- [x] **android_compat.rs**：dashboard/runtime/desktop_control/tray/PortLock 的 Android stub + desktop re-export（2026-08-05）
+- [x] **bootstrap.rs**：cfg 守卫 + connect_local_backend 跨平台化
+- [x] **state.rs**：terminate_owned_dashboard_tree/remove_ownership_marker_path 走 compat
+- [x] **connection.rs**：restart_compat 模块 + Manager/runtime/desktop_ctrl 条件导入
+- [x] **environment.rs**：RuntimeRecord stub 字段类型对齐桌面
+- [x] 各 command 模块桌面引用修复（debug_bundle/profiles/log_export 等）
+- [x] `cargo check --no-default-features` 与 `cargo check --features desktop` 双 feature 0 错误 0 警告
 
 ### 📋 待做
 - [ ] **web/ 前端**：移动端适配（响应式布局、触摸交互）
