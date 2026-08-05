@@ -1,4 +1,5 @@
 // Command modules shared across desktop and Android.
+pub mod android_stubs;
 pub mod api_proxy;
 pub mod connection;
 pub mod connection_auth;

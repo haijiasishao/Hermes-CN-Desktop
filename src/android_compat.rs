@@ -436,3 +436,63 @@ pub struct PortLock;
 impl PortLock {
     pub fn release(self) {}
 }
+
+// ─── shared IPC types for Android command stubs ───────────────────────
+// Desktop builds re-export the real types from the desktop command modules;
+// Android builds define the same shapes so android_stubs.rs compiles under
+// both features with identical signatures.
+
+#[cfg(feature = "desktop")]
+pub use crate::commands::file_dialogs::{FilePickerResult, SimpleApiResult, WorkspacePathInput};
+
+#[cfg(feature = "desktop")]
+pub use crate::commands::yolo::{SetYoloModeInput, SetYoloModeResult};
+
+#[cfg(not(feature = "desktop"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePickerResult {
+    pub canceled: bool,
+    pub paths: Vec<String>,
+}
+
+#[cfg(not(feature = "desktop"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimpleApiResult {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[cfg(not(feature = "desktop"))]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePathInput {
+    pub path: String,
+}
+
+#[cfg(not(feature = "desktop"))]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetYoloModeInput {
+    pub enabled: bool,
+}
+
+#[cfg(not(feature = "desktop"))]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetYoloModeResult {
+    pub ok: bool,
+    pub enabled: bool,
+    pub effective: bool,
+    pub restarted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}

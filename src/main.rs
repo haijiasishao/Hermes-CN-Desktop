@@ -155,6 +155,11 @@ fn main() {
             commands::profiles::switch_profile,
             // Runtime info (desktop: full; Android: minimal stub)
             commands::runtime_compat::runtime_info,
+            // File/yolo commands (desktop: real; Android: friendly stubs)
+            commands::android_stubs::pick_files,
+            commands::android_stubs::pick_directory,
+            commands::android_stubs::open_workspace_path,
+            commands::android_stubs::set_yolo_mode,
             // Logging/debug
             commands::log_export::export_log_snapshot,
             commands::debug_bundle::export_debug_bundle,
