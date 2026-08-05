@@ -153,6 +153,8 @@ fn main() {
             commands::memory::write_user_profile,
             // Profiles
             commands::profiles::switch_profile,
+            // Runtime info (desktop: full; Android: minimal stub)
+            commands::runtime_compat::runtime_info,
             // Logging/debug
             commands::log_export::export_log_snapshot,
             commands::debug_bundle::export_debug_bundle,

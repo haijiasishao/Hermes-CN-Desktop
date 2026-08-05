@@ -10,6 +10,7 @@ pub mod git;
 pub mod log_export;
 pub mod memory;
 pub mod profiles;
+pub mod runtime_compat;
 pub mod session_export;
 pub mod ui_store;
 pub mod ws_proxy;

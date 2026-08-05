@@ -230,21 +230,60 @@ mod runtime_stubs {
 
     pub fn get_runtime_info(_home: Option<String>) -> RuntimeInfo {
         RuntimeInfo {
+            mode: "managed-pending".to_string(),
+            packaged: true,
+            platform: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
             current: None,
+            runtime_root: String::new(),
+            current_record_path: String::new(),
+            versions_dir: String::new(),
+            downloads_dir: String::new(),
+            gateway_runtime_dir: String::new(),
+            update_manifest_url: None,
             updates_configured: false,
+            executable_sha256: None,
+            source: None,
             process: None,
+            last_error: None,
+            guide_state: "completed".to_string(),
+            managed_runtime_desired_state: "off".to_string(),
+            managed_runtime_lifecycle_state: "uninstalled".to_string(),
         }
     }
 
     #[derive(Debug, Clone, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
     pub struct RuntimeInfo {
+        pub mode: String,
+        pub packaged: bool,
+        pub platform: String,
+        pub arch: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub current: Option<RuntimeRecord>,
+        pub runtime_root: String,
+        pub current_record_path: String,
+        pub versions_dir: String,
+        pub downloads_dir: String,
+        pub gateway_runtime_dir: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub update_manifest_url: Option<String>,
         pub updates_configured: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
+        pub executable_sha256: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub source: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub process: Option<RuntimeProcessInfo>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub last_error: Option<String>,
+        pub guide_state: String,
+        pub managed_runtime_desired_state: String,
+        pub managed_runtime_lifecycle_state: String,
     }
 
     #[derive(Debug, Clone, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
     pub struct RuntimeProcessInfo {
         pub api_base_url: String,
         pub gateway_url: String,
@@ -253,10 +292,12 @@ mod runtime_stubs {
         pub current_profile: String,
         pub connection_mode: String,
         pub yolo_mode: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub last_runtime_error: Option<String>,
     }
 
     #[derive(Debug, Clone, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
     pub struct RuntimeRecord {
         pub runtime_version: String,
         pub path: PathBuf,
