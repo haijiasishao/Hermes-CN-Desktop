@@ -8,6 +8,9 @@ homepage = "https://hermesagent.org.cn"
 
 [lib]
 name = "hermes_agent_cn"
+# cdylib required for Tauri v2 Android (produces libhermes_agent_cn.so);
+# rlib keeps desktop tests/benchmarks working.
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
