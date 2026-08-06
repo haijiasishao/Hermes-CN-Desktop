@@ -14,21 +14,6 @@ pub mod state;
 pub mod ui_store;
 pub mod util;
 
-#[cfg(feature = "desktop")]
-pub mod coding_agents;
-#[cfg(feature = "desktop")]
-pub mod desktop_control;
-#[cfg(feature = "desktop")]
-pub mod prevent_sleep;
-#[cfg(feature = "desktop")]
-pub mod process;
-#[cfg(feature = "desktop")]
-pub mod supervisor;
-#[cfg(feature = "desktop")]
-pub mod tray;
-#[cfg(feature = "desktop")]
-pub mod update_stage;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -38,22 +23,17 @@ use crate::bootstrap::{
 use crate::connection::{ConnectionBackend, ConnectionMode};
 use crate::state::AppState;
 
-fn shutdown_owned_runtime(app: &tauri::AppHandle, reason: &str) {
+fn shutdown_remote_connection(app: &tauri::AppHandle) {
     use tauri::Manager;
 
     let state = app.state::<AppState>();
-    let (gateway_ws, mut dashboard_handle, session_token) = match state.inner.lock() {
+    let (gateway_ws, dashboard_handle) = match state.inner.lock() {
         Ok(mut inner) => (
             inner.gateway_ws.take(),
             inner.dashboard_handle.take(),
-            inner.session_token.clone(),
         ),
         Err(err) => {
-            log::warn!(
-                "Failed to lock app state during {} shutdown: {}",
-                reason,
-                err
-            );
+            log::warn!("Failed to lock app state during Android shutdown: {}", err);
             return;
         }
     };
@@ -63,16 +43,9 @@ fn shutdown_owned_runtime(app: &tauri::AppHandle, reason: &str) {
         relay.notify.notify_waiters();
     }
 
-    if let Some(ref mut handle) = dashboard_handle {
-        log::info!(
-            "Stopping dashboard during {} (api={}, owns_process={}, marker={:?})",
-            reason,
-            handle.api_base_url,
-            handle.owns_process,
-            handle.ownership_marker_path
-        );
-        handle.stop_with_token(session_token.as_deref());
-    }
+    // DashboardHandle::stop() is a no-op for an attached remote handle. Drop
+    // it here only to release the local Rust state; never stop a remote agent.
+    drop(dashboard_handle);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -86,6 +59,14 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(app_state)
         .setup(move |app| {
+            // Persist all Android-local state below Tauri's writable app-private
+            // directory. This must happen before resolve_connection_backend(),
+            // which reads connection.json.
+            use tauri::Manager;
+            if let Ok(dir) = app.path().app_data_dir() {
+                crate::android_compat::set_android_data_dir(dir);
+            }
+
             // Resolve the remote backend: env override → connection.json.
             // An env URL without a token is the one fatal misconfiguration.
             let backend = match connection::resolve_connection_backend() {
@@ -114,13 +95,13 @@ pub fn run() {
                         connect_remote_backend(&app_handle, &remote).await,
                         ConnectionMode::Remote,
                     ),
-                    // Local mode (attach to local CLI dashboard) — allow it
-                    // for debugging but not primary use case.
-                    ConnectionBackend::Local(local) => (
-                        crate::bootstrap::connect_local_backend(&app_handle, &local).await,
-                        ConnectionMode::Local,
-                    ),
-                    ConnectionBackend::Managed => unreachable!(),
+                    ConnectionBackend::Managed | ConnectionBackend::Local(_) => {
+                        record_bootstrap_error(
+                            &app_handle,
+                            "Android 版仅支持远程 Hermes Agent，不支持本地或托管内核。".to_string(),
+                        );
+                        return;
+                    }
                 };
 
                 finalize_bootstrap(
@@ -211,7 +192,7 @@ pub fn run() {
             quit_requested.store(true, Ordering::Relaxed);
         }
         tauri::RunEvent::Exit => {
-            shutdown_owned_runtime(app_handle, "app exit");
+            shutdown_remote_connection(app_handle);
         }
         _ => {}
     });

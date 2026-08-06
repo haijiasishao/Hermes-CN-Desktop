@@ -64,6 +64,25 @@
 - [x] 各 command 模块桌面引用修复（debug_bundle/profiles/log_export 等）
 - [x] `cargo check --no-default-features` 与 `cargo check --features desktop` 双 feature 0 错误 0 警告
 
+### ✅ 已完成（构建打通——9 轮迭代，2026-08-06）
+- [x] **CI workflow**（`.github/workflows/android-build.yml`）：GitHub Actions ubuntu-latest 构建，产物 APK 上传 artifact
+- [x] **迭代 1-2**：pnpm 激活（corepack → pnpm/action-setup）
+- [x] **迭代 3**：tauri-action 参数嵌套 → 改 `pnpm tauri` 直接构建
+- [x] **迭代 4**：NDK 环境变量 shell 探测
+- [x] **迭代 5**：Cargo.toml 加 `crate-type = ["cdylib", "rlib"]`（Android .so 必需）
+- [x] **迭代 6**：workflow 装 Rust tauri-cli 2.11.1（Gradle BuildTask 调 `cargo tauri`）
+- [x] **迭代 7**：lib.rs 加 `#[cfg_attr(mobile, tauri::mobile_entry_point)]` JNI 入口（commit bd3a42c）
+- [x] **迭代 8**：CI 用 debug keystore + apksigner 给 release APK 签名（否则无法安装，commit 833ccec）
+- [x] **迭代 9**：tauri.conf.json 声明 `app.windows: [{label: "main"}]` —— 空数组导致 Tauri 不创建 WebView → 白屏（commit 87d5547，已解决）
+
+### ✅ 已完成（真机验证阶段，2026-08-06）
+- [x] APK 能安装、能打开（白屏已修复）
+- [ ] **未完成**：远程连接报 `File operation failed: Read-only file system (os error 30)`
+  - 根因：Android 分支 `hermes_home_dir()` 用 `dirs::data_dir()` → 解析到只读路径，写 connection.json 失败
+  - 修复已写但**未推送**（等待确认）：android_compat.rs 加 `ANDROID_DATA_DIR` OnceLock + `set_android_data_dir()`；lib.rs setup 用 `app.path().app_data_dir()` 初始化
+  - 双 feature 编译已验证 0 错误
+  - 待推送 commit + 构建 + 真机复测远程连接
+
 ### ✅ 已完成（web/ 前端移动端适配——骨架级）
 - [x] **useMediaQuery/useIsMobile** hook（720px 断点，2026-08-05）
 - [x] **AppShell**：移动端 sidebar 变抽屉（overlay + backdrop 点击关闭）、导航后自动收起、data-mobile 驱动 CSS

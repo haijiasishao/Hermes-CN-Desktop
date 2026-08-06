@@ -247,6 +247,6 @@
   }
 
   .sidebarRestoreButton {
-    bottom: calc(var(--h-statusbar-h) + var(--h-safe-bottom, 0px) + 6px);
+    bottom: calc(var(--h-statusbar-h) + var(--h-safe-bottom, 0px) + 8px);
   }
 }

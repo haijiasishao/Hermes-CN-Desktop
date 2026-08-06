@@ -1,17 +1,11 @@
-// Connection-config commands: managed runtime vs local/remote Hermes Agent.
+// Connection-config commands for an Android client attached to a remote Hermes Agent.
 //
 // IPC surface mirrors the official desktop (Hermes-CN-Core apps/desktop
 // preload: getConnectionConfig / saveConnectionConfig / applyConnectionConfig /
 // testConnectionConfig / probeConnectionConfig), token-auth only.
 //
-// `apply_connection_config` switches modes live, without an app restart:
-//   - managed → local/remote: probe the target FIRST, then stop the owned
-//     dashboard and adopt the attachment into AppState.
-//   - local/remote → managed: run the full bootstrap acquire path (which can
-//     download a managed runtime on a machine that has never run it).
-// Both directions hold the shared dashboard-restart guard so they cannot race
-// a profile switch or YOLO toggle. The frontend reloads the webview after a
-// successful apply, which rebuilds all JS-side state from get_runtime_config.
+// `apply_connection_config` switches the remote target live, without an app
+// restart. Android never starts, stops, or adopts a local Hermes process.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -145,9 +139,12 @@ fn coerce_config(
     input: &ConnectionConfigInput,
 ) -> AppResult<ConnectionConfig> {
     let mode = match input.mode.as_deref() {
-        Some("managed") | None => ConnectionMode::Managed,
-        Some("local") => ConnectionMode::Local,
         Some("remote") => ConnectionMode::Remote,
+        Some("managed") | Some("local") | None => {
+            return Err(AppError::InvalidRequest(
+                "Android 版仅支持远程 Hermes Agent 连接".to_string(),
+            ))
+        }
         Some(other) => {
             return Err(AppError::InvalidRequest(format!(
                 "未知的连接模式: {}",
@@ -240,9 +237,13 @@ enum TestTarget {
 fn test_target(input: &ConnectionConfigInput) -> AppResult<TestTarget> {
     let saved = connection::read_config();
     let mode = match input.mode.as_deref() {
-        Some("local") => ConnectionMode::Local,
         Some("remote") => ConnectionMode::Remote,
-        Some("managed") | None => saved.mode,
+        Some("managed") | Some("local") | None if saved.mode != ConnectionMode::Remote => {
+            return Err(AppError::InvalidRequest(
+                "Android 版仅支持远程 Hermes Agent 连接".to_string(),
+            ))
+        }
+        None => ConnectionMode::Remote,
         Some(other) => {
             return Err(AppError::InvalidRequest(format!(
                 "未知的连接模式: {}",
@@ -1026,9 +1027,19 @@ mod tests {
     }
 
     #[test]
-    fn coerce_defaults_to_managed_keeping_saved_fields() {
-        let coerced = coerce_config(&remote_config(), &ConnectionConfigInput::default()).unwrap();
-        assert_eq!(coerced.mode, ConnectionMode::Managed);
+    fn coerce_requires_explicit_remote_mode() {
+        let err = coerce_config(&remote_config(), &ConnectionConfigInput::default()).unwrap_err();
+        assert!(err.to_string().contains("仅支持远程"));
+    }
+
+    #[test]
+    fn coerce_remote_keeps_saved_fields() {
+        let input = ConnectionConfigInput {
+            mode: Some("remote".to_string()),
+            ..Default::default()
+        };
+        let coerced = coerce_config(&remote_config(), &input).unwrap();
+        assert_eq!(coerced.mode, ConnectionMode::Remote);
         assert_eq!(
             coerced.local_url.as_deref(),
             Some(connection::DEFAULT_LOCAL_DASHBOARD_URL)
@@ -1038,24 +1049,18 @@ mod tests {
     }
 
     #[test]
-    fn coerce_local_defaults_to_loopback_cli_url() {
+    fn coerce_local_mode_is_rejected() {
         let input = ConnectionConfigInput {
             mode: Some("local".to_string()),
             ..Default::default()
         };
-        let coerced = coerce_config(&ConnectionConfig::default(), &input).unwrap();
-        assert_eq!(coerced.mode, ConnectionMode::Local);
-        assert_eq!(
-            coerced.local_url.as_deref(),
-            Some(connection::DEFAULT_LOCAL_DASHBOARD_URL)
-        );
+        assert!(coerce_config(&ConnectionConfig::default(), &input).is_err());
     }
 
     #[test]
-    fn coerce_local_rejects_non_loopback_url() {
+    fn coerce_managed_mode_is_rejected() {
         let input = ConnectionConfigInput {
-            mode: Some("local".to_string()),
-            local_url: Some("http://192.168.1.10:9119".to_string()),
+            mode: Some("managed".to_string()),
             ..Default::default()
         };
         assert!(coerce_config(&ConnectionConfig::default(), &input).is_err());
@@ -1113,15 +1118,13 @@ mod tests {
     }
 
     #[test]
-    fn coerce_explicit_empty_url_clears_saved_value() {
+    fn coerce_remote_url_must_remain_present() {
         let input = ConnectionConfigInput {
-            mode: Some("managed".to_string()),
+            mode: Some("remote".to_string()),
             remote_url: Some("".to_string()),
             remote_token: None,
             ..Default::default()
         };
-        let coerced = coerce_config(&remote_config(), &input).unwrap();
-        assert_eq!(coerced.remote_url, None);
-        assert_eq!(coerced.remote_token.as_deref(), Some("saved-token"));
+        assert!(coerce_config(&remote_config(), &input).is_err());
     }
 }

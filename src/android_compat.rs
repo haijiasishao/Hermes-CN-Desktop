@@ -181,8 +181,21 @@ pub use crate::process::runtime::{
 #[cfg(not(feature = "desktop"))]
 mod runtime_stubs {
     use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    /// App-private writable data dir on Android, resolved once from Tauri's
+    /// path API (`app_data_dir` → `/data/data/<pkg>/files`). Fallback keeps
+    /// the old dirs::data_dir() behaviour for tests / odd environments.
+    static ANDROID_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+    pub fn set_android_data_dir(dir: PathBuf) {
+        let _ = ANDROID_DATA_DIR.set(dir);
+    }
 
     pub fn hermes_home_dir() -> PathBuf {
+        if let Some(dir) = ANDROID_DATA_DIR.get() {
+            return dir.join("hermes-agent-cn-mobile");
+        }
         std::env::var("HERMES_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {

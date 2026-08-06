@@ -57,7 +57,7 @@ export function AppShell({ children }: AppShellProps) {
             title={toggleLabel}
             onClick={() => setSidebarVisible(false)}
           >
-            {isMobile ? <X size={14} /> : <PanelLeftClose size={12} />}
+            {isMobile ? <X size={16} /> : <PanelLeftClose size={12} />}
           </IconButton>
         ) : null}
       </div>
