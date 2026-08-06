@@ -81,10 +81,31 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
           pnpm tauri android build --apk --target aarch64
 
+      - name: Sign APK with debug keystore (internal testing)
+        run: |
+          # Android 官方 debug 签名约定：storepass/keypass=android, alias=androiddebugkey
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            mkdir -p "$HOME/.android"
+            keytool -genkey -v -keystore "$HOME/.android/debug.keystore" \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          APK="gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
+          SIGNED="gen/android/app/build/outputs/apk/universal/release/hermes-agent-mobile.apk"
+          ls -la "$APK"
+          "$APKSIGNER" sign --ks "$HOME/.android/debug.keystore" \
+            --ks-pass pass:android --ks-key-alias androiddebugkey \
+            --key-pass pass:android \
+            --out "$SIGNED" "$APK"
+          "$APKSIGNER" verify --print-certs "$SIGNED" | head -5
+          ls -la "$SIGNED"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: hermes-agent-mobile-apk
           path: |
-            gen/android/app/build/outputs/apk/**/release/*.apk
+            gen/android/app/build/outputs/apk/**/release/hermes-agent-mobile.apk
           if-no-files-found: error
