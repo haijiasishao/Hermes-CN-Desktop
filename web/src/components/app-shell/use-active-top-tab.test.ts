@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BACKUP_ITEMS, CONFIG_ITEMS } from "./capability-sidebar";
-import { TOP_TABS } from "./use-active-top-tab";
+import { getVisibleTopTabs, TOP_TABS } from "./use-active-top-tab";
 
 function tabFor(path: string) {
   return TOP_TABS.find((tab) => tab.matches(path))?.id;
@@ -68,5 +68,19 @@ describe("TOP_TABS", () => {
       ["04", "记忆"],
       ["05", "高级"],
     ]);
+  });
+});
+
+describe("getVisibleTopTabs – Android Remote regression", () => {
+  it("hides gateway (消息接入) tab on androidRemoteOnly=true", () => {
+    const visible = getVisibleTopTabs(true);
+    expect(visible.map((t) => t.id)).not.toContain("gateway");
+    expect(visible.find((t) => t.label === "消息接入")).toBeUndefined();
+  });
+
+  it("retains full TOP_TABS list on androidRemoteOnly=false", () => {
+    const visible = getVisibleTopTabs(false);
+    expect(visible).toBe(TOP_TABS);
+    expect(visible.map((t) => t.id)).toContain("gateway");
   });
 });

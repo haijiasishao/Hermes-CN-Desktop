@@ -2,6 +2,7 @@ import { useCallback, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getDefaultStore, useAtomValue, useSetAtom } from "jotai";
 import {
+  FileAttachResult,
   ConfigSetResult,
   CommandDispatchResult,
   ImageAttachResult,
@@ -760,6 +761,29 @@ export function useGateway() {
     [ensureSubscribed],
   );
 
+  // Upload a file by converting it to a data URL and sending via the
+  // `file.attach` JSON-RPC method.  Used by Android Remote-only where the
+  // REST `/api/upload` endpoint returns 401 (no dashboard auth cookie).
+  const attachFileBytes = useCallback(
+    async (
+      sessionId: string,
+      dataUrl: string,
+      name: string,
+    ): Promise<FileAttachResult> => {
+      ensureSubscribed();
+      return parseGatewayResult(
+        FileAttachResult,
+        await getGatewayClient().request("file.attach", {
+          session_id: sessionId,
+          data_url: dataUrl,
+          name,
+        }),
+        "file.attach",
+      );
+    },
+    [ensureSubscribed],
+  );
+
   const interruptSession = useCallback(
     async (sessionId: string) => {
       const gatewaySessionId = resolveGatewaySessionId(sessionId) ?? sessionId;
@@ -840,6 +864,7 @@ export function useGateway() {
     attachImage,
     attachImageBytes,
     detectDroppedPath,
+    attachFileBytes,
     interruptSession,
     setSessionTitle,
     disconnect,

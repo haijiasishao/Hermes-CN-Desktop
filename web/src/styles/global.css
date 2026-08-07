@@ -130,6 +130,16 @@ body[data-hermes-window-type="electron"] :where(button, input, textarea, select,
 }
 
 @media (max-width: 720px) {
+  /* Bump base font-size so body text on 360-430px screens is ≥ 14px.
+     Override tokens rather than hard-coding values so any component that
+     consumes var(--h-fs) picks up the larger size automatically. */
+  :root {
+    --h-fs: 14px;
+    --h-lh: 1.65;
+    --h-topbar-h: 56px;
+    --h-statusbar-h: 32px;
+  }
+
   html {
     -webkit-tap-highlight-color: transparent;
   }

@@ -631,3 +631,105 @@
     width: 100%;
   }
 }
+
+/* ─── Mobile / narrow viewport — readable compact health grid ───────────── */
+@media (max-width: 720px) {
+  /* Compact header: stack vertically, bigger fonts. */
+  .compactHead {
+    padding: 12px 16px;
+  }
+
+  .compactTitle {
+    font-size: 14px;
+    white-space: normal;
+  }
+
+  .compactSub {
+    font-size: 13px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    display: block;
+    margin-top: 4px;
+  }
+
+  .compactMeta {
+    font-size: 12px;
+  }
+
+  /* Item grid: single column. */
+  .root[data-variant="compact"] .itemGrid,
+  .itemGrid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .root[data-variant="compact"] .item {
+    min-height: auto;
+    padding: 12px 16px;
+  }
+
+  /* Labels: readable size. */
+  .itemLabel {
+    font-size: 13px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  /* Values: readable size. */
+  .root[data-variant="compact"] .itemValue {
+    font-size: 15px;
+  }
+
+  .root[data-variant="compact"] .itemValue[data-mono="true"] {
+    font-size: 13px;
+  }
+
+  /* Sub text: allow wrapping for long paths/hostnames. */
+  .itemSub {
+    font-size: 12.5px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    word-break: break-all;
+  }
+
+  /* Detail text: show in compact variant (undo display:none), up to 3 lines. */
+  .root[data-variant="compact"] .itemDetail {
+    display: block;
+    font-size: 12.5px;
+    line-height: 1.55;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .itemTone {
+    font-size: 11.5px;
+  }
+
+  /* Metric sub: allow wrapping. */
+  .metricSub {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  /* Metric values: slightly smaller on mobile but still readable. */
+  .metricValue {
+    font-size: 20px;
+  }
+
+  .metricLabel {
+    font-size: 12.5px;
+  }
+
+  /* Fix item text: allow wrapping. */
+  .fixText span {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+}

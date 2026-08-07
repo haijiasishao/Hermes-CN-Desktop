@@ -1,4 +1,5 @@
 import { useLocation } from "react-router-dom";
+import { runtime } from "@/lib/runtime";
 
 export type TopTab =
   | "workbench"
@@ -92,6 +93,18 @@ export const TOP_TABS: readonly TopTabDef[] = [
 
 export function useActiveTopTab(): TopTab | null {
   const { pathname } = useLocation();
-  const match = TOP_TABS.find((tab) => tab.matches(pathname));
+  const match = getVisibleTopTabs(runtime.androidRemoteOnly).find((tab) => tab.matches(pathname));
   return match?.id ?? null;
+}
+
+/** Tab IDs hidden on Android Remote-only builds. */
+export const ANDROID_REMOTE_HIDDEN_TAB_IDS: ReadonlySet<TopTab> = new Set<TopTab>(['gateway']);
+
+/**
+ * Returns the top tabs visible for the current runtime.
+ * On Android Remote-only builds, the message gateway tab (03) is hidden.
+ */
+export function getVisibleTopTabs(androidRemoteOnly: boolean): readonly TopTabDef[] {
+  if (!androidRemoteOnly) return TOP_TABS;
+  return TOP_TABS.filter((tab) => !ANDROID_REMOTE_HIDDEN_TAB_IDS.has(tab.id));
 }

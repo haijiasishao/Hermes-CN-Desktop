@@ -49,3 +49,33 @@
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ─── Mobile / narrow viewport — single-column cards, readable desc ─────── */
+@media (max-width: 720px) {
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .card {
+    padding: 16px 16px;
+  }
+
+  .num {
+    font-size: 11px;
+    margin-bottom: 8px;
+  }
+
+  .title {
+    font-size: 14px;
+  }
+
+  .desc {
+    font-size: 13px;
+    line-height: 1.6;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}

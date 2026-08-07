@@ -82,7 +82,12 @@ function BackendApp() {
           <Route path="/hindsight" element={withBoundary(<ExternalMemoryRoute page="hindsight" />)} />
           <Route path="/soul" element={withBoundary(<SoulRoute />)} />
           <Route path="/cron" element={withBoundary(<CronRoute />)} />
-          <Route path="/im/*" element={withBoundary(<ImOnboardingRoute />)} />
+          <Route
+            path="/im/*"
+            element={runtime.androidRemoteOnly
+              ? <Navigate to="/" replace />
+              : withBoundary(<ImOnboardingRoute />)}
+          />
           <Route path="/console" element={withBoundary(<ConsoleRoute />)} />
           <Route path="/health" element={withBoundary(<HealthRoute />)} />
           <Route path="/analytics" element={withBoundary(<AnalyticsRoute />)} />

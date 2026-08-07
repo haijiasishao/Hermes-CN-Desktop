@@ -6,13 +6,20 @@ interface TopBarProps {
   title?: ReactNode;
   sub?: ReactNode;
   right?: ReactNode;
+  /** When true, the top bar renders in a two-row stacked layout on mobile. */
+  mobileStack?: boolean;
 }
 
 type TopBarActionButtonProps = Omit<ButtonProps, "size">;
 
-export function TopBar({ title, sub, right }: TopBarProps) {
+export function TopBar({ title, sub, right, mobileStack }: TopBarProps) {
   return (
-    <div className={s.topBar} data-window-drag data-tauri-drag-region="deep">
+    <div
+      className={s.topBar}
+      data-window-drag
+      data-tauri-drag-region="deep"
+      data-mobile-stack={mobileStack ? "true" : undefined}
+    >
       <div className={s.inner}>
         <div className={s.titleGroup}>
           {title && <span className={s.title}>{title}</span>}

@@ -75,3 +75,27 @@
     font-size: 40px;
   }
 }
+
+/* ─── Mobile / narrow viewport — single-column hero ─────────────────────── */
+@media (max-width: 720px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 20px 0 16px;
+  }
+
+  .num {
+    display: none;
+  }
+
+  .title {
+    font-size: 28px;
+    line-height: 1.15;
+  }
+
+  .greet {
+    font-size: 12.5px;
+    gap: 8px;
+    line-height: 1.6;
+  }
+}

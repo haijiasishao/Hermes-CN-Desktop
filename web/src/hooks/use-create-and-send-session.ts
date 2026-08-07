@@ -34,6 +34,7 @@ export function useCreateAndSendSession() {
     dispatchCommand,
     attachImage,
     attachImageBytes,
+    attachFileBytes,
     detectDroppedPath,
   } = useGateway();
   const setActiveSessionId = useSetAtom(activeSessionIdAtom);
@@ -107,6 +108,7 @@ export function useCreateAndSendSession() {
         const prepared = await prepareComposerPrompt(sessionId, payload, {
           attachImage,
           attachImageBytes,
+          attachFileBytes,
           remote: isRemoteConnection(),
           readImageBytes: readImageBytesFromPath,
           detectDroppedPath,
@@ -141,6 +143,7 @@ export function useCreateAndSendSession() {
   }, [
     attachImage,
     attachImageBytes,
+    attachFileBytes,
     beginPrompt,
     createSession,
     detectDroppedPath,

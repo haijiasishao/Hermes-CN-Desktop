@@ -69,6 +69,12 @@ import { OAuthProvidersSection } from "./settings-oauth-section";
 import { MoaPanel } from "./settings-moa-panel";
 import { useMoaConfig } from "@/hooks/use-moa-config";
 import s from "./settings.module.css";
+import { runtime } from "@/lib/runtime";
+import {
+  filterAndroidRemoteProviders,
+  isAndroidRemoteHiddenEnvKey,
+  isAndroidRemoteHiddenProviderId,
+} from "@/lib/android-remote-ui";
 
 const PROVIDER_GROUPS: { prefix: string; name: string; priority: number }[] = [
   { prefix: "NOUS_", name: "Nous Portal", priority: 0 },
@@ -741,7 +747,10 @@ export function ModelsSection() {
   );
 
   const allProviders = useMemo(
-    () => [...catalog.providers, ...customProviders],
+    () => filterAndroidRemoteProviders(
+      [...catalog.providers, ...customProviders],
+      runtime.androidRemoteOnly,
+    ),
     [catalog.providers, customProviders],
   );
   const auxiliaryProviderOptions = useMemo(() => {
@@ -757,7 +766,11 @@ export function ModelsSection() {
       });
     }
     const currentProvider = auxForm.provider.trim();
-    if (currentProvider && !options.has(currentProvider)) {
+    if (
+      currentProvider &&
+      !options.has(currentProvider) &&
+      !(runtime.androidRemoteOnly && isAndroidRemoteHiddenProviderId(currentProvider))
+    ) {
       options.set(currentProvider, {
         id: currentProvider,
         name: currentProvider,
@@ -834,7 +847,10 @@ export function ModelsSection() {
   );
   const providerEnvEntries = useMemo(
     () => Object.entries(resolvedEnvVars)
-      .filter(([, v]) => v.category === "provider")
+      .filter(([key, v]) =>
+        v.category === "provider" &&
+        !(runtime.androidRemoteOnly && isAndroidRemoteHiddenEnvKey(key)),
+      )
       .sort(([aKey], [bKey]) => getProviderPriority(getProviderGroup(aKey)) - getProviderPriority(getProviderGroup(bKey))),
     [resolvedEnvVars],
   );

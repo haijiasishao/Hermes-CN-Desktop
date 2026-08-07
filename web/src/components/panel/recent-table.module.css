@@ -173,3 +173,118 @@
   color: color-mix(in srgb, var(--h-accent) 80%, var(--h-text));
   text-decoration: underline;
 }
+
+/* ─── Mobile / narrow viewport — card list replaces table ────────────────── */
+@media (max-width: 720px) {
+  /* Hide table header. */
+  .table thead {
+    display: none;
+  }
+
+  .table {
+    font-size: 13px;
+  }
+
+  /* Each row becomes a card. */
+  .table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--h-line-soft);
+    align-items: baseline;
+  }
+
+  .table tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  /* Each td becomes a block-level item with its label shown via ::before. */
+  .table tbody td {
+    display: inline;
+    padding: 0;
+    border-bottom: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    max-width: none;
+    font-size: 13px;
+    vertical-align: baseline;
+  }
+
+  /* Title cell: full width, prominent. */
+  .table tbody td[data-label="标题"] {
+    display: block;
+    width: 100%;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--h-text);
+    margin-bottom: 4px;
+  }
+
+  .titleCell {
+    white-space: normal;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    display: -webkit-box;
+  }
+
+  /* Show label prefix via ::before for non-title cells. */
+  .table tbody td[data-label]::before {
+    content: attr(data-label) "：";
+    color: var(--h-text-3);
+    font-size: 12px;
+  }
+
+  /* Title already prominent — skip its prefix. */
+  .table tbody td[data-label="标题"]::before {
+    content: none;
+  }
+
+  .mono {
+    font-size: 12.5px;
+  }
+
+  /* Numeric cells: keep right-aligned value but no extra margin. */
+  .numeric {
+    font-size: 12.5px;
+    text-align: left;
+  }
+
+  /* Status cell: allow wrapping. */
+  .statusCell {
+    white-space: normal;
+  }
+
+  /* Foot / pager: wrap for narrow screens, bigger tap targets. */
+  .foot {
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 13px;
+    padding: 0 4px;
+  }
+
+  .pager {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .pageBtn {
+    min-width: 44px;
+    height: 44px;
+    font-size: 13px;
+  }
+
+  .pageGap {
+    height: 44px;
+    font-size: 13px;
+  }
+
+  .expandLink {
+    font-size: 13px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+}

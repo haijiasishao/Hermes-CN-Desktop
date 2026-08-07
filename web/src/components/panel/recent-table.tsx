@@ -83,16 +83,16 @@ export function RecentTable({ sessions, onOpen }: RecentTableProps) {
               const isInterrupted = sess.end_reason === "interrupted";
               return (
                 <tr key={sess.id} onClick={() => onOpen(sess)}>
-                  <td className={s.mono}>{shortId(sess.id)}</td>
-                  <td>
+                  <td className={s.mono} data-label="ID">{shortId(sess.id)}</td>
+                  <td data-label="标题">
                     <span className={s.titleCell} data-error={isError ? "true" : undefined}>
                       {sessionDisplayTitle(sess)}
                       {isError && " — 已中止"}
                     </span>
                   </td>
-                  <td className={s.mono}>{sess.model || "—"}</td>
-                  <td className={s.mono}>{sess.source ?? "tui"}</td>
-                  <td>
+                  <td className={s.mono} data-label="模型">{sess.model || "—"}</td>
+                  <td className={s.mono} data-label="来源">{sess.source ?? "tui"}</td>
+                  <td data-label="完成">
                     <span className={s.statusCell}>
                       {(isError || isInterrupted) && (
                         <Dot tone={isError ? "err" : "warn"} />
@@ -100,7 +100,7 @@ export function RecentTable({ sessions, onOpen }: RecentTableProps) {
                       {formatEndedAt(sess.ended_at)}
                     </span>
                   </td>
-                  <td className={s.numeric}>
+                  <td className={s.numeric} data-label="Tokens">
                     {formatTokens((sess.input_tokens ?? 0) + (sess.output_tokens ?? 0))}
                   </td>
                 </tr>

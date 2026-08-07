@@ -62,6 +62,157 @@ describe("composer prompt preparation", () => {
     expect(result.displayText).toBe("看看这张图\n\n附件：pasted.png");
   });
 
+  it("uploads a browser file via file.attach in remote mode, never REST upload", async () => {
+    vi.stubGlobal("FileReader", FakeFileReader);
+    const bytes = new Uint8Array([0, 1, 2]);
+    const file = {
+      name: "联合督导总台账.xlsx",
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      arrayBuffer: async () => bytes.buffer,
+    } as unknown as File;
+    const attachFileBytes = vi.fn(async () => ({
+      attached: true,
+      name: file.name,
+      path: "/opt/data/workspace/attachments/联合督导总台账.xlsx",
+      ref_path: "attachments/联合督导总台账.xlsx",
+      ref_text: "@file:attachments/联合督导总台账.xlsx",
+      uploaded: true,
+    }));
+    const uploadFile = vi.fn();
+    const detectDroppedPath = vi.fn(async () => ({ matched: false }));
+
+    const result = await prepareComposerPrompt(
+      "s1",
+      {
+        text: "请读取这个台账",
+        attachments: [{
+          id: "a1",
+          source: "browser",
+          file,
+          name: file.name,
+          kind: "file",
+          status: "ready",
+          mimeType: file.type,
+        }],
+      },
+      {
+        attachImage: vi.fn(),
+        attachFileBytes,
+        remote: true,
+        uploadFile,
+        detectDroppedPath,
+      },
+    );
+
+    expect(attachFileBytes).toHaveBeenCalledWith(
+      "s1",
+      "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,AAEC",
+      file.name,
+    );
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(detectDroppedPath).not.toHaveBeenCalled();
+    expect(result.promptText).toContain("@file:attachments/联合督导总台账.xlsx");
+    expect(result.displayText).toBe("请读取这个台账\n\n附件：联合督导总台账.xlsx");
+  });
+  it("desktop uses uploadFile even when attachFileBytes is provided (remote=false)", async () => {
+    vi.stubGlobal("FileReader", FakeFileReader);
+    const bytes = new Uint8Array([0, 1, 2]);
+    const file = {
+      name: "report.xlsx",
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      arrayBuffer: async () => bytes.buffer,
+    } as unknown as File;
+    const attachFileBytes = vi.fn(async () => ({
+      attached: true,
+      name: file.name,
+      path: "/opt/data/workspace/attachments/report.xlsx",
+      ref_path: "attachments/report.xlsx",
+      ref_text: "@file:attachments/report.xlsx",
+      uploaded: true,
+    }));
+    const uploadFile = vi.fn(async () => ({
+      path: "/opt/data/workspace/attachments/report.xlsx",
+      filename: file.name,
+      size: 3,
+      mime_type: file.type,
+    }));
+    const detectDroppedPath = vi.fn(async () => ({ matched: false }));
+
+    const result = await prepareComposerPrompt(
+      "s1",
+      {
+        text: "桌面端上传",
+        attachments: [{
+          id: "a1",
+          source: "browser",
+          file,
+          name: file.name,
+          kind: "file",
+          status: "ready",
+          mimeType: file.type,
+        }],
+      },
+      {
+        attachImage: vi.fn(),
+        attachFileBytes,
+        remote: false,
+        uploadFile,
+        detectDroppedPath,
+      },
+    );
+
+    // Desktop path: uploadFile REST is used; attachFileBytes is never called.
+    expect(uploadFile).toHaveBeenCalledWith("s1", file, expect.any(Function));
+    expect(attachFileBytes).not.toHaveBeenCalled();
+    expect(result.promptText).toContain("[User attached file:");
+    expect(result.displayText).toBe("桌面端上传\n\n附件：report.xlsx");
+  });
+
+  it("remote=true without attachFileBytes falls back to uploadFile", async () => {
+    vi.stubGlobal("FileReader", FakeFileReader);
+    const bytes = new Uint8Array([0, 1, 2]);
+    const file = {
+      name: "data.csv",
+      type: "text/csv",
+      arrayBuffer: async () => bytes.buffer,
+    } as unknown as File;
+    const uploadFile = vi.fn(async () => ({
+      path: "/opt/data/workspace/attachments/data.csv",
+      filename: file.name,
+      size: 3,
+      mime_type: file.type,
+    }));
+    const detectDroppedPath = vi.fn(async () => ({ matched: false }));
+
+    const result = await prepareComposerPrompt(
+      "s1",
+      {
+        text: "远程无attachFileBytes",
+        attachments: [{
+          id: "a1",
+          source: "browser",
+          file,
+          name: file.name,
+          kind: "file",
+          status: "ready",
+          mimeType: file.type,
+        }],
+      },
+      {
+        attachImage: vi.fn(),
+        remote: true,
+        // attachFileBytes intentionally omitted
+        uploadFile,
+        detectDroppedPath,
+      },
+    );
+
+    // Fallback to legacy REST upload.
+    expect(uploadFile).toHaveBeenCalledWith("s1", file, expect.any(Function));
+    expect(result.promptText).toContain("[User attached file:");
+    expect(result.displayText).toBe("远程无attachFileBytes\n\n附件：data.csv");
+  });
+
   it("in remote mode, a path-only image uploads its bytes (image.attach_bytes), not the path", async () => {
     const readImageBytes = vi.fn(async () => ({
       contentBase64: "QUJD",

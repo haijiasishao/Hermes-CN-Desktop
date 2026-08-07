@@ -208,6 +208,7 @@
     height: calc(var(--h-statusbar-h) + var(--h-safe-bottom, 0px));
     padding: 0 8px var(--h-safe-bottom, 0px);
     gap: 8px;
+    font-size: 12px;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
@@ -217,6 +218,34 @@
     display: none;
   }
 
+  /* Prevent flex children from shrinking — allows horizontal scroll */
+  .statusbar > * {
+    flex: 0 0 auto;
+  }
+
+  .lbl {
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+
+  .val {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .gatewayButton {
+    white-space: nowrap;
+  }
+
+  .stat {
+    white-space: nowrap;
+  }
+
+  .restartButton {
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
   .restartButton span,
   .gatewayErrorMsg,
   .gatewayErrorHint {
@@ -224,6 +253,9 @@
   }
 
   .right {
-    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    white-space: nowrap;
   }
 }

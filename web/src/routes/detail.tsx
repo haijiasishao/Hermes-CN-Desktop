@@ -116,6 +116,7 @@ export function DetailRoute() {
     completePath,
     attachImage,
     attachImageBytes,
+    attachFileBytes,
     detectDroppedPath,
   } = useGateway();
   const { data: config } = useConfig();
@@ -414,6 +415,7 @@ export function DetailRoute() {
     const prepared = await prepareComposerPrompt(gatewaySessionId, payload, {
       attachImage,
       attachImageBytes,
+      attachFileBytes,
       remote: isRemoteConnection(),
       readImageBytes: readImageBytesFromPath,
       detectDroppedPath,
@@ -424,7 +426,7 @@ export function DetailRoute() {
       displayText: prepared.displayText,
       displayImages: prepared.displayImages,
     });
-  }, [attachImage, attachImageBytes, detectDroppedPath, dispatchCommand, ensureGatewaySession, restSessionId, sendPrompt, taskId]);
+  }, [attachImage, attachImageBytes, attachFileBytes, detectDroppedPath, dispatchCommand, ensureGatewaySession, restSessionId, sendPrompt, taskId]);
 
   const onSend = useCallback(async (
     payload: ComposerSubmitPayload,
@@ -642,6 +644,7 @@ export function DetailRoute() {
   return (
     <div className={s.page} data-conversation-width={conversationWidthMode} style={pageStyle}>
       <TopBar
+        mobileStack
         title={title}
         sub={model ? `本会话 ${model}` : undefined}
         right={
@@ -653,6 +656,7 @@ export function DetailRoute() {
             {copyableSessionId ? (
               <TopBarActionButton
                 onClick={copySessionId}
+                data-mobile-icon-only="true"
                 title={`复制会话 ID：${copyableSessionId}`}
                 aria-label={`复制会话 ID ${copyableSessionId}`}
               >
@@ -673,6 +677,7 @@ export function DetailRoute() {
             <TopBarActionButton
               onClick={() => setSubagentPanelOpen((v) => !v)}
               data-active={subagentPanelOpen ? "true" : undefined}
+              data-mobile-icon-only="true"
               title="子Agent 监视"
               aria-label="子Agent 监视"
               aria-pressed={subagentPanelOpen}
@@ -690,6 +695,7 @@ export function DetailRoute() {
               data-active={rightRailVisible ? "true" : undefined}
               title="预览面板（⌘B）"
               aria-label="预览面板"
+              data-mobile-icon-only="true"
               aria-pressed={rightRailVisible}
             >
               <PanelRight size={12} aria-hidden="true" />

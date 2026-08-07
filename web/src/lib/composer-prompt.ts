@@ -3,7 +3,7 @@ import {
   type ComposerAttachment,
   type ComposerSubmitPayload,
 } from "@/components/chat/composer-types";
-import type { AttachmentUploadResult, ImageAttachResult, InputDetectDropResult } from "@hermes/protocol";
+import type { AttachmentUploadResult, FileAttachResult, ImageAttachResult, InputDetectDropResult } from "@hermes/protocol";
 
 const WORKSPACE_BLOCK_START = "[Hermes UI Workspace]";
 const WORKSPACE_BLOCK_END = "[/Hermes UI Workspace]";
@@ -154,6 +154,11 @@ export async function prepareComposerPrompt(
     readImageBytes?(
       path: string,
     ): Promise<{ contentBase64: string; filename: string } | null>;
+    attachFileBytes?(
+      sessionId: string,
+      dataUrl: string,
+      name: string,
+    ): Promise<FileAttachResult>;
     detectDroppedPath(sessionId: string, path: string): Promise<InputDetectDropResult>;
     onAttachmentUpdate?(id: string, patch: Partial<ComposerAttachment>): void;
   },
@@ -277,36 +282,72 @@ export async function prepareComposerPrompt(
         continue;
       }
 
-      // Non-image attachments. A browser File with no path still needs the REST
-      // upload (uncommon in the desktop: pickers/drag supply real paths, paste
-      // produces images).
+      // Non-image attachments. A browser File with no path still needs upload.
+      // On Android Remote-only, prefer `file.attach` JSON-RPC (data URL over
+      // WebSocket) because the REST `/api/upload` returns 401 without a
+      // dashboard auth cookie.  Desktop falls back to the legacy REST upload.
       if (!path && attachment.file) {
-        if (!helpers.uploadFile) {
-          throw new Error("当前环境不支持上传这个附件");
-        }
+        const file = attachment.file;
+        const displayName = file.name || attachment.name || "attachment";
         helpers.onAttachmentUpdate?.(attachment.id, {
           status: "uploading",
           progress: 0,
           error: undefined,
         });
-        const uploaded = await helpers.uploadFile(sessionId, attachment.file, (progress) => {
+
+        if (helpers.remote && helpers.attachFileBytes) {
+          // file.attach path: convert to data URL and send via WebSocket.
+          const dataUrl = await readFileAsDataUrl(file);
+          if (!dataUrl) {
+            throw new Error("无法读取文件数据");
+          }
+          helpers.onAttachmentUpdate?.(attachment.id, { status: "uploading", progress: 50 });
+          const attached = await helpers.attachFileBytes(sessionId, dataUrl, displayName);
+          if (attached.attached === false) {
+            throw new Error("文件附件未能添加");
+          }
+          path = attached.path || attached.ref_path || "";
+          uploadedName = attached.name || displayName;
+          const refText = attached.ref_text;
           helpers.onAttachmentUpdate?.(attachment.id, {
-            status: "uploading",
-            progress,
+            source: "uploaded",
+            uploadedPath: path,
+            uploadedName,
+            path,
+            mimeType: attachment.mimeType,
+            status: "processing",
+            progress: 100,
           });
-        });
-        path = uploaded.path;
-        uploadedName = uploaded.filename;
-        helpers.onAttachmentUpdate?.(attachment.id, {
-          source: "uploaded",
-          uploadedPath: uploaded.path,
-          uploadedName: uploaded.filename,
-          path: uploaded.path,
-          size: uploaded.size,
-          mimeType: uploaded.mime_type ?? attachment.mimeType,
-          status: "processing",
-          progress: 100,
-        });
+          // If file.attach returned a ref_text (e.g. @file:...), use it
+          // directly instead of the generic [User attached file: ...] format.
+          if (refText?.trim()) {
+            parts.push(refText.trim());
+            helpers.onAttachmentUpdate?.(attachment.id, { status: "done", progress: 100 });
+            continue;
+          }
+        } else if (helpers.uploadFile) {
+          // Legacy REST upload fallback for desktop / old backends.
+          const uploaded = await helpers.uploadFile(sessionId, file, (progress) => {
+            helpers.onAttachmentUpdate?.(attachment.id, {
+              status: "uploading",
+              progress,
+            });
+          });
+          path = uploaded.path;
+          uploadedName = uploaded.filename;
+          helpers.onAttachmentUpdate?.(attachment.id, {
+            source: "uploaded",
+            uploadedPath: uploaded.path,
+            uploadedName: uploaded.filename,
+            path: uploaded.path,
+            size: uploaded.size,
+            mimeType: uploaded.mime_type ?? attachment.mimeType,
+            status: "processing",
+            progress: 100,
+          });
+        } else {
+          throw new Error("当前环境不支持上传这个附件");
+        }
       }
 
       if (!path) {

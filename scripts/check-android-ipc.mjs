@@ -113,6 +113,23 @@ console.log(`explicit_android_unsupported=${androidUnsupportedCommands.size}`);
 console.log(`missing_registered_commands=${missing.length}`);
 for (const command of missing) console.log(`  ${androidUnsupportedCommands.has(command) ? "unsupported" : "UNCLASSIFIED"} ${command}`);
 
+
+// --- Android manifest permission audit ---
+const manifestPath = path.join(root, "gen/android/app/src/main/AndroidManifest.xml");
+const manifest = fs.readFileSync(manifestPath, "utf8");
+const requiredPermissions = [
+  "android.permission.RECORD_AUDIO",
+  "android.permission.MODIFY_AUDIO_SETTINGS",
+];
+const missingPermissions = requiredPermissions.filter((perm) => !manifest.includes(perm));
+if (missingPermissions.length > 0) {
+  for (const perm of missingPermissions) {
+    console.error(`Missing required Android permission in manifest: ${perm}`);
+  }
+  process.exit(1);
+}
+console.log(`manifest_permissions=${requiredPermissions.length} (all present)`);
+
 if (missingRequired.length > 0 || unclassified.length > 0) {
   if (missingRequired.length > 0) console.error(`Missing required Remote commands: ${missingRequired.join(", ")}`);
   if (unclassified.length > 0) console.error(`Unclassified bridge commands: ${unclassified.join(", ")}`);

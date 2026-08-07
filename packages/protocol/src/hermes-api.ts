@@ -1466,6 +1466,20 @@ export const AttachmentUploadResult = z.object({
 }).passthrough();
 export type AttachmentUploadResult = z.infer<typeof AttachmentUploadResult>;
 
+// `file.attach` JSON-RPC result (Hermes-CN-Core tui_gateway).
+// Used by Android Remote-only to upload browser File objects as data URLs
+// over WebSocket, bypassing the REST `/api/upload` endpoint.
+export const FileAttachResult = z.object({
+  attached: z.boolean().optional(),
+  name: z.string().optional(),
+  path: z.string().optional(),
+  ref_path: z.string().optional(),
+  ref_text: z.string().optional(),
+  uploaded: z.boolean().optional(),
+}).passthrough();
+export type FileAttachResult = z.infer<typeof FileAttachResult>;
+
+
 // `/api/fs/list` entry. Upstream's handler returns `isDirectory`; the fork's
 // original P-004 handler returned `is_dir`. Accept either off the wire and
 // normalize to a single canonical `is_dir` so every consumer (and the inferred

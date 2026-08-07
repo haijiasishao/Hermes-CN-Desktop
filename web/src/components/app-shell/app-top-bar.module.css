@@ -38,10 +38,7 @@
   padding: 0 4px 0 4px;
   flex-shrink: 0;
   color: var(--h-text);
-  text-decoration: none;
   user-select: none;
-  cursor: pointer;
-  -webkit-app-region: no-drag;
   border-radius: 0;
   transition: none;
 }
@@ -276,13 +273,21 @@
   }
 
   .brand {
-    width: auto;
-    flex: 0 1 auto;
+    flex: 0 0 auto;
+    width: 100px;
     min-width: 0;
+    overflow: visible;
   }
 
   .brandText {
     min-width: 0;
+  }
+
+  .wordmark {
+    font-size: 14px;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
   }
 
   .brandMeta {
@@ -296,7 +301,8 @@
 
   .navLink {
     padding: 0 8px;
-    font-size: 11.5px;
+    font-size: 13px;
+    min-height: 44px;
   }
 
   .navNum {
@@ -304,10 +310,7 @@
   }
 
   .search {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: none;
-    padding: 0 8px;
+    display: none;
   }
 
   .searchKbd {
@@ -317,5 +320,9 @@
   .actions {
     gap: 4px;
     flex: 0 0 auto;
+  }
+
+  .actions [data-variant="topbar"] {
+    display: none;
   }
 }
