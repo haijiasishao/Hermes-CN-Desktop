@@ -3437,6 +3437,93 @@ button.providerWebsiteButton:hover {
   flex-shrink: 0;
 }
 
+/* ── Connection form responsive helpers (narrow-viewport fix) ──────── */
+
+.connRow {
+  align-items: flex-start;
+}
+
+.connRow .rowRight {
+  flex: 0 1 340px;
+  min-width: 280px;
+  max-width: 360px;
+  box-sizing: border-box;
+}
+
+.connControl {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+.connRow .rowSub {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.connRow .connProbe {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.connAuthControls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+.connPasswordControls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .connRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .connRow .rowLeft,
+  .connRow .rowRight {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex-basis: auto;
+  }
+
+  .connRow .rowRight {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .connControl {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .connAuthControls {
+    align-items: stretch;
+  }
+
+  .connAuthControls > button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .connPasswordControls {
+    width: 100%;
+  }
+}
+
 .connFooter {
   display: flex;
   flex-wrap: wrap;

@@ -3,10 +3,13 @@ pub mod bootstrap;
 pub mod commands;
 pub mod connection;
 pub mod cron_runs;
+#[cfg(feature = "desktop")]
 pub mod env_file;
+#[cfg(feature = "desktop")]
 pub mod environment;
 pub mod error;
 pub mod oauth_session;
+#[cfg(feature = "desktop")]
 pub mod path_resolver;
 pub mod session_archive;
 pub mod session_log;

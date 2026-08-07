@@ -50,7 +50,6 @@ import {
 } from "@/lib/provider-probe";
 import { getProviderIconUrl } from "@/lib/provider-icons";
 import { useProviderCatalog } from "@/hooks/use-provider-catalog";
-import { useOAuthProviders } from "@/hooks/use-oauth-providers";
 import { ModelCombobox } from "@/components/settings/model-combobox";
 import { translateEnvCategory, translateEnvVar } from "@/lib/env-translations";
 import { rememberLastUsedModel } from "@/lib/last-used-model";
@@ -65,13 +64,15 @@ import {
 import type { EnvVarInfo } from "@hermes/protocol";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Alert, Button, Field, Input, LoadingState, Select, Textarea } from "@hermes/shared-ui";
-import { OAuthProvidersSection } from "./settings-oauth-section";
 import { MoaPanel } from "./settings-moa-panel";
 import { useMoaConfig } from "@/hooks/use-moa-config";
 import s from "./settings.module.css";
 import { runtime } from "@/lib/runtime";
 import {
+  filterRemovedProviders,
   filterAndroidRemoteProviders,
+  isRemovedProviderEnvKey,
+  isRemovedProviderId,
   isAndroidRemoteHiddenEnvKey,
   isAndroidRemoteHiddenProviderId,
 } from "@/lib/android-remote-ui";
@@ -614,7 +615,6 @@ export function ModelsSection() {
     refetch: refetchConfig,
   } = useConfig();
   const { data: modelInfo } = useModelInfo();
-  const { data: oauthProviders, isLoading: oauthProvidersLoading } = useOAuthProviders();
   // MoA tab 徽标用。老后端没有 /api/model/moa 时保持 undefined，徽标隐藏。
   const { data: moaConfig } = useMoaConfig();
   const moaPresetCount = Object.keys(moaConfig?.presets ?? {}).length;
@@ -624,7 +624,7 @@ export function ModelsSection() {
   const revealEnv = useRevealEnv();
   const { probeProvider, listProviderModels, setRuntimeModel } = useGateway();
   const navigate = useNavigate();
-  const { catalog, message: catalogMessage, refresh: refreshCatalog } = useProviderCatalog();
+  const { catalog, refresh: refreshCatalog } = useProviderCatalog();
   const resolvedEnvVars = envVars ?? EMPTY_ENV_VARS;
   const [activeModelTab, setActiveModelTab] = useState<ModelSettingsTab>("main");
   const [probeState, setProbeState] = useState<{
@@ -747,9 +747,8 @@ export function ModelsSection() {
   );
 
   const allProviders = useMemo(
-    () => filterAndroidRemoteProviders(
-      [...catalog.providers, ...customProviders],
-      runtime.androidRemoteOnly,
+    () => filterRemovedProviders(
+      filterAndroidRemoteProviders([...catalog.providers, ...customProviders], runtime.androidRemoteOnly),
     ),
     [catalog.providers, customProviders],
   );
@@ -769,7 +768,8 @@ export function ModelsSection() {
     if (
       currentProvider &&
       !options.has(currentProvider) &&
-      !(runtime.androidRemoteOnly && isAndroidRemoteHiddenProviderId(currentProvider))
+      !(runtime.androidRemoteOnly && isAndroidRemoteHiddenProviderId(currentProvider)) &&
+      !isRemovedProviderId(currentProvider)
     ) {
       options.set(currentProvider, {
         id: currentProvider,
@@ -835,21 +835,12 @@ export function ModelsSection() {
     }).length,
     [config],
   );
-  const configuredCount = useMemo(
-    () => allProviders.filter((provider) =>
-      providerHasSavedCredentials(config, provider.id, resolvedEnvVars, provider)).length,
-    [allProviders, config, resolvedEnvVars],
-  );
-  const currentProviderOAuthLoggedIn = useMemo(
-    () => oauthProviders?.some((provider) =>
-      provider.id === currentProviderId && provider.status.logged_in) ?? false,
-    [currentProviderId, oauthProviders],
-  );
   const providerEnvEntries = useMemo(
     () => Object.entries(resolvedEnvVars)
       .filter(([key, v]) =>
         v.category === "provider" &&
-        !(runtime.androidRemoteOnly && isAndroidRemoteHiddenEnvKey(key)),
+        !(runtime.androidRemoteOnly && isAndroidRemoteHiddenEnvKey(key)) &&
+        !isRemovedProviderEnvKey(key),
       )
       .sort(([aKey], [bKey]) => getProviderPriority(getProviderGroup(aKey)) - getProviderPriority(getProviderGroup(bKey))),
     [resolvedEnvVars],
@@ -1474,10 +1465,6 @@ export function ModelsSection() {
   }
 
   const envLoadWarning = envIsError ? (envError instanceof Error ? envError.message : "环境变量加载失败") : "";
-  const needsInitialModelSetup =
-    !modelInfo?.model?.trim() ||
-    !modelInfo?.provider?.trim() ||
-    (!currentProviderOAuthLoggedIn && configuredCount === 0 && !oauthProvidersLoading);
   const customProviderIsLocal = customProviderMode === "local";
   const customProviderIsAnthropic = !customProviderIsLocal && customForm.apiMode === "anthropic_messages";
   const customProviderTitle = customProviderIsLocal ? "添加本地部署服务商" : "添加自定义服务商";
@@ -1514,17 +1501,6 @@ export function ModelsSection() {
 
   return (
     <div className={s.modelsSettings}>
-      {needsInitialModelSetup && (
-        <div className={s.firstRunModelNotice}>
-          <div>
-            <strong>需要先完成模型初始化</strong>
-            <p>
-              当前独立 runtime 的 Hermes home 还没有可用模型。请选择一个服务商，粘贴 API Key，点击「保存配置」，再点击「设为当前模型」。
-            </p>
-          </div>
-          <span>推荐从 DeepSeek 开始 · <a href="https://platform.deepseek.com/" target="_blank" rel="noreferrer" className={s.link}>DeepSeek 开放平台 ↗</a></span>
-        </div>
-      )}
       {envLoadWarning && (
         <Alert
           className={s.modelsLoadWarning}
@@ -1577,331 +1553,13 @@ export function ModelsSection() {
           <div className={s.modelsSectionHeader}>
             <div>
               <p className={s.desc}>
-                管理国内模型服务商预设和 API Key。
+                模型由当前连接的 Hermes Agent 管理；可在下方查看环境变量。
                 {modelInfo && <> 当前模型: <b>{modelInfo.model}</b> ({modelInfo.provider})</>}
-                {" · "}已配置 {configuredCount} 个，自定义 {customProviders.length} 个
               </p>
             </div>
-            <div className={s.catalogMeta}>
-              <span>提供商目录 {catalog.version}</span>
-              {catalogMessage && <span className={s.catalogMessage}>{catalogMessage}</span>}
-            </div>
           </div>
 
-          <div className={s.providerPresetLayout}>
-            <div className={s.providerGridPane}>
-              <div className={s.providerGridHeader}>
-                <div className={s.providerGridTitle}>预设供应商</div>
-                <div className={s.providerGridTools}>
-                  <Input
-                    className={s.providerSearchInput}
-                    value={providerSearch}
-                    onChange={(event) => setProviderSearch(event.target.value)}
-                    placeholder="搜索模型平台..."
-                  />
-                  <Button variant="outline" onClick={handleCatalogRefresh}>刷新预设</Button>
-                </div>
-              </div>
-              <div className={s.providerPresetGrid}>
-                <button
-                  type="button"
-                  className={`${s.presetCard} ${s.presetCardAdd}`}
-                  onClick={() => openCustomProviderForm("custom")}
-                  title="添加自定义服务商（OpenAI 兼容 / Anthropic Claude Code 中转）"
-                >
-                  <span className={s.presetCardAddIcon} aria-hidden>＋</span>
-                  <span className={s.presetCardName}>自定义配置</span>
-                </button>
-                <button
-                  type="button"
-                  className={`${s.presetCard} ${s.presetCardAdd}`}
-                  onClick={() => openCustomProviderForm("local")}
-                  title="添加本地部署 OpenAI 兼容服务商"
-                >
-                  <span className={s.presetCardAddIcon} aria-hidden>＋</span>
-                  <span className={s.presetCardName}>本地部署</span>
-                </button>
-                {filteredProviders.length > 0 ? (
-                  <DndContext
-                    sensors={providerDndSensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleProviderDragEnd}
-                  >
-                    <SortableContext
-                      items={filteredProviders.map((provider) => provider.id)}
-                      strategy={rectSortingStrategy}
-                    >
-                      {filteredProviders.map((provider) => (
-                        <SortableProviderPresetCard
-                          key={provider.id}
-                          provider={provider}
-                          active={selectedProvider?.id === provider.id}
-                          configured={providerHasSavedCredentials(config, provider.id, resolvedEnvVars, provider)}
-                          current={currentProviderId === provider.id}
-                          canReorder={canReorderProviders}
-                          onSelect={selectProvider}
-                          onKeyDown={handleProviderRowKeyDown}
-                        />
-                      ))}
-                    </SortableContext>
-                  </DndContext>
-                ) : (
-                  <div className={s.providerPresetEmpty}>没有匹配的模型平台</div>
-                )}
-              </div>
-              <div className={s.providerListHint}>
-                {providerSearch.trim()
-                  ? "正在搜索结果中浏览；清空搜索后可拖拽排序。"
-                  : "拖拽卡片可调整常用服务商顺序，排序保存到当前 Profile。"}
-              </div>
-              <div className={s.providerReviewBanner}>
-                想知道哪家中转站或者提供商性价比更好更稳定？
-                <a
-                  href="https://hermesagent.org.cn/transit"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={s.link}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    void openExternalUrl("https://hermesagent.org.cn/transit");
-                  }}
-                >
-                  点击此处查看测评
-                </a>
-              </div>
-            </div>
 
-            {selectedProvider && (
-              <div className={s.providerPresetPanel} data-loading={providerPanelLoading}>
-                {providerPanelLoading ? (
-                  <ProviderPanelLoading providerName={selectedProvider.name} />
-                ) : (
-                  <>
-                    <div className={s.providerPresetHeader}>
-                      <div>
-                        <div className={s.providerDetailName}>{selectedProvider.name}</div>
-                        <div className={s.providerDetailVendor}>
-                          {selectedProvider.id} · {selectedProvider.vendor} · {apiModeDisplayName(selectedProvider.apiMode)}
-                        </div>
-                      </div>
-                      <div className={s.providerHeaderActions}>
-                        <span className={s.statusBadge} data-on={selectedHasCredentials}>
-                          {selectedHasCredentials ? "已保存密钥" : "未设置"}
-                        </span>
-                        {(selectedProvider.promotion?.url || selectedProvider.websiteUrl) && (
-                          <Button
-                            variant="solid"
-                            tone="accent"
-                            className={s.providerWebsiteButton}
-                            onClick={() => {
-                              reportPromoClick(selectedProvider.id);
-                              void openExternalUrl(
-                                selectedProvider.promotion?.url ?? selectedProvider.websiteUrl!,
-                              );
-                            }}
-                            title={`打开 ${selectedProvider.name} 官网`}
-                          >
-                            前往官网 ↗
-                          </Button>
-                        )}
-                        {selectedProvider.isCustom && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            tone="danger"
-                            loading={providerDeletePending}
-                            disabled={providerSavePending || providerSetCurrentPending}
-                            onClick={() => void handleDeleteSelectedProvider()}
-                            title={
-                              currentProviderId === selectedProvider.id
-                                ? "当前主模型正在使用此服务商，请先切换后删除"
-                                : "删除此自定义服务商"
-                            }
-                          >
-                            删除服务商
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className={s.providerFormGrid}>
-                      <Field label={selectedProvider.apiKeyLabel} className={s.fieldRow}>
-                        <Input
-                          mono
-                          type="password"
-                          value={providerForm.apiKey}
-                          placeholder={
-                            selectedHasCredentials
-                              ? selectedProviderCredentialPreview ?? "已保存"
-                              : selectedProviderCanOmitApiKey
-                                ? "本地服务一般可留空"
-                                : "粘贴 API Key"
-                          }
-                          onChange={(event) => setProviderForm((prev) => ({ ...prev, apiKey: event.target.value }))}
-                        />
-                      </Field>
-                      <Field label="Base URL" className={s.fieldRow}>
-                        <Input
-                          mono
-                          value={providerForm.baseUrl}
-                          onChange={(event) => setProviderForm((prev) => ({ ...prev, baseUrl: event.target.value }))}
-                        />
-                      </Field>
-                      {selectedProviderEndpointPreview && (
-                        <div className={s.modelPickerHint}>
-                          请求将发送到 <code>{selectedProviderEndpointPreview}</code>
-                        </div>
-                      )}
-                      <label className={s.fieldRow}>
-                        <div className={s.fieldLabel}>模型</div>
-                        <div className={s.modelPickerRow}>
-                          <ModelCombobox
-                            value={providerForm.model}
-                            onChange={(next) => setProviderForm((prev) => ({ ...prev, model: next }))}
-                            options={mergedModelOptions}
-                          />
-                          {supportsModelListing ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              loading={modelsQuery.isFetching}
-                              onClick={() => modelsQuery.refetch()}
-                              title={`从 ${providerForm.baseUrl}/models 拉取`}
-                            >
-                              {refreshLabel}
-                            </Button>
-                          ) : null}
-                        </div>
-                      </label>
-                      {!supportsModelListing && (
-                        <div className={s.modelPickerHint}>此服务商不提供 /models 端点，使用预设模型或手动输入即可</div>
-                      )}
-                      {refreshErrorText && (
-                        <div className={s.modelPickerError}>{refreshErrorText}</div>
-                      )}
-                      <Field label="上下文窗口" className={s.fieldRow}>
-                        <Input
-                          mono
-                          inputMode="numeric"
-                          placeholder={
-                            selectedProviderIsCurrent && modelInfo?.effective_context_length
-                              ? `自动（约 ${modelInfo.effective_context_length.toLocaleString()}）`
-                              : "自动"
-                          }
-                          value={providerForm.contextWindow}
-                          onChange={(event) =>
-                            setProviderForm((prev) => ({ ...prev, contextWindow: event.target.value }))
-                          }
-                        />
-                      </Field>
-                      <div className={s.modelPickerHint}>
-                        留空或填 0 使用该模型自动探测到的上下文窗口；本地 / 自建模型探测不准时可手动指定（单位 token）。
-                        {!selectedProviderIsCurrent && " 该值会在「设为当前模型」时生效。"}
-                      </div>
-                      {selectedLocalContextWarning && (
-                        <div className={s.localContextWarning} role="alert">
-                          {selectedLocalContextWarning.message}
-                        </div>
-                      )}
-                      {selectedProviderIsCurrent && modelInfo && (
-                        <div className={s.modelPickerHint}>
-                          自动探测 {(modelInfo.auto_context_length ?? 0).toLocaleString()}
-                          {" · "}覆盖{" "}
-                          {modelInfo.config_context_length
-                            ? modelInfo.config_context_length.toLocaleString()
-                            : "无"}
-                          {" · "}生效 {(modelInfo.effective_context_length ?? 0).toLocaleString()}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className={s.modelTags}>
-                      {mergedModelOptions.slice(0, 8).map((id) => (
-                        <button
-                          key={id}
-                          type="button"
-                          className={s.modelTag}
-                          onClick={() => setProviderForm((prev) => ({ ...prev, model: id }))}
-                          title={`填入模型 ${id}`}
-                        >
-                          {id}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className={s.providerActions}>
-                      <Button
-                        variant="solid"
-                        tone="accent"
-                        loading={providerSavePending}
-                        disabled={
-                          providerSavePending ||
-                          providerSetCurrentPending ||
-                          providerDeletePending ||
-                          !isFormDirty ||
-                          (!selectedHasCredentials && !providerForm.apiKey.trim() && !selectedProviderCanOmitApiKey)
-                        }
-                        onClick={() => void handleProviderSave()}
-                      >
-                        {showSavedFlash ? "✓ 已保存" : "保存配置"}
-                      </Button>
-                      <Button
-                        variant={isFormDirty || selectedProviderIsCurrent ? "outline" : "solid"}
-                        tone={isFormDirty || selectedProviderIsCurrent ? "neutral" : "accent"}
-                        loading={providerSetCurrentPending}
-                        disabled={
-                          selectedProviderIsCurrent ||
-                          providerSavePending ||
-                          providerSetCurrentPending ||
-                          providerDeletePending ||
-                          !selectedProviderModel ||
-                          (!selectedHasCredentials && !selectedProviderCanOmitApiKey)
-                        }
-                        onClick={() => void handleSetCurrentModel()}
-                        title={
-                          selectedProviderIsCurrent
-                            ? "当前已在使用这个模型"
-                            : selectedHasCredentials || selectedProviderCanOmitApiKey
-                              ? "切换当前运行模型；如刚修改了 Base URL / API Key，请先保存配置"
-                              : "请先保存 API Key / provider 配置"
-                        }
-                      >
-                        {selectedProviderIsCurrent ? "已是当前模型" : "设为当前模型"}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        loading={probeForSelected?.status === "pending"}
-                        disabled={
-                          providerDeletePending ||
-                          (!selectedHasCredentials && !providerForm.apiKey.trim() && !selectedProviderCanOmitApiKey)
-                        }
-                        onClick={() => void handleProbe()}
-                        title={
-                          selectedProvider?.apiMode === "anthropic_messages" && selectedProvider.supportsModelListing !== true
-                            ? "向 /v1/messages 发一次极小请求（Anthropic 格式），验证 API Key + Base URL + 模型"
-                            : selectedProvider?.apiMode === "chat_completions" && selectedProvider.supportsModelListing === false
-                              ? "向 /chat/completions 发一次极小请求，验证 API Key + Base URL + 模型"
-                              : "向 /models 端点发一次 GET，验证 API Key + 网络通"
-                        }
-                      >
-                        测试连接
-                      </Button>
-                    </div>
-                    {probeForSelected && probeForSelected.status !== "pending" && (
-                      <ProbeResultRow probe={probeForSelected} />
-                    )}
-                    {providerSaveError && (
-                      <div className={s.modelPickerError} style={{ marginTop: 8 }}>
-                        操作失败：{providerSaveError}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-
-          <OAuthProvidersSection />
 
           <div className={s.advancedEnvBlock}>
             <button className={s.providerCardHeader} onClick={() => setShowEnvAdvanced((prev) => !prev)}>

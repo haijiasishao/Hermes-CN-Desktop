@@ -5,9 +5,7 @@ pub mod connection;
 pub mod connection_auth;
 pub mod debug_bundle;
 pub mod devtools;
-pub mod environment;
 pub mod gateway;
-pub mod git;
 pub mod log_export;
 pub mod memory;
 pub mod profiles;
@@ -28,7 +26,11 @@ pub mod config_migration;
 #[cfg(feature = "desktop")]
 pub mod desktop_update;
 #[cfg(feature = "desktop")]
+pub mod environment;
+#[cfg(feature = "desktop")]
 pub mod file_dialogs;
+#[cfg(feature = "desktop")]
+pub mod git;
 #[cfg(feature = "desktop")]
 pub mod im_onboarding;
 #[cfg(feature = "desktop")]

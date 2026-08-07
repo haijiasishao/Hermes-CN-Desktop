@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-desktop = ["tauri/tray-icon", "dep:portable-pty", "dep:notify", "dep:open", "dep:fs2", "dep:tauri-plugin-dialog", "dep:tauri-plugin-notification", "dep:tauri-plugin-clipboard-manager"]
+desktop = ["tauri/tray-icon", "dep:portable-pty", "dep:notify", "dep:open", "dep:fs2", "dep:tauri-plugin-dialog", "dep:tauri-plugin-notification", "dep:tauri-plugin-clipboard-manager", "dep:bytes", "dep:dotenvy", "dep:getrandom", "dep:http-body-util", "dep:hyper", "dep:hyper-util"]
 android = []
 
 [dependencies]
@@ -52,10 +52,10 @@ notify = { version = "6", optional = true }
 futures-util = "0.3"
 # Loopback-only HTTP/WebSocket server used by the browser companion mode.
 # Not needed on Android (remote mode only).
-bytes = "1"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+bytes = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 # WebSocket relay to the runtime's native /api/ws (commands/ws_proxy.rs).
 # The relay also carries remote-mode connections (src/connection.rs), which
 # may be wss://, so a rustls backend is required.
@@ -64,11 +64,10 @@ fs2 = { version = "0.4", optional = true }
 thiserror = "2"
 portable-pty = { version = "0.9", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
-libc = "0.2"
-getrandom = "0.3"
+getrandom = { version = "0.3", optional = true }
 # Parse $HERMES_HOME/.env for per-spawn child env injection (src/env_file.rs).
 # Only from_path_iter is used — the desktop process env is never mutated.
-dotenvy = "0.15"
+dotenvy = { version = "0.15", optional = true }
 tauri-plugin-clipboard-manager = { version = "2.3.2", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

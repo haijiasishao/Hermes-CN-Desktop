@@ -387,7 +387,7 @@ export function ConnectionSection({
       )}
 
       <>
-          <div className={s.row}>
+          <div className={`${s.row} ${s.connRow}`}>
             <div className={s.rowLeft}>
               <div className={s.rowLabel}>远程地址</div>
               <div className={s.rowSub}>
@@ -412,7 +412,7 @@ export function ConnectionSection({
             <div className={s.rowRight}>
               <Input
                 mono
-                style={{ minWidth: 280 }}
+                className={s.connControl}
                 value={remoteUrl}
                 placeholder="https://gateway.example.com/hermes"
                 disabled={disabled}
@@ -423,7 +423,7 @@ export function ConnectionSection({
           </div>
 
           {!gated && (
-            <div className={s.row}>
+            <div className={`${s.row} ${s.connRow}`}>
               <div className={s.rowLeft}>
                 <div className={s.rowLabel}>会话令牌</div>
                 <div className={s.rowSub}>
@@ -433,7 +433,7 @@ export function ConnectionSection({
               <div className={s.rowRight}>
                 <Input
                   type="password"
-                  style={{ minWidth: 280 }}
+                  className={s.connControl}
                   value={tokenInput}
                   placeholder={tokenPlaceholder}
                   disabled={disabled}
@@ -446,7 +446,7 @@ export function ConnectionSection({
           )}
 
           {gated && (
-            <div className={s.row}>
+            <div className={`${s.row} ${s.connRow}`}>
               <div className={s.rowLeft}>
                 <div className={s.rowLabel}>登录</div>
                 <div className={s.rowSub}>
@@ -455,7 +455,7 @@ export function ConnectionSection({
                     : "该网关需要登录后才能连接。选择下方登录方式完成登录。"}
                 </div>
               </div>
-              <div className={s.rowRight} style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+              <div className={`${s.rowRight} ${s.connAuthControls}`}>
                 {identityLabel ? (
                   <Button type="button" variant="outline" onClick={() => void handleLogout()} disabled={disabled}>
                     注销
@@ -480,9 +480,9 @@ export function ConnectionSection({
                     {authProviders
                       .filter((p) => p.supportsPassword)
                       .map((p) => (
-                        <div key={p.name} style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 280 }}>
+                        <div key={p.name} className={s.connPasswordControls}>
                           <Input
-                            style={{ minWidth: 280 }}
+                            className={s.connControl}
                             value={pwUser}
                             placeholder={`${p.displayName} 用户名`}
                             disabled={disabled || loggingIn}
@@ -492,7 +492,7 @@ export function ConnectionSection({
                           />
                           <Input
                             type="password"
-                            style={{ minWidth: 280 }}
+                            className={s.connControl}
                             value={pwPass}
                             placeholder="密码"
                             disabled={disabled || loggingIn}

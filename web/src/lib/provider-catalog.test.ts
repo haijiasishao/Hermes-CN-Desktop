@@ -469,17 +469,6 @@ describe("provider catalog config updates", () => {
       supportsModelListing: false,
     });
 
-    expect(byId.get("alibaba")).toMatchObject({
-      name: "阿里云百炼 · API 按量付费",
-      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    });
-    expect(byId.get("alibaba-coding-cn")).toMatchObject({
-      name: "阿里云百炼 · Coding Plan",
-      baseUrl: "https://coding.dashscope.aliyuncs.com/v1",
-      defaultModel: "qwen3-coder-plus",
-      supportsModelListing: false,
-    });
-
     expect(byId.get("zai")).toMatchObject({
       name: "智谱 GLM · API 按量付费",
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",

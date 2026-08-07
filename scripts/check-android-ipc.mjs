@@ -114,7 +114,92 @@ console.log(`missing_registered_commands=${missing.length}`);
 for (const command of missing) console.log(`  ${androidUnsupportedCommands.has(command) ? "unsupported" : "UNCLASSIFIED"} ${command}`);
 
 
-// --- Android manifest permission audit ---
+// --- Android compile-boundary audit ---
+// Verify that desktop-only modules are gated behind #[cfg(feature = "desktop")].
+// This prevents accidental compilation of source modules that are proven
+// desktop-only and not registered in the Android Tauri IPC handler.
+const compileBoundaryChecks = [
+  {
+    file: "src/commands/mod.rs",
+    modules: ["environment", "git"],
+  },
+  {
+    file: "src/lib.rs",
+    modules: ["environment", "env_file", "path_resolver"],
+  },
+];
+
+let compileBoundaryFailed = false;
+for (const { file, modules } of compileBoundaryChecks) {
+  const filePath = path.join(root, file);
+  const content = fs.readFileSync(filePath, "utf8");
+  for (const mod of modules) {
+    // Match the cfg gate immediately preceding `pub mod <name>;`
+    const pattern = new RegExp(
+      '#\\[cfg\\(feature\\s*=\\s*"desktop"\\)\\]\\s*pub\\s+mod\\s+' + mod + '\\s*;',
+    );
+    if (!pattern.test(content)) {
+      console.error(
+        `Compile-boundary violation: ${file} — pub mod ${mod} is not gated behind #[cfg(feature = "desktop")]`,
+      );
+      compileBoundaryFailed = true;
+    }
+  }
+}
+if (compileBoundaryFailed) {
+  process.exit(1);
+}
+console.log("Android compile-boundary audit passed");
+// --- Android Cargo dependency boundary audit ---
+// Verify that desktop-only crate dependencies are declared optional and
+// activated exclusively through the "desktop" feature.  This prevents the
+// Android build from pulling in crates that are only needed by
+// desktop-gated modules (browser_companion, env_file, etc.).
+const cargoPath = path.join(root, "Cargo.toml");
+const cargo = fs.readFileSync(cargoPath, "utf8");
+
+const desktopOnlyDeps = ["bytes", "dotenvy", "getrandom", "http-body-util", "hyper", "hyper-util"];
+
+// Extract the desktop feature value.
+const desktopFeatureMatch = cargo.match(/^desktop\s*=\s*\[([^\]]*)\]/m);
+const desktopFeatureValue = desktopFeatureMatch ? desktopFeatureMatch[1] : "";
+
+let depAuditFailed = false;
+for (const dep of desktopOnlyDeps) {
+  // Check optional flag in [dependencies] — match either inline table or
+  // dotted-key form.
+  const depPattern = new RegExp(
+    `^${dep}\\s*=\\s*(?:\\{[^}]*optional\\s*=\\s*true|\\{[^}]*\\}|"[^"]*")`,
+    "m",
+  );
+  const optionalPattern = new RegExp(
+    `^${dep}\\s*=\\s*\\{[^}]*optional\\s*=\\s*true`,
+    "m",
+  );
+  if (!depPattern.test(cargo)) {
+    console.error(`Dependency boundary violation: ${dep} is not declared in [dependencies]`);
+    depAuditFailed = true;
+  } else if (!optionalPattern.test(cargo)) {
+    console.error(`Dependency boundary violation: ${dep} must be declared optional (optional = true)`);
+    depAuditFailed = true;
+  }
+
+  // Check dep: activation in the desktop feature list.
+  if (!desktopFeatureValue.includes(`"dep:${dep}"`)) {
+    console.error(
+      `Dependency boundary violation: dep:${dep} is missing from the "desktop" feature list`,
+    );
+    depAuditFailed = true;
+  }
+}
+
+if (depAuditFailed) {
+  process.exit(1);
+}
+console.log(`Cargo dependency boundary audit passed (${desktopOnlyDeps.length} deps verified)`);
+
+
+// --- Android manifest audit ---
 const manifestPath = path.join(root, "gen/android/app/src/main/AndroidManifest.xml");
 const manifest = fs.readFileSync(manifestPath, "utf8");
 const requiredPermissions = [
@@ -128,7 +213,19 @@ if (missingPermissions.length > 0) {
   }
   process.exit(1);
 }
+// usesCleartextTraffic=true is required for Remote Dashboard LAN HTTP access.
+// Without it, WebView media/file download links served over HTTP will fail with
+// net::ERR_CLEARTEXT_NOT_PERMITTED on Android 9+.
+const cleartextPattern = /android:usesCleartextTraffic\s*=\s*"true"/;
+if (!cleartextPattern.test(manifest)) {
+  console.error(
+    'Missing android:usesCleartextTraffic="true" in AndroidManifest.xml. ' +
+    "Remote Dashboard uses LAN HTTP; WebView needs cleartext to load MEDIA file links.",
+  );
+  process.exit(1);
+}
 console.log(`manifest_permissions=${requiredPermissions.length} (all present)`);
+console.log("manifest_cleartext=true");
 
 if (missingRequired.length > 0 || unclassified.length > 0) {
   if (missingRequired.length > 0) console.error(`Missing required Remote commands: ${missingRequired.join(", ")}`);
