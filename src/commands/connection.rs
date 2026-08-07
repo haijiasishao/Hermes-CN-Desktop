@@ -227,6 +227,7 @@ fn reject_env_override() -> AppResult<()> {
     Ok(())
 }
 
+#[derive(Debug)]
 enum TestTarget {
     Local { base_url: String },
     Remote { base_url: String, token: String },
@@ -1126,5 +1127,78 @@ mod tests {
             ..Default::default()
         };
         assert!(coerce_config(&remote_config(), &input).is_err());
+    }
+}
+
+// Additional connection command regression tests for Android Remote-only boundary.
+// Tests the test_target() resolver that test_connection_config relies on.
+
+#[cfg(test)]
+mod test_target_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_target_rejects_explicit_managed_mode() {
+        let input = ConnectionConfigInput {
+            mode: Some("managed".to_string()),
+            ..Default::default()
+        };
+        let err = test_target(&input).unwrap_err();
+        assert!(err.to_string().contains("仅支持远程"));
+    }
+
+    #[test]
+    fn test_target_rejects_explicit_local_mode() {
+        let input = ConnectionConfigInput {
+            mode: Some("local".to_string()),
+            ..Default::default()
+        };
+        let err = test_target(&input).unwrap_err();
+        assert!(err.to_string().contains("仅支持远程"));
+    }
+
+    #[test]
+    fn test_target_accepts_explicit_remote_mode() {
+        let input = ConnectionConfigInput {
+            mode: Some("remote".to_string()),
+            remote_url: Some("http://host:9221".to_string()),
+            remote_token: Some("tok".to_string()),
+            ..Default::default()
+        };
+        let target = test_target(&input).unwrap();
+        match target {
+            TestTarget::Remote { base_url, token } => {
+                assert_eq!(base_url, "http://host:9221");
+                assert_eq!(token, "tok");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_target_rejects_unknown_mode() {
+        let input = ConnectionConfigInput {
+            mode: Some("cloud".to_string()),
+            ..Default::default()
+        };
+        assert!(test_target(&input).is_err());
+    }
+
+    #[test]
+    fn test_target_remote_normalizes_trailing_slash() {
+        let input = ConnectionConfigInput {
+            mode: Some("remote".to_string()),
+            remote_url: Some("http://host:9221/".to_string()),
+            remote_token: Some("tok".to_string()),
+            ..Default::default()
+        };
+        let target = test_target(&input).unwrap();
+        match target {
+            TestTarget::Remote { base_url, .. } => {
+                assert_eq!(base_url, "http://host:9221");
+            }
+            _ => panic!("expected Remote"),
+        }
     }
 }

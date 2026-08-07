@@ -63,6 +63,7 @@ pub fn run() {
             // directory. This must happen before resolve_connection_backend(),
             // which reads connection.json.
             use tauri::Manager;
+            #[cfg(not(feature = "desktop"))]
             if let Ok(dir) = app.path().app_data_dir() {
                 crate::android_compat::set_android_data_dir(dir);
             }

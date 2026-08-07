@@ -114,3 +114,45 @@ mod tests {
         assert!(super::normalize_guide_state("hidden").is_err());
     }
 }
+
+// Additional runtime_compat regression tests (Android Remote-only boundary).
+// Placed here to keep the #[cfg(not(feature = "desktop"))] gate close to the
+// implementation it exercises.
+
+#[cfg(test)]
+mod android_regression_tests {
+    #[cfg(not(feature = "desktop"))]
+    use super::normalize_guide_state;
+
+    #[cfg(not(feature = "desktop"))]
+    #[test]
+    fn rejects_empty_guide_state() {
+        assert!(normalize_guide_state("").is_err());
+    }
+
+    #[cfg(not(feature = "desktop"))]
+    #[test]
+    fn rejects_uppercase_guide_state() {
+        assert!(normalize_guide_state("Pending").is_err());
+        assert!(normalize_guide_state("COMPLETED").is_err());
+    }
+
+    #[cfg(not(feature = "desktop"))]
+    #[test]
+    fn guide_state_values_are_stable_strings() {
+        // Regression: these exact strings are consumed by the frontend to
+        // decide which UI to render. Changing them breaks the connection guide.
+        assert_eq!(normalize_guide_state("pending").unwrap(), "pending");
+        assert_eq!(normalize_guide_state("deferred").unwrap(), "deferred");
+        assert_eq!(normalize_guide_state("completed").unwrap(), "completed");
+    }
+
+    #[cfg(not(feature = "desktop"))]
+    #[test]
+    fn android_runtime_info_has_no_local_runtime() {
+        // Android builds never carry a local RuntimeRecord.
+        let info = crate::android_compat::get_runtime_info(None);
+        assert!(info.current.is_none());
+        assert_eq!(info.managed_runtime_lifecycle_state, "uninstalled");
+    }
+}

@@ -241,7 +241,7 @@ mod runtime_stubs {
         false
     }
 
-    pub fn get_runtime_info(_home: Option<String>) -> RuntimeInfo {
+    pub fn get_runtime_info(home: Option<String>) -> RuntimeInfo {
         RuntimeInfo {
             mode: "managed-pending".to_string(),
             packaged: true,
@@ -258,7 +258,7 @@ mod runtime_stubs {
             executable_sha256: None,
             source: None,
             process: None,
-            last_error: None,
+            last_error: home,
             guide_state: "completed".to_string(),
             managed_runtime_desired_state: "off".to_string(),
             managed_runtime_lifecycle_state: "uninstalled".to_string(),
@@ -517,4 +517,126 @@ pub struct SetYoloModeResult {
     pub session_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+
+#[cfg(not(feature = "desktop"))]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── build_gateway_url ─────────────────────────────────────────────
+
+    #[test]
+    fn gateway_url_converts_http_to_ws_and_appends_token() {
+        let url = build_gateway_url("http://127.0.0.1:9119", Some("tok en"));
+        assert_eq!(url, "ws://127.0.0.1:9119/api/ws?token=tok%20en");
+    }
+
+    #[test]
+    fn gateway_url_converts_https_to_wss() {
+        let url = build_gateway_url("https://example.com", None);
+        assert_eq!(url, "wss://example.com/api/ws");
+    }
+
+    #[test]
+    fn gateway_url_strips_trailing_slash() {
+        let url = build_gateway_url("http://host:9120/", Some("t"));
+        assert_eq!(url, "ws://host:9120/api/ws?token=t");
+    }
+
+    #[test]
+    fn gateway_url_no_token_omits_query() {
+        let url = build_gateway_url("http://host:9120", None);
+        assert_eq!(url, "ws://host:9120/api/ws");
+        assert!(!url.contains('?'));
+    }
+
+    #[test]
+    fn gateway_url_encodes_special_chars_in_token() {
+        let url = build_gateway_url("http://h:1", Some("a&b=c d"));
+        assert!(url.contains("token=a%26b%3Dc%20d"));
+    }
+
+    // ── build_gateway_ws_url_with_ticket ──────────────────────────────
+
+    #[test]
+    fn ticket_url_converts_to_ws_and_encodes_ticket() {
+        let url = build_gateway_ws_url_with_ticket("http://host:9120", "tkt-abc/1");
+        assert_eq!(url, "ws://host:9120/api/ws?ticket=tkt-abc%2F1");
+    }
+
+    #[test]
+    fn ticket_url_converts_https_to_wss() {
+        let url = build_gateway_ws_url_with_ticket("https://host", "t");
+        assert_eq!(url, "wss://host/api/ws?ticket=t");
+    }
+
+    // ── runtime stubs ─────────────────────────────────────────────────
+
+    #[test]
+    fn portable_mode_is_always_false() {
+        assert!(!portable_mode_active());
+    }
+
+    #[test]
+    fn read_current_record_is_always_none() {
+        assert!(read_current_record().is_none());
+    }
+
+    #[test]
+    fn yolo_mode_effective_is_always_false() {
+        assert!(!yolo_mode_effective("/any/path"));
+    }
+
+    #[test]
+    fn external_agent_allowed_is_always_false() {
+        assert!(!external_agent_allowed());
+    }
+
+    #[test]
+    fn android_runtime_info_shows_uninstalled_and_completed() {
+        let info = get_runtime_info(None);
+        assert_eq!(info.managed_runtime_lifecycle_state, "uninstalled");
+        assert_eq!(info.guide_state, "completed");
+        assert!(info.current.is_none());
+    }
+
+    #[test]
+    fn runtime_info_carries_last_error_when_provided() {
+        let info = get_runtime_info(Some("connection refused".to_string()));
+        assert_eq!(info.last_error.as_deref(), Some("connection refused"));
+    }
+
+    // ── desktop_ctrl stubs ────────────────────────────────────────────
+
+    #[test]
+    fn desktop_ctrl_read_returns_completed_and_stopped() {
+        let state = desktop_ctrl::read();
+        assert_eq!(state.guide_state.as_str(), "completed");
+        assert_eq!(
+            state.managed_runtime_desired_state.as_str(),
+            "stopped"
+        );
+    }
+
+    #[test]
+    fn managed_runtime_lifecycle_state_is_uninstalled() {
+        let state = desktop_ctrl::managed_runtime_lifecycle_state(false, false);
+        assert_eq!(state, "uninstalled");
+    }
+
+    #[test]
+    fn managed_runtime_lifecycle_state_stays_uninstalled_even_if_called_with_true() {
+        // Android stub ignores installed/running params — always uninstalled.
+        let state = desktop_ctrl::managed_runtime_lifecycle_state(true, true);
+        assert_eq!(state, "uninstalled");
+    }
+
+    // ── MAIN_WINDOW_LABEL ─────────────────────────────────────────────
+
+    #[test]
+    fn main_window_label_is_main() {
+        assert_eq!(MAIN_WINDOW_LABEL, "main");
+    }
 }

@@ -123,6 +123,20 @@ export function isComposerComposing({
   return tracked || native;
 }
 
+/**
+ * Decide whether `pickFiles` should trigger the browser HTML file input
+ * instead of the native desktop picker.
+ *
+ * On Android Remote-only builds the Rust `pick_files` command is a stub that
+ * always returns `{ canceled: true }`, so we must skip it and fall through to
+ * the standard `<input type="file">` flow which the existing
+ * `addBrowserFiles` / `image.attach_bytes` / `upload_file` pipeline already
+ * handles.
+ */
+export function shouldUseBrowserFileInput(): boolean {
+  return runtime.androidRemoteOnly && runtime.isRemote();
+}
+
 interface GooseComposerProps {
   onSend?: (
     payload: ComposerSubmitPayload,
@@ -684,7 +698,7 @@ export function GooseComposer({
     if (controlsDisabled) return;
     setSubmitError("");
     try {
-      if (window.hermesDesktop?.pickFiles) {
+      if (!shouldUseBrowserFileInput() && window.hermesDesktop?.pickFiles) {
         const result = await window.hermesDesktop.pickFiles();
         if (!result.canceled) addPathAttachments(result.paths);
         return;

@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { ReactElement } from "react";
 import { describe, expect, it } from "vitest";
 
-import { ComposerErrorMessage, GooseComposer, isComposerComposing } from "./goose-composer";
+import { ComposerErrorMessage, GooseComposer, isComposerComposing, shouldUseBrowserFileInput } from "./goose-composer";
 
 function renderComposer(element: ReactElement): string {
   return ReactDOMServer.renderToStaticMarkup(
@@ -96,5 +96,46 @@ describe("GooseComposer workspace picker", () => {
     const html = renderComposer(<GooseComposer />);
 
     expect(html).not.toContain("不指定默认工作区：");
+  });
+});
+
+
+describe("shouldUseBrowserFileInput", () => {
+  function setRuntime(input: Record<string, unknown> = {}) {
+    (globalThis as any).window = (globalThis as any).window ?? {};
+    window.__HERMES_RUNTIME__ = { connectionMode: "managed", ...input } as any;
+  }
+
+  function clearRuntime() {
+    delete (window as any).__HERMES_RUNTIME__;
+  }
+
+  it("returns true for Android Remote-only (androidRemoteOnly=true, remote)", () => {
+    setRuntime({ androidRemoteOnly: true, connectionMode: "remote" });
+    expect(shouldUseBrowserFileInput()).toBe(true);
+    clearRuntime();
+  });
+
+  it("returns false for desktop remote (androidRemoteOnly absent)", () => {
+    setRuntime({ connectionMode: "remote" });
+    expect(shouldUseBrowserFileInput()).toBe(false);
+    clearRuntime();
+  });
+
+  it("returns false for Android managed mode (not remote)", () => {
+    setRuntime({ androidRemoteOnly: true, connectionMode: "managed" });
+    expect(shouldUseBrowserFileInput()).toBe(false);
+    clearRuntime();
+  });
+
+  it("returns false for Android local mode", () => {
+    setRuntime({ androidRemoteOnly: true, connectionMode: "local" });
+    expect(shouldUseBrowserFileInput()).toBe(false);
+    clearRuntime();
+  });
+
+  it("returns false when __HERMES_RUNTIME__ is undefined", () => {
+    clearRuntime();
+    expect(shouldUseBrowserFileInput()).toBe(false);
   });
 });
