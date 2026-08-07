@@ -436,6 +436,8 @@ declare global {
       guideState?: import("@hermes/protocol").GuideState;
       managedRuntimeDesiredState?: import("@hermes/protocol").ManagedRuntimeDesiredState;
       managedRuntimeLifecycleState?: import("@hermes/protocol").ManagedRuntimeLifecycleState;
+      /** Android client build: Remote-only; desktop remote mode keeps desktop capabilities. */
+      androidRemoteOnly?: boolean;
       /** Running as the portable (unzip-and-run) desktop distribution. */
       portable?: boolean;
       /** UI is running in a system browser through the desktop loopback relay. */
@@ -568,6 +570,10 @@ export const runtime = {
 
   getConnectionMode(): ConnectionMode {
     return window.__HERMES_RUNTIME__?.connectionMode ?? "managed";
+  },
+
+  get androidRemoteOnly(): boolean {
+    return window.__HERMES_RUNTIME__?.androidRemoteOnly ?? false;
   },
 
   /** True when the desktop owns and can restart the bundled Hermes runtime. */

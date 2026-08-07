@@ -157,12 +157,15 @@ pub fn run() {
             commands::memory::write_user_profile,
             // Profiles
             commands::profiles::switch_profile,
-            // Runtime info (desktop: full; Android: minimal stub)
+            // Runtime info and guide state (desktop: full; Android: remote-only compatibility)
             commands::runtime_compat::runtime_info,
+            commands::runtime_compat::get_desktop_control_state,
+            commands::runtime_compat::set_guide_state,
             // File/yolo commands (desktop: real; Android: friendly stubs)
             commands::android_stubs::pick_files,
             commands::android_stubs::pick_directory,
             commands::android_stubs::open_workspace_path,
+            commands::android_stubs::open_external_url,
             commands::android_stubs::set_yolo_mode,
             // Logging/debug
             commands::log_export::export_log_snapshot,

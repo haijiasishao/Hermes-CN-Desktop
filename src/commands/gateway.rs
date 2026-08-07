@@ -22,6 +22,9 @@ pub struct RuntimeConfig {
     /// Running as the portable (unzip-and-run) distribution — the desktop
     /// update dialog switches to "download the zip and re-extract" guidance.
     pub portable: bool,
+    /// Android builds are Remote-only; desktop builds may still attach remotely
+    /// while retaining their local runtime capabilities.
+    pub android_remote_only: bool,
 }
 
 #[tauri::command]
@@ -47,6 +50,7 @@ pub fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeConfig, A
         managed_runtime_desired_state: control.managed_runtime_desired_state.as_str().to_string(),
         managed_runtime_lifecycle_state: lifecycle.to_string(),
         portable: crate::android_compat::portable_mode_active(),
+        android_remote_only: cfg!(not(feature = "desktop")),
     })
 }
 

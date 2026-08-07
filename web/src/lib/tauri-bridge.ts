@@ -664,6 +664,53 @@ const tauriBridge = {
   },
 };
 
+const ANDROID_REMOTE_UNSUPPORTED_BRIDGE_METHODS = [
+  "createWorkspaceProject",
+  "openBrowserCompanion",
+  "openWorkspacePath",
+  "environmentCheck",
+  "codingAgentsCheck",
+  "checkDesktopUpdate",
+  "checkRuntimeUpdate",
+  "installRuntimeUpdate",
+  "rollbackRuntime",
+  "exportProfileBackup",
+  "importProfileBackup",
+  "installManagedRuntime",
+  "startManagedRuntime",
+  "stopManagedRuntime",
+  "uninstallManagedRuntime",
+  "reinstallManagedRuntime",
+  "scanConfigMigration",
+  "importConfigMigration",
+  "getYoloMode",
+  "setYoloMode",
+  "imOnboardingState",
+  "imOnboardingBegin",
+  "imOnboardingPoll",
+  "imOnboardingApply",
+  "desktopNotify",
+  "terminalStart",
+  "terminalOpenExternal",
+  "terminalWrite",
+  "terminalResize",
+  "terminalClose",
+  "onTerminalOutput",
+  "readWorkspaceFile",
+  "writeWorkspaceFile",
+  "watchPreviewFile",
+  "stopPreviewFileWatch",
+  "onPreviewFileChanged",
+] as const;
+
+function disableAndroidRemoteUnsupportedBridgeMethods(): void {
+  const bridge = tauriBridge as unknown as Record<string, unknown>;
+  for (const method of ANDROID_REMOTE_UNSUPPORTED_BRIDGE_METHODS) {
+    delete bridge[method];
+  }
+  delete bridge.git;
+}
+
 // Overlay shown while the Rust side prepares the managed runtime and
 // dashboard before React can mount. Pre-React, plain DOM — we can't mount
 // React yet because the bridge isn't ready (no apiBaseUrl => API calls
@@ -1001,6 +1048,7 @@ export async function installTauriBridge(): Promise<void> {
     guideState?: GuideState;
     managedRuntimeDesiredState?: import("@hermes/protocol").ManagedRuntimeDesiredState;
     managedRuntimeLifecycleState?: import("@hermes/protocol").ManagedRuntimeLifecycleState;
+    androidRemoteOnly?: boolean;
   }>("get_runtime_config");
 
   // Dev mode: WebView loads from Vite dev server (http://localhost:9545).
@@ -1058,8 +1106,12 @@ export async function installTauriBridge(): Promise<void> {
     guideState: config.guideState ?? "completed",
     managedRuntimeDesiredState: config.managedRuntimeDesiredState ?? "running",
     managedRuntimeLifecycleState: config.managedRuntimeLifecycleState ?? "running",
+    androidRemoteOnly: config.androidRemoteOnly ?? false,
   };
 
+  if (config.androidRemoteOnly === true && connectionMode === "remote") {
+    disableAndroidRemoteUnsupportedBridgeMethods();
+  }
   (window as any).hermesDesktop = tauriBridge;
 
   registerDevtoolsShortcut();

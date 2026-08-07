@@ -282,7 +282,11 @@ impl AppState {
                 dashboard_restart_in_flight: false,
                 last_runtime_error: None,
                 yolo_mode: false,
-                connection_mode: crate::connection::ConnectionMode::Managed,
+                connection_mode: if cfg!(feature = "desktop") {
+                    crate::connection::ConnectionMode::Managed
+                } else {
+                    crate::connection::ConnectionMode::Remote
+                },
                 oauth_session: None,
                 last_auth_expired_emit: None,
             }),
@@ -293,5 +297,21 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_connection_mode_matches_build_target() {
+        let state = AppState::new();
+        let mode = state.inner.lock().expect("state lock").connection_mode;
+        if cfg!(feature = "desktop") {
+            assert_eq!(mode, crate::connection::ConnectionMode::Managed);
+        } else {
+            assert_eq!(mode, crate::connection::ConnectionMode::Remote);
+        }
     }
 }

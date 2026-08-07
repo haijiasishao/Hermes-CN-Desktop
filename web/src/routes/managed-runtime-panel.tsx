@@ -21,6 +21,7 @@ export function ManagedRuntimePanel({ compact = false }: { compact?: boolean }) 
   const [busy, setBusy] = useState<RuntimeAction | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const attached = runtime.isAttached();
+  const remoteOnly = runtime.androidRemoteOnly === true && runtime.isRemote();
 
   const adopt = useCallback((result: RuntimeControlResult) => {
     setControl(result);
@@ -32,7 +33,7 @@ export function ManagedRuntimePanel({ compact = false }: { compact?: boolean }) 
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!desktop?.getDesktopControlState) return;
+    if (remoteOnly || !desktop?.getDesktopControlState) return;
     setBusy("refresh");
     try {
       adopt(await desktop.getDesktopControlState());
@@ -41,7 +42,7 @@ export function ManagedRuntimePanel({ compact = false }: { compact?: boolean }) 
     } finally {
       setBusy(null);
     }
-  }, [adopt, desktop]);
+  }, [adopt, desktop, remoteOnly]);
 
   useEffect(() => {
     void refresh();
@@ -88,10 +89,14 @@ export function ManagedRuntimePanel({ compact = false }: { compact?: boolean }) 
     }
   };
 
-  const lifecycle = control?.lifecycleState ?? window.__HERMES_RUNTIME__?.managedRuntimeLifecycleState ?? "stopped";
-  const installed = control?.installed ?? lifecycle !== "uninstalled";
-  const running = control?.running ?? lifecycle === "running";
-  const desiredState = control?.desiredState ?? window.__HERMES_RUNTIME__?.managedRuntimeDesiredState ?? "stopped";
+  const lifecycle = remoteOnly
+    ? "uninstalled"
+    : control?.lifecycleState ?? window.__HERMES_RUNTIME__?.managedRuntimeLifecycleState ?? "stopped";
+  const installed = remoteOnly ? false : control?.installed ?? lifecycle !== "uninstalled";
+  const running = remoteOnly ? false : control?.running ?? lifecycle === "running";
+  const desiredState = remoteOnly
+    ? "stopped"
+    : control?.desiredState ?? window.__HERMES_RUNTIME__?.managedRuntimeDesiredState ?? "stopped";
   const presentation = resolveManagedRuntimePresentation({
     installed,
     running,
@@ -106,9 +111,11 @@ export function ManagedRuntimePanel({ compact = false }: { compact?: boolean }) 
       <div className={s.header}>
         <div>
           <p className={s.eyebrow}>内置内核生命周期</p>
-          <h3>安装、启停和卸载都由你决定</h3>
+          <h3>{remoteOnly ? "Android 版仅连接远程 Hermes" : "安装、启停和卸载都由你决定"}</h3>
           <p>
-            停止状态会跨桌面重启保留；卸载只删除内核文件与缓存，不会删除模型配置、会话、档案或连接设置。
+            {remoteOnly
+              ? "当前应用不在手机上安装、启动或管理 Hermes 内核，所有会话和工具请求均由远程 Dashboard 提供。"
+              : "停止状态会跨桌面重启保留；卸载只删除内核文件与缓存，不会删除模型配置、会话、档案或连接设置。"}
           </p>
         </div>
         <span
@@ -136,13 +143,13 @@ export function ManagedRuntimePanel({ compact = false }: { compact?: boolean }) 
         </div>
       )}
 
-      {attached && !presentation.unavailable && (
+      {remoteOnly && (
         <Alert tone="info" size="sm">
-          当前使用外部 Hermes。安装或重装只准备本机文件，不会启动第二个内核；需要使用时再执行“启动并切换”。
+          Android 版不提供本机内核安装、启动、停止、重装或卸载功能，请在“连接”页面管理远程 Dashboard。
         </Alert>
       )}
 
-      <div className={s.actions}>
+      {!remoteOnly && <div className={s.actions}>
         {presentation.showInstall && (
           <Button
             variant="solid"
@@ -209,7 +216,7 @@ export function ManagedRuntimePanel({ compact = false }: { compact?: boolean }) 
           {busy === "refresh" ? <LoadingIndicator size="xs" /> : <RefreshCw size={12} />}
           刷新
         </Button>
-      </div>
+      </div>}
 
       {message && <Alert tone={message.tone} size="sm">{message.text}</Alert>}
     </section>

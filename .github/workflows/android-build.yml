@@ -6,6 +6,10 @@ on:
     paths:
       - "src/**"
       - "web/**"
+      - "packages/**"
+      - "scripts/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "tauri.conf.json"
@@ -65,6 +69,9 @@ jobs:
 
       - name: Build web (frontendDist)
         run: pnpm --filter @hermes/web build:desktop
+
+      - name: Audit Android IPC boundary
+        run: node scripts/check-android-ipc.mjs
 
       - name: Install Rust tauri-cli (cargo subcommand required by Gradle BuildTask)
         run: |

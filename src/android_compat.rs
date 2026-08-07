@@ -382,12 +382,12 @@ pub mod desktop_ctrl {
 
     #[derive(Debug, Clone, Copy)]
     pub enum GuideState {
-        Hidden,
+        Completed,
     }
 
     impl GuideState {
         pub fn as_str(self) -> &'static str {
-            "hidden"
+            "completed"
         }
     }
 
@@ -410,13 +410,13 @@ pub mod desktop_ctrl {
 
     pub fn read() -> DesktopControlState {
         DesktopControlState {
-            guide_state: GuideState::Hidden,
+            guide_state: GuideState::Completed,
             managed_runtime_desired_state: ManagedRuntimeDesiredState::Stopped,
         }
     }
 
     pub fn managed_runtime_lifecycle_state(_installed: bool, _running: bool) -> String {
-        "unavailable".to_string()
+        "uninstalled".to_string()
     }
 
     pub fn set_managed_runtime_desired_state(
@@ -456,7 +456,9 @@ impl PortLock {
 // both features with identical signatures.
 
 #[cfg(feature = "desktop")]
-pub use crate::commands::file_dialogs::{FilePickerResult, SimpleApiResult, WorkspacePathInput};
+pub use crate::commands::file_dialogs::{
+    ExternalUrlInput, FilePickerResult, SimpleApiResult, WorkspacePathInput,
+};
 
 #[cfg(feature = "desktop")]
 pub use crate::commands::yolo::{SetYoloModeInput, SetYoloModeResult};
@@ -476,6 +478,13 @@ pub struct SimpleApiResult {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+#[cfg(not(feature = "desktop"))]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalUrlInput {
+    pub url: String,
 }
 
 #[cfg(not(feature = "desktop"))]

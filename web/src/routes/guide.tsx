@@ -23,6 +23,7 @@ export function GuideRoute() {
   const navigate = useNavigate();
   const { config: themeConfig } = useTheme();
   const desktop = typeof window === "undefined" ? undefined : window.hermesDesktop;
+  const remoteOnly = runtime.androidRemoteOnly === true && runtime.isRemote();
   const externalSetupRef = useRef<HTMLElement>(null);
   const [choice, setChoice] = useState<GuideChoice>(null);
   const [preparing, setPreparing] = useState(false);
@@ -105,18 +106,19 @@ export function GuideRoute() {
         <section className={s.intro} aria-labelledby="guide-choice-title">
           <div className={s.introCopy}>
             <span className={s.stepLabel}>只需选择一次，以后可以随时更改</span>
-            <h2 id="guide-choice-title">选择适合你的开始方式</h2>
-            <p>如果“服务器、地址、Token”这些词对你很陌生，选择左边就对了。</p>
+            <h2 id="guide-choice-title">{remoteOnly ? "连接你已经部署好的 Hermes" : "选择适合你的开始方式"}</h2>
+            <p>{remoteOnly ? "Android 版仅连接已经部署在服务器上的 Hermes Agent，不在手机上运行本地内核。" : "如果“服务器、地址、Token”这些词对你很陌生，选择左边就对了。"}</p>
           </div>
 
           <div className={s.choiceGrid}>
-            <button
-              type="button"
-              className={s.choiceCard}
-              data-recommended="true"
-              onClick={() => void startWithDesktop()}
-              disabled={preparing}
-            >
+            {!remoteOnly && (
+              <button
+                type="button"
+                className={s.choiceCard}
+                data-recommended="true"
+                onClick={() => void startWithDesktop()}
+                disabled={preparing}
+              >
               <span className={s.choiceTopline}>
                 <span className={s.choiceIcon}><Sparkles size={24} /></span>
                 <span className={s.recommendedBadge}>推荐</span>
@@ -134,10 +136,12 @@ export function GuideRoute() {
                 {preparing ? "正在为你准备 Hermes…" : "选择开箱即用"}
               </span>
             </button>
+            )}
 
             <button
               type="button"
               className={s.choiceCard}
+              data-recommended={remoteOnly ? "true" : undefined}
               data-active={choice === "external" ? "true" : undefined}
               onClick={() => {
                 setChoice("external");
@@ -147,10 +151,10 @@ export function GuideRoute() {
             >
               <span className={s.choiceTopline}>
                 <span className={s.choiceIcon}><Globe2 size={24} /></span>
-                <span className={s.advancedBadge}>已有用户</span>
+                <span className={remoteOnly ? s.recommendedBadge : s.advancedBadge}>{remoteOnly ? "唯一支持的方式" : "已有用户"}</span>
               </span>
               <strong>连接已有 Hermes</strong>
-              <span className={s.choiceLead}>仅当你已经在本机另一套环境或服务器上运行 Hermes 时选择。</span>
+              <span className={s.choiceLead}>{remoteOnly ? "连接你已经部署在服务器上的 Hermes Agent。" : "仅当你已经在本机另一套环境或服务器上运行 Hermes 时选择。"}</span>
               <span className={s.choiceDetail}>
                 <CheckCircle2 size={16} /> 你知道现有 Hermes 的访问地址
               </span>
@@ -176,7 +180,7 @@ export function GuideRoute() {
               <div>
                 <span className={s.stepLabel}>适合已经部署过 Hermes 的用户</span>
                 <h2 id="external-setup-title">连接你已有的 Hermes</h2>
-                <p>选择它是在这台电脑上运行，还是在另一台电脑或服务器上运行。</p>
+                <p>{remoteOnly ? "通过远程 Dashboard 地址和 Token 或登录会话连接。" : "选择它是在这台电脑上运行，还是在另一台电脑或服务器上运行。"}</p>
               </div>
               <Button variant="ghost" onClick={() => setChoice(null)}>
                 <ArrowLeft size={16} /> 返回重新选择

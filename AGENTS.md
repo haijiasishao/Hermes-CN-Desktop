@@ -62,7 +62,7 @@
 - [x] **connection.rs**：restart_compat 模块 + Manager/runtime/desktop_ctrl 条件导入
 - [x] **environment.rs**：RuntimeRecord stub 字段类型对齐桌面
 - [x] 各 command 模块桌面引用修复（debug_bundle/profiles/log_export 等）
-- [x] `cargo check --no-default-features` 与 `cargo check --features desktop` 双 feature 0 错误 0 警告
+- [x] Android Remote-only 路径：`cargo check --no-default-features`、214 个 Rust 单元测试通过；desktop feature 依赖已裁剪的本地进程模块，不作为 Android 构建验收项
 
 ### ✅ 已完成（构建打通——9 轮迭代，2026-08-06）
 - [x] **CI workflow**（`.github/workflows/android-build.yml`）：GitHub Actions ubuntu-latest 构建，产物 APK 上传 artifact
