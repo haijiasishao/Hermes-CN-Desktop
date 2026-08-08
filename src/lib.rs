@@ -140,6 +140,7 @@ pub fn run() {
             commands::api_proxy::external_request,
             commands::api_proxy::upload_file,
             commands::api_proxy::download_external_image,
+            commands::api_proxy::download_file,
             // WebSocket relay — gateway events
             commands::ws_proxy::gateway_ws_open,
             commands::ws_proxy::gateway_ws_send,

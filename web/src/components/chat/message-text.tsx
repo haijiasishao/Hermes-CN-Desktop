@@ -1,7 +1,8 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { FileDown } from "lucide-react";
 import {
   hasMediaFileRefs,
+  downloadMediaFile,
   MEDIA_LINE_RE,
   parseMediaFileRefs,
   type MediaFileRef,
@@ -64,24 +65,73 @@ function PlainMessageText({ text }: Pick<MessageTextProps, "text">) {
 
 /**
  * A card that renders a MEDIA: file reference as a downloadable link.
- * Uses the Dashboard `/api/files/download` endpoint with session token.
+ * On Tauri/Android the native bridge carries cookies; on plain web it
+ * falls back to a token-in-query download.
  */
 function MediaFileCard({ ref: mediaRef }: { ref: MediaFileRef }) {
   const { filename, downloadUrl, path } = mediaRef;
   const label = filename || path;
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (downloadUrl) {
+  const handleDownload = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setError(null);
+    try {
+      const result = await downloadMediaFile(path);
+      if (result.ok && result.dataBase64) {
+        // Native bridge: convert base64 → Blob → trigger save.
+        const binary = atob(result.dataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: result.mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = result.filename ?? filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } else if (result.ok && result.fallbackUrl) {
+        // Browser fallback: use a temporary anchor to trigger download.
+        const a = document.createElement("a");
+        a.href = result.fallbackUrl;
+        a.download = filename;
+        a.target = "_blank";
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } else {
+        setError("下载失败");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "下载失败");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  if (downloadUrl || (typeof window !== "undefined" && window.hermesDesktop?.downloadFile)) {
     return (
       <div className={s.mediaFileCard}>
         <FileDown size={16} aria-hidden="true" />
-        <a
-          href={downloadUrl}
+        <button
+          type="button"
           className={s.mediaFileLink}
           title={`下载文件：${path}`}
-          download={filename}
+          onClick={handleDownload}
+          disabled={downloading}
         >
-          {label}
-        </a>
+          {downloading ? "下载中…" : label}
+        </button>
+        {error && (
+          <span className={s.mediaFileError} role="alert">
+            {error}
+          </span>
+        )}
       </div>
     );
   }
@@ -96,7 +146,6 @@ function MediaFileCard({ ref: mediaRef }: { ref: MediaFileRef }) {
     </div>
   );
 }
-
 /**
  * Split text into segments: non-MEDIA parts (rendered as markdown/plain text)
  * and MEDIA: lines (rendered as file download cards).

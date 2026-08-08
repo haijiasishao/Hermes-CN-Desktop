@@ -16,9 +16,9 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::android_compat::{build_gateway_url, fetch_session_token};
 use crate::cron_runs;
 use crate::error::AppError;
-use crate::android_compat::{build_gateway_url, fetch_session_token};
 use crate::session_archive;
 use crate::session_log;
 use crate::state::AppState;
@@ -1145,6 +1145,192 @@ pub struct UploadFileInput {
     pub data: String,
 }
 
+// ---------------------------------------------------------------------------
+// download_file: cookie-auth aware native file download for Tauri/Android.
+// ---------------------------------------------------------------------------
+
+const MAX_DOWNLOAD_BYTES: usize = 100 * 1024 * 1024; // 100 MiB
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadFileInput {
+    /// Remote file path, e.g. "/data/report.pdf".
+    /// Only paths under `/api/files/download` are allowed.
+    pub file_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadFileResult {
+    pub ok: bool,
+    pub status: u16,
+    pub filename: String,
+    pub mime_type: String,
+    pub data_base64: String,
+    pub size: usize,
+}
+
+/// Safely extract a display filename from `Content-Disposition`.
+///
+/// Supports `filename*=UTF-8''...` (RFC 5987), plain `filename="..."`, and
+/// falls back to `"download"` when nothing usable is present.  Path
+/// separators and null bytes are sanitized.
+fn safe_filename_from_content_disposition(headers: &reqwest::header::HeaderMap) -> String {
+    let raw = match headers
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(v) => v,
+        None => return "download".to_string(),
+    };
+
+    // 1. Try RFC 5987 extended-parameter: filename*=charset'language'value
+    if let Some(after_eq) = raw.split("filename*=").nth(1) {
+        let after_eq = after_eq.split(';').next().unwrap_or("").trim();
+        if let Some(encoded) = after_eq.splitn(3, '\'').nth(2) {
+            let decoded = urlencoding::decode(encoded)
+                .unwrap_or_else(|_| encoded.into())
+                .into_owned();
+            if !decoded.is_empty() {
+                return sanitize_filename(&decoded);
+            }
+        }
+    }
+
+    // 2. Try plain filename="value" (quotes optional)
+    if let Some(after_eq) = raw.split("filename=").nth(1) {
+        let candidate = after_eq.split(';').next().unwrap_or("").trim();
+        let name = if candidate.starts_with('"') && candidate.ends_with('"') {
+            candidate[1..candidate.len() - 1].to_string()
+        } else {
+            candidate.to_string()
+        };
+        if !name.is_empty() {
+            return sanitize_filename(&name);
+        }
+    }
+
+    "download".to_string()
+}
+
+/// Replace filesystem-unsafe characters with underscores.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            other => other,
+        })
+        .collect()
+}
+
+fn validate_download_file_path(file_path: &str) -> Result<(), AppError> {
+    if file_path.is_empty() || file_path.contains("://") {
+        return Err(AppError::InvalidRequest(
+            "download_file: only /api/files/download paths are allowed".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Core implementation: download a Dashboard file through cookie/token auth.
+///
+/// `file_path` is always encoded as the `path` query parameter of the fixed
+/// same-origin `/api/files/download` endpoint. External URLs are rejected to
+/// prevent turning this authenticated command into an SSRF primitive.
+pub async fn download_file_impl(
+    input: DownloadFileInput,
+    api_base_url: &str,
+    session_token: Option<&str>,
+    oauth: Option<&crate::oauth_session::OauthSession>,
+) -> Result<DownloadFileResult, AppError> {
+    use base64::Engine;
+
+    let file_path = input.file_path.trim();
+    validate_download_file_path(file_path)?;
+
+    // Construct full URL: base + /api/files/download?path=<file_path>
+    let base = api_base_url.trim_end_matches('/');
+    let full_url = format!(
+        "{}/api/files/download?path={}",
+        base,
+        urlencoding::encode(file_path)
+    );
+
+    // Make the request using the appropriate auth strategy.
+    let response = match oauth {
+        Some(session) => session.client().get(&full_url).send().await?,
+        None => {
+            let mut req = DASHBOARD_PROXY_HTTP_CLIENT.get(&full_url);
+            if let Some(token) = session_token {
+                req = req
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("X-Hermes-Session-Token", token);
+            }
+            req.send().await?
+        }
+    };
+
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(AppError::InvalidRequest(format!(
+            "download_file: dashboard returned HTTP {}",
+            status
+        )));
+    }
+
+    let filename = safe_filename_from_content_disposition(response.headers());
+    let mime_type = content_type_mime(response.headers())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let bytes = read_response_limited(response, MAX_DOWNLOAD_BYTES)
+        .await
+        .map_err(|_| {
+            AppError::InvalidRequest(format!(
+                "download_file exceeds {} MiB limit",
+                MAX_DOWNLOAD_BYTES / 1024 / 1024
+            ))
+        })?;
+
+    Ok(DownloadFileResult {
+        ok: true,
+        status,
+        filename,
+        mime_type,
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        size: bytes.len(),
+    })
+}
+
+/// Tauri command: download a file through the Dashboard with cookie/token auth.
+/// Called from the frontend via `invoke("download_file", { input })`.
+#[tauri::command]
+pub async fn download_file(
+    input: DownloadFileInput,
+    state: tauri::State<'_, AppState>,
+) -> Result<DownloadFileResult, AppError> {
+    let (api_base_url, auth) = {
+        let inner = state.inner.lock()?;
+        (inner.api_base_url.clone(), inner.dashboard_auth())
+    };
+
+    if api_base_url.is_empty() {
+        return Err(AppError::NotReady);
+    }
+
+    match &auth {
+        crate::state::DashboardAuth::Oauth(session) => {
+            let result = download_file_impl(input, &api_base_url, None, Some(session)).await?;
+            if session.take_dirty() {
+                crate::oauth_session::persist_if_dirty(&api_base_url, session);
+            }
+            Ok(result)
+        }
+        crate::state::DashboardAuth::Token(token) => {
+            download_file_impl(input, &api_base_url, token.as_deref(), None).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod external_request_tests {
     use super::*;
@@ -1214,5 +1400,77 @@ mod external_request_tests {
         assert!(captured.contains("Bearer sk-sensitive"));
         proxy_thread.join().expect("proxy thread");
         target.verify().await;
+    }
+}
+
+#[cfg(test)]
+mod download_file_tests {
+    use super::*;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn download_path_rejects_external_url_but_accepts_remote_file_path() {
+        assert!(validate_download_file_path("/data/report.xlsx").is_ok());
+        assert!(validate_download_file_path("/data/联合 督导 总台账.xlsx").is_ok());
+
+        let error = validate_download_file_path("https://evil.example/file").unwrap_err();
+        assert!(error.to_string().contains("only /api/files/download"));
+        let error = validate_download_file_path("http://127.0.0.1:9119/api/profiles").unwrap_err();
+        assert!(error.to_string().contains("only /api/files/download"));
+    }
+
+    #[tokio::test]
+    async fn download_file_returns_base64_and_mime_with_token_auth() {
+        let server = MockServer::start().await;
+        let pdf_bytes: Vec<u8> = vec![0x25, 0x50, 0x44, 0x46, 0x2d]; // %PDF-
+        Mock::given(method("GET"))
+            .and(path("/api/files/download"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(pdf_bytes.clone())
+                    .insert_header("content-type", "application/pdf")
+                    .insert_header("content-disposition", "attachment; filename=\"report.pdf\""),
+            )
+            .mount(&server)
+            .await;
+
+        let result = download_file_impl(
+            DownloadFileInput {
+                file_path: "/data/report.pdf".to_string(),
+            },
+            &server.uri(),
+            Some("test-token"),
+            None,
+        )
+        .await
+        .expect("download should succeed");
+
+        assert!(result.ok);
+        assert_eq!(result.status, 200);
+        assert_eq!(result.filename, "report.pdf");
+        assert_eq!(result.mime_type, "application/pdf");
+        assert_eq!(result.size, 5);
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&result.data_base64)
+            .expect("valid base64");
+        assert_eq!(decoded, pdf_bytes);
+    }
+
+    #[test]
+    fn download_file_sanitizes_unicode_filename() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_DISPOSITION,
+            "attachment; filename*=UTF-8''%E8%81%94%E5%90%88%20%E7%9D%A3%E5%AF%BC.xlsx"
+                .parse()
+                .expect("valid header"),
+        );
+        assert_eq!(
+            safe_filename_from_content_disposition(&headers),
+            "联合 督导.xlsx"
+        );
     }
 }

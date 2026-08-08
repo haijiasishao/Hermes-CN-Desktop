@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { BACKUP_ITEMS, CONFIG_ITEMS } from "./capability-sidebar";
-import { getVisibleTopTabs, TOP_TABS } from "./use-active-top-tab";
+import { getVisibleTopTabs, TOP_TABS, workbenchHrefForSession } from "./use-active-top-tab";
 
 function tabFor(path: string) {
   return TOP_TABS.find((tab) => tab.matches(path))?.id;
 }
+
+describe("workbenchHrefForSession", () => {
+  it("returns the active task route so settings can return to the same session", () => {
+    expect(workbenchHrefForSession("session/中文 1")).toBe("/tasks/session%2F%E4%B8%AD%E6%96%87%201");
+  });
+
+  it("keeps the workbench root as the new-session entry when no session is active", () => {
+    expect(workbenchHrefForSession(null)).toBe("/");
+  });
+});
 
 describe("TOP_TABS", () => {
   it("keeps config migration under the 02 config tab", () => {

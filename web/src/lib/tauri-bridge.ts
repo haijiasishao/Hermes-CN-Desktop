@@ -54,6 +54,8 @@ import type {
   DesktopFileDropPayload,
   DownloadExternalImageInput,
   DownloadedImageResult,
+  DownloadFileInput,
+  DownloadFileResult,
   FilePreview,
   PreviewFileChangedPayload,
   ReadWorkspaceFileInput,
@@ -256,6 +258,10 @@ const tauriBridge = {
 
   async downloadExternalImage(input: DownloadExternalImageInput): Promise<DownloadedImageResult> {
     return invokeCommand("download_external_image", { input });
+  },
+
+  async downloadFile(input: DownloadFileInput): Promise<DownloadFileResult> {
+    return invokeCommand("download_file", { input });
   },
 
   async pickFiles(): Promise<FilePickerResult> {

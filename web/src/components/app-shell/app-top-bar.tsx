@@ -1,9 +1,11 @@
 import { useNavigate, useLocation } from "react-router-dom";
+import { useAtomValue } from "jotai";
 import { Moon, Search, Sun } from "lucide-react";
 import { useTheme } from "@hermes/shared-ui";
 import { useCommandPalette } from "@/components/command-palette";
 import { ProfileSelector } from "@/components/sidebar/profile-selector";
-import { getVisibleTopTabs } from "./use-active-top-tab";
+import { getVisibleTopTabs, workbenchHrefForSession } from "./use-active-top-tab";
+import { activeSessionIdAtom } from "@/stores/ui";
 import { runtime } from "@/lib/runtime";
 import s from "./app-top-bar.module.css";
 
@@ -12,6 +14,7 @@ export function AppTopBar() {
   const location = useLocation();
   const { config: themeConfig, update: updateTheme } = useTheme();
   const { openCommandPalette } = useCommandPalette();
+  const activeSessionId = useAtomValue(activeSessionIdAtom);
   const isDarkTheme = ["dark", "dark-modern", "dracula", "catppuccin-mocha"].includes(themeConfig.theme);
   const nextTheme = isDarkTheme ? "light-modern" : "dark-modern";
   const ThemeIcon =
@@ -33,21 +36,26 @@ export function AppTopBar() {
       </div>
 
       <nav className={s.nav} aria-label="主导航">
-        {visibleTopTabs.map((tab) => (
+        {visibleTopTabs.map((tab) => {
+          const href = tab.id === "workbench"
+            ? workbenchHrefForSession(activeSessionId)
+            : tab.href;
+          return (
           <a
             key={tab.id}
-            href={tab.href}
+            href={href}
             className={s.navLink}
             data-active={tab.matches(location.pathname) ? "true" : undefined}
             onClick={(e) => {
               e.preventDefault();
-              navigate(tab.href);
+              navigate(href);
             }}
           >
             <span className={s.navNum}>{tab.num}</span>
             {tab.label}
           </a>
-        ))}
+          );
+        })}
       </nav>
 
       <button

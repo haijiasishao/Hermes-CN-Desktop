@@ -18,6 +18,15 @@ export interface TopTabDef {
 
 const isRoute = (path: string, route: string) => path === route || path.startsWith(`${route}/`);
 
+/**
+ * Return to the active conversation from configuration pages. The bare
+ * workbench root remains the explicit new-session entry when no session is
+ * active.
+ */
+export function workbenchHrefForSession(activeSessionId: string | null): string {
+  return activeSessionId ? `/tasks/${encodeURIComponent(activeSessionId)}` : "/";
+}
+
 const ADVANCED_ROUTES = [
   "/common",
   "/notifications",

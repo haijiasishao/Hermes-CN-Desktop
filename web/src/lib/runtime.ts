@@ -75,6 +75,19 @@ export interface DownloadedImageResult {
   size: number;
 }
 
+
+export interface DownloadFileInput {
+  filePath: string;
+}
+
+export interface DownloadFileResult {
+  ok: boolean;
+  status: number;
+  filename: string;
+  mimeType: string;
+  dataBase64: string;
+  size: number;
+}
 export interface ElectronSimpleResult {
   ok: boolean;
   message?: string | null;
@@ -449,6 +462,7 @@ declare global {
       externalRequest?(input: ElectronApiRequestInput): Promise<ElectronApiRequestResult>;
       uploadFile?(input: FileUploadInput): Promise<ElectronApiRequestResult>;
       downloadExternalImage?(input: DownloadExternalImageInput): Promise<DownloadedImageResult>;
+      downloadFile?(input: DownloadFileInput): Promise<DownloadFileResult>;
       pickFiles?(): Promise<ElectronFilePickerResult>;
       pickDirectory?(): Promise<ElectronFilePickerResult>;
       requestMicrophoneAccess?(): Promise<boolean>;

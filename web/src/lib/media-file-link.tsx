@@ -85,4 +85,35 @@ export function hasMediaFileRefs(text: string): boolean {
   return text.split("\n").some((line) => MEDIA_LINE_RE.test(line.trim()));
 }
 
+
+/** Result of a native (Tauri) or fallback file download attempt. */
+export interface DownloadMediaResult {
+  ok: boolean;
+  filename?: string;
+  mimeType?: string;
+  dataBase64?: string;
+  size?: number;
+  /** Browser-only fallback URL (token-in-query) for <a> anchor download. */
+  fallbackUrl?: string;
+}
+
+/**
+ * Download a remote file through the native Tauri bridge when available
+ * (cookie-auth safe — Rust carries the OAuth cookie jar or Bearer token).
+ * Falls back to a token-in-query URL for plain browser environments.
+ */
+export async function downloadMediaFile(
+  filePath: string,
+): Promise<DownloadMediaResult> {
+  const bridge = typeof window !== "undefined" ? window.hermesDesktop : undefined;
+  if (bridge?.downloadFile) {
+    const result = await bridge.downloadFile({ filePath });
+    return { ...result, filename: result.filename ?? fileNameFromMediaPath(filePath) };
+  }
+  // Browser fallback: return a URL with token-in-query so the caller can
+  // open it or attach it to an <a> element.
+  const fallbackUrl = buildMediaDownloadUrl(filePath);
+  return { ok: true, fallbackUrl: fallbackUrl ?? undefined };
+}
+
 export { MEDIA_LINE_RE };

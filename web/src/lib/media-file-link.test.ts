@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   buildMediaDownloadUrl,
+  downloadMediaFile,
   hasMediaFileRefs,
   parseMediaFileRefs,
 } from "./media-file-link";
@@ -92,5 +93,99 @@ describe("buildMediaDownloadUrl", () => {
 
     const url = buildMediaDownloadUrl("/tmp/my files/doc.pdf");
     expect(url).toContain(encodeURIComponent("/tmp/my files/doc.pdf"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadMediaFile: native Tauri bridge for cookie-auth environments
+// ---------------------------------------------------------------------------
+
+describe("downloadMediaFile (native bridge path)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("uses hermesDesktop.downloadFile when available (Tauri/Android)", async () => {
+    const mockDownload = vi.fn().mockResolvedValue({
+      ok: true,
+      filename: "report.xlsx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      dataBase64: "dGVzdA==",
+      size: 4,
+    });
+    vi.stubGlobal("window", {
+      __HERMES_RUNTIME__: {
+        apiBaseUrl: "http://192.168.1.10:9119",
+        sessionToken: "tok_test",
+        platform: "tauri",
+      },
+      hermesDesktop: {
+        windowType: "tauri",
+        request: vi.fn(),
+        downloadFile: mockDownload,
+      },
+    });
+
+    const result = await downloadMediaFile("/data/report.xlsx");
+
+    expect(mockDownload).toHaveBeenCalledOnce();
+    expect(mockDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ filePath: "/data/report.xlsx" }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({ ok: true, filename: "report.xlsx" }),
+    );
+    expect(result.dataBase64).toBe("dGVzdA==");
+  });
+
+  it("falls back to URL-based download when hermesDesktop.downloadFile is absent", async () => {
+    vi.stubGlobal("window", {
+      __HERMES_RUNTIME__: {
+        apiBaseUrl: "http://localhost:9119",
+        sessionToken: "tok123",
+      },
+      hermesDesktop: undefined,
+    });
+
+    const result = await downloadMediaFile("/tmp/file.txt");
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        fallbackUrl: expect.stringContaining("/api/files/download?path="),
+      }),
+    );
+    expect(result.fallbackUrl).toContain("token=tok123");
+  });
+
+  it("encodes Unicode and spaces in path for native bridge", async () => {
+    const mockDownload = vi.fn().mockResolvedValue({
+      ok: true,
+      filename: "联合督导总台账.xlsx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      dataBase64: "AAAA",
+      size: 3,
+    });
+    vi.stubGlobal("window", {
+      __HERMES_RUNTIME__: {
+        apiBaseUrl: "http://192.168.1.10:9119",
+        sessionToken: "tok_test",
+        platform: "tauri",
+      },
+      hermesDesktop: {
+        windowType: "tauri",
+        request: vi.fn(),
+        downloadFile: mockDownload,
+      },
+    });
+
+    await downloadMediaFile("/data/联合 督导 总台账.xlsx");
+
+    expect(mockDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ filePath: "/data/联合 督导 总台账.xlsx" }),
+    );
   });
 });

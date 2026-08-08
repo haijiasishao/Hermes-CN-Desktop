@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { useAtomValue } from "jotai";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   Boxes,
@@ -25,6 +26,8 @@ import {
   subscribeWorkspaceChanges,
   type WorkspaceProject,
 } from "@/lib/workspaces";
+import { activeSessionIdAtom } from "@/stores/ui";
+import { workbenchHrefForSession } from "@/components/app-shell/use-active-top-tab";
 import { ProfileSelector } from "./profile-selector";
 import s from "./sidebar.module.css";
 
@@ -76,6 +79,7 @@ function NavItem({ icon: Icon, label, active, count, onClick, title }: NavItemPr
 export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
+  const activeSessionId = useAtomValue(activeSessionIdAtom);
   const platform = usePlatform();
   const { data: status, isError: statusError } = useStatus();
   const { data: modelInfo } = useModelInfo();
@@ -93,6 +97,7 @@ export function Sidebar() {
     target === "/" ? path === "/" : path === target || path.startsWith(target + "/");
 
   const goNew = () => navigate("/");
+  const goWorkbench = () => navigate(workbenchHrefForSession(activeSessionId));
   const goSearch = () => navigate("/history");
 
   // CSS 在 sidebar.module.css 里把 data-state="stopped" / "offline"
@@ -174,7 +179,7 @@ export function Sidebar() {
             icon={LayoutDashboard}
             label="任务面板"
             active={matchPath("/")}
-            onClick={() => navigate("/")}
+            onClick={goWorkbench}
           />
           <NavItem
             icon={MessageSquare}
