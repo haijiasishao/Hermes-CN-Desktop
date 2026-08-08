@@ -172,7 +172,7 @@
 
   .composerArea {
     padding: 8px 8px 0;
-    max-width: 100%;
+    max-width: var(--conversation-mobile-max-width, 100%);
   }
 }
 

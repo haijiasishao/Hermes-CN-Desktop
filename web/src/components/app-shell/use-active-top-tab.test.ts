@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BACKUP_ITEMS, CONFIG_ITEMS } from "./capability-sidebar";
+import { EXTERNAL_MEMORY_ITEMS, getVisibleExternalMemoryItems } from "./external-memory-sidebar";
 import { getVisibleTopTabs, TOP_TABS, workbenchHrefForSession } from "./use-active-top-tab";
 
 function tabFor(path: string) {
@@ -86,6 +87,17 @@ describe("getVisibleTopTabs – Android Remote regression", () => {
     const visible = getVisibleTopTabs(true);
     expect(visible.map((t) => t.id)).not.toContain("gateway");
     expect(visible.find((t) => t.label === "消息接入")).toBeUndefined();
+  });
+
+  it("routes Android Remote memory navigation to remote memory config", () => {
+    expect(getVisibleTopTabs(true).find((tab) => tab.id === "externalMemory")?.href).toBe("/memconfig");
+    expect(getVisibleExternalMemoryItems(true).map((item) => item.path)).not.toContain("/memory");
+    expect(getVisibleExternalMemoryItems(true).length).toBe(EXTERNAL_MEMORY_ITEMS.length - 1);
+  });
+
+  it("retains the built-in memory editor on desktop and non-Android remote shells", () => {
+    expect(getVisibleTopTabs(false).find((tab) => tab.id === "externalMemory")?.href).toBe("/memory");
+    expect(getVisibleExternalMemoryItems(false)).toBe(EXTERNAL_MEMORY_ITEMS);
   });
 
   it("retains full TOP_TABS list on androidRemoteOnly=false", () => {

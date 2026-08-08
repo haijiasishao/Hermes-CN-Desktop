@@ -107,13 +107,16 @@ export function useActiveTopTab(): TopTab | null {
 }
 
 /** Tab IDs hidden on Android Remote-only builds. */
-export const ANDROID_REMOTE_HIDDEN_TAB_IDS: ReadonlySet<TopTab> = new Set<TopTab>(['gateway']);
+export const ANDROID_REMOTE_HIDDEN_TAB_IDS: ReadonlySet<TopTab> = new Set<TopTab>(["gateway"]);
 
 /**
  * Returns the top tabs visible for the current runtime.
- * On Android Remote-only builds, the message gateway tab (03) is hidden.
+ * On Android Remote-only builds, the message gateway tab (03) is hidden and
+ * the memory tab opens remote provider configuration instead of local files.
  */
 export function getVisibleTopTabs(androidRemoteOnly: boolean): readonly TopTabDef[] {
   if (!androidRemoteOnly) return TOP_TABS;
-  return TOP_TABS.filter((tab) => !ANDROID_REMOTE_HIDDEN_TAB_IDS.has(tab.id));
+  return TOP_TABS
+    .filter((tab) => !ANDROID_REMOTE_HIDDEN_TAB_IDS.has(tab.id))
+    .map((tab) => tab.id === "externalMemory" ? { ...tab, href: "/memconfig" } : tab);
 }

@@ -367,6 +367,29 @@
   color: var(--h-err);
 }
 
+.errorActions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.errorActions button {
+  min-height: var(--h-button-height-sm);
+  padding: 0 12px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+  color: var(--h-text-2);
+  cursor: pointer;
+  font: inherit;
+}
+
+.errorActions button:hover {
+  color: var(--h-text);
+  background: var(--h-bg-chip);
+}
+
 .dayGroup {
   padding: 20px 24px 0;
 }

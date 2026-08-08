@@ -76,7 +76,9 @@ function BackendApp() {
           <Route path="/mcp" element={withBoundary(<McpRoute />)} />
           <Route path="/profiles" element={withBoundary(<ProfilesRoute />)} />
           <Route path="/profiles/new" element={withBoundary(<ProfileBuilderRoute />)} />
-          <Route path="/memory" element={withBoundary(<MemoryRoute />)} />
+          <Route path="/memory" element={runtime.androidRemoteOnly
+            ? <Navigate to="/memconfig" replace />
+            : withBoundary(<MemoryRoute />)} />
           <Route path="/memconfig" element={withBoundary(<ExternalMemoryRoute page="config" />)} />
           <Route path="/openviking" element={withBoundary(<ExternalMemoryRoute page="openviking" />)} />
           <Route path="/hindsight" element={withBoundary(<ExternalMemoryRoute page="hindsight" />)} />
@@ -98,8 +100,12 @@ function BackendApp() {
           <Route path="/notifications" element={withBoundary(<AdvancedRoute />)} />
           <Route path="/config" element={withBoundary(<AdvancedRoute />)} />
           <Route path="/connection" element={withBoundary(<AdvancedRoute />)} />
-          <Route path="/kernel" element={withBoundary(<AdvancedRoute />)} />
-          <Route path="/env" element={withBoundary(<AdvancedRoute />)} />
+          <Route path="/kernel" element={runtime.androidRemoteOnly
+            ? <Navigate to="/health" replace />
+            : withBoundary(<AdvancedRoute />)} />
+          <Route path="/env" element={runtime.androidRemoteOnly
+            ? <Navigate to="/health" replace />
+            : withBoundary(<AdvancedRoute />)} />
           <Route path="/coding-agents" element={withBoundary(<CodingAgentsRoute />)} />
           <Route path="/about" element={withBoundary(<AdvancedRoute />)} />
           <Route path="/advanced/*" element={withBoundary(<AdvancedRoute />)} />

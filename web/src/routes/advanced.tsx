@@ -3,6 +3,8 @@ import { SectionShell } from "./section-shell";
 import { AboutSection, ConfigSection, GeneralSection, KernelSection, NotificationSection, ThemeSection } from "./settings";
 import { ConnectionSection } from "./settings-connection-section";
 import { EnvironmentSection } from "./environment";
+import { runtime } from "@/lib/runtime";
+import { getAndroidRemoteRouteRedirect } from "@/lib/android-remote-route-policy";
 
 type AdvancedSection = "general" | "notifications" | "config" | "connection" | "kernel" | "env" | "about";
 
@@ -55,6 +57,9 @@ export function AdvancedRoute() {
   const section = sectionFromPath(pathname);
 
   if (!section) return <Navigate to="/common" replace />;
+
+  const remoteRedirect = getAndroidRemoteRouteRedirect(pathname, runtime.androidRemoteOnly);
+  if (remoteRedirect) return <Navigate to={remoteRedirect} replace />;
 
   const canonicalPath = SECTION_PATHS[section];
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;

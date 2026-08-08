@@ -80,6 +80,22 @@ export function conversationWidthMaxWidth(mode: ConversationWidthMode): string {
   return CONVERSATION_WIDTH_OPTIONS.find((option) => option.value === mode)?.maxWidth ?? "780px";
 }
 
+/**
+ * Narrow-screen width caps for the conversation column. The desktop caps above
+ * are all wider than an Android viewport, so using only `max-width: min(...)`
+ * made small/medium/large/full compute to the same width on mobile.
+ */
+const CONVERSATION_WIDTH_MOBILE_MAX_WIDTH: Record<ConversationWidthMode, string> = {
+  small: "calc(100% - 112px)",
+  medium: "calc(100% - 88px)",
+  large: "calc(100% - 64px)",
+  full: "100%",
+};
+
+export function conversationWidthMobileMaxWidth(mode: ConversationWidthMode): string {
+  return CONVERSATION_WIDTH_MOBILE_MAX_WIDTH[mode];
+}
+
 export function normalizeConversationFontSizeMode(value: unknown): ConversationFontSizeMode {
   return CONVERSATION_FONT_SIZE_VALUES.includes(value as ConversationFontSizeMode)
     ? (value as ConversationFontSizeMode)

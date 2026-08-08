@@ -1,5 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import { Brain, BrainCircuit, Database, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { runtime } from "@/lib/runtime";
 import s from "./debug-sidebar.module.css";
 
 interface ExternalMemoryItem {
@@ -39,6 +40,11 @@ export const EXTERNAL_MEMORY_ITEMS: readonly ExternalMemoryItem[] = [
   },
 ];
 
+export function getVisibleExternalMemoryItems(androidRemoteOnly: boolean): readonly ExternalMemoryItem[] {
+  if (!androidRemoteOnly) return EXTERNAL_MEMORY_ITEMS;
+  return EXTERNAL_MEMORY_ITEMS.filter((item) => item.path !== "/memory");
+}
+
 export function ExternalMemorySidebar() {
   const location = useLocation();
   const isActive = (item: ExternalMemoryItem) => item.exact
@@ -53,7 +59,7 @@ export function ExternalMemorySidebar() {
             <span>§041 · 记忆</span>
             <span className={s.labelNum}>✕✕</span>
           </div>
-          {EXTERNAL_MEMORY_ITEMS.map((item) => {
+          {getVisibleExternalMemoryItems(runtime.androidRemoteOnly).map((item) => {
             const Icon = item.icon;
             return (
               <Link

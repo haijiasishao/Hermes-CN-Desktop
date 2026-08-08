@@ -19,6 +19,7 @@ import { activeSessionIdAtom } from "@/stores/ui";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
   prefetchSessionMessages,
+  sessionListErrorMessage,
   useArchiveSession,
   useDeleteSessions,
   useSessions,
@@ -238,7 +239,7 @@ export function HistoryRoute() {
   // the Rust proxy) so both scopes share one query and their counts are always
   // known; we split client-side by `archived`. The sidebar keeps the default
   // active-only query, so archived sessions never leak there.
-  const { data, isLoading, isError } = useSessions(PAGE_SIZE, 0, { includeArchived: true });
+  const { data, isLoading, isError, error, refetch } = useSessions(PAGE_SIZE, 0, { includeArchived: true });
   const archiveSession = useArchiveSession();
   const unarchiveSession = useUnarchiveSession();
   const deleteSessions = useDeleteSessions();
@@ -763,7 +764,13 @@ export function HistoryRoute() {
 
       <div className={s.scroll}>
         {isError ? (
-          <div className={s.errorState}>无法加载会话列表，请检查 Dashboard 服务。</div>
+          <div className={s.errorState} role="alert">
+            <p>{sessionListErrorMessage(error)}</p>
+            <div className={s.errorActions}>
+              <button type="button" onClick={() => void refetch()}>重试</button>
+              <button type="button" onClick={() => navigate("/connection")}>打开连接设置</button>
+            </div>
+          </div>
         ) : isLoading ? (
           <LoadingState variant="page" label="正在加载会话…" />
         ) : dayGroups.length === 0 ? (

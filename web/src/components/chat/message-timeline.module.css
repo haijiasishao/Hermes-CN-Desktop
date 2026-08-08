@@ -1281,6 +1281,7 @@
 
 @media (max-width: 720px) {
   .messages {
+    max-width: var(--conversation-mobile-max-width, 100%);
     padding: 16px 16px 20px;
   }
 

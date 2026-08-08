@@ -4,6 +4,7 @@ import { fetchJSON } from "@/lib/transport";
 import {
   deleteSessionsInBatches,
   fetchSessionMessages,
+  sessionListErrorMessage,
   withoutSearchResults,
   withoutSessions,
 } from "./use-sessions";
@@ -45,6 +46,18 @@ function searchResult(id: string): SearchResult {
     snippet: id,
   };
 }
+
+describe("session list error messages", () => {
+  it("turns a gated Dashboard no_cookie response into a re-login instruction", () => {
+    expect(sessionListErrorMessage(new Error('HTTP 401: {"error":"unauthenticated","reason":"no_cookie","login_url":"/login"}')))
+      .toContain("重新登录");
+  });
+
+  it("keeps generic Dashboard failures distinguishable from authentication failures", () => {
+    expect(sessionListErrorMessage(new Error("HTTP 502: upstream unavailable")))
+      .toBe("无法加载会话列表，请检查 Dashboard 服务。");
+  });
+});
 
 describe("session cache delete helpers", () => {
   it("removes several sessions and updates total", () => {

@@ -90,6 +90,17 @@ export function useSessions(limit = 50, offset = 0, opts: UseSessionsOptions = {
   });
 }
 
+export function sessionListErrorMessage(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  if (/\bHTTP\s+401\b/i.test(text)) {
+    return "远程 Dashboard 登录状态无效，请重新登录后重试。";
+  }
+  if (/\bHTTP\s+403\b/i.test(text)) {
+    return "远程 Dashboard 拒绝访问，请检查当前登录账号权限。";
+  }
+  return "无法加载会话列表，请检查 Dashboard 服务。";
+}
+
 export function useSession(id: string | undefined) {
   const profile = useActiveProfileName();
   return useQuery<SessionDetail>({

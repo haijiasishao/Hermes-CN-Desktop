@@ -83,6 +83,12 @@ function shouldUseNativeIpc(path: string): boolean {
   const isLocalDesktopRoute =
     path.startsWith("/__hermes_session_log/") || path.startsWith("/__hermes_cron_runs/");
 
+  if (runtime.androidRemoteOnly) {
+    // Android Remote must never fall back to WebView fetch for Dashboard APIs:
+    // OAuth cookies live in Rust's reqwest jar, not in the app WebView.
+    return true;
+  }
+
   if (runtime.platform === "tauri") {
     if (!window.hermesDesktop?.request) return false;
     if (isLocalDesktopRoute) return true;
@@ -115,7 +121,12 @@ async function fetchViaElectron<T>(
   const signal = init?.signal ?? null;
   throwIfAborted(signal);
 
-  const result = await raceAbort(window.hermesDesktop!.request({
+  const request = window.hermesDesktop?.request;
+  if (!request) {
+    throw new Error("Android Remote native authenticated proxy is unavailable");
+  }
+
+  const result = await raceAbort(request({
     path,
     method: init?.method,
     headers: authHeaders(init?.headers as Record<string, string>),

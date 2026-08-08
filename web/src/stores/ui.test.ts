@@ -156,6 +156,20 @@ describe("conversationWidthModeAtom (persisted)", () => {
     expect(conversationWidthMaxWidth("large")).toBe("1008px");
     expect(conversationWidthMaxWidth("full")).toBe("100%");
   });
+
+  it("keeps the four width modes visibly distinct on a narrow Android viewport", async () => {
+    const { conversationWidthMobileMaxWidth } = await loadUi();
+    expect(conversationWidthMobileMaxWidth("small")).toBe("calc(100% - 112px)");
+    expect(conversationWidthMobileMaxWidth("medium")).toBe("calc(100% - 88px)");
+    expect(conversationWidthMobileMaxWidth("large")).toBe("calc(100% - 64px)");
+    expect(conversationWidthMobileMaxWidth("full")).toBe("100%");
+    expect(new Set([
+      conversationWidthMobileMaxWidth("small"),
+      conversationWidthMobileMaxWidth("medium"),
+      conversationWidthMobileMaxWidth("large"),
+      conversationWidthMobileMaxWidth("full"),
+    ]).size).toBe(4);
+  });
 });
 
 describe("conversationFontSizeAtom (persisted)", () => {

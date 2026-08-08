@@ -291,4 +291,20 @@ describe("transport · debug-bus integration", () => {
     expect(file.type).toBe("image/png");
     expect(await file.text()).toBe("png-bytes");
   });
+
+  it("fetchJSON fails explicitly instead of using browser fetch when Android Remote proxy is unavailable", async () => {
+    globalThis.fetch = vi.fn(async () => makeResponse(500, "should not fetch")) as unknown as typeof globalThis.fetch;
+    window.__HERMES_RUNTIME__ = {
+      platform: "web",
+      backendReady: true,
+      connectionMode: "remote",
+      androidRemoteOnly: true,
+      apiBaseUrl: "http://192.168.0.10:9119",
+    };
+    window.hermesDesktop = undefined;
+
+    await expect(fetchJSON("/api/sessions?limit=1"))
+      .rejects.toThrow(/native authenticated proxy/i);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });

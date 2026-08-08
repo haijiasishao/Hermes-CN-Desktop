@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import s from "./debug-sidebar.module.css";
+import { runtime } from "@/lib/runtime";
 
 interface AdvancedItem {
   label: string;
@@ -29,7 +30,7 @@ const OBSERVABILITY_ITEMS: readonly AdvancedItem[] = [
   { label: "Debug", path: "/debug", icon: Bug },
 ];
 
-const ADVANCED_ITEMS: readonly AdvancedItem[] = [
+export const ADVANCED_ITEMS: readonly AdvancedItem[] = [
   { label: "常规", path: "/common", icon: SlidersHorizontal },
   { label: "通知", path: "/notifications", icon: Bell },
   { label: "主题", path: "/theme", icon: Palette },
@@ -39,6 +40,11 @@ const ADVANCED_ITEMS: readonly AdvancedItem[] = [
   { label: "环境", path: "/env", icon: MonitorCog },
   { label: "关于", path: "/about", icon: Info },
 ];
+
+export function getVisibleAdvancedItems(androidRemoteOnly: boolean): readonly AdvancedItem[] {
+  if (!androidRemoteOnly) return ADVANCED_ITEMS;
+  return ADVANCED_ITEMS.filter((item) => item.path !== "/kernel" && item.path !== "/env");
+}
 
 const SECTIONS: readonly {
   label: string;
@@ -55,10 +61,15 @@ export function AdvancedSidebar() {
   const isActive = (path: string) =>
     location.pathname === path || location.pathname.startsWith(`${path}/`);
 
+  const visibleSections = [
+    SECTIONS[0],
+    { ...SECTIONS[1], items: getVisibleAdvancedItems(runtime.androidRemoteOnly) },
+  ];
+
   return (
     <aside className={s.sidebar} aria-label="高级侧栏">
       <div className={s.scrollY}>
-        {SECTIONS.map((section) => (
+        {visibleSections.map((section) => (
           <section key={section.label} className={s.section}>
             <div className={s.label}>
               <span>{section.label}</span>

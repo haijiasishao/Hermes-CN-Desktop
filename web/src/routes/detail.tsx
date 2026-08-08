@@ -8,6 +8,7 @@ import {
   conversationFontSizeAtom,
   conversationFontSizeVars,
   conversationWidthMaxWidth,
+  conversationWidthMobileMaxWidth,
   conversationWidthModeAtom,
   rightRailVisibleAtom,
   sessionTipRedirectAtom,
@@ -634,6 +635,7 @@ export function DetailRoute() {
         // composer + stall-notice 共用此变量）两侧各让出 32px，给右侧轮次定位条
         // (turnRail) 一条不压内容的专属出血带；余量充足时与档位宽完全一致。
         "--conversation-max-width": `min(${conversationWidthMaxWidth(conversationWidthMode)}, 100% - 64px)`,
+        "--conversation-mobile-max-width": conversationWidthMobileMaxWidth(conversationWidthMode),
         "--conversation-font-size": font.fontSize,
         "--conversation-line-height": font.lineHeight,
       } as CSSProperties;
