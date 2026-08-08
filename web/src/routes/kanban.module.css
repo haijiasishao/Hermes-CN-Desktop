@@ -1,232 +1,547 @@
-.layout {
-  display: grid;
+/* ============================================================= */
+/* Kanban – read-only native board                                */
+/* ============================================================= */
+
+/* --- Page wrapper -------------------------------------------- */
+.board {
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  max-width: var(--h-page-content-max-width);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
+/* --- Top bar --------------------------------------------- */
 .topActions {
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
 
-.primaryButton,
-.secondaryButton {
+.refreshBtn {
   border-radius: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  height: var(--h-button-height-md);
+  min-height: var(--h-button-height-md);
+  min-width: var(--h-button-height-md);
+  padding: 0 12px;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-surface);
+  color: var(--h-text);
   font-size: 12px;
   font-weight: 650;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.primaryButton {
-  height: var(--h-button-height-md);
-  min-height: var(--h-button-height-md);
-  padding: 0 12px;
-  border: 1px solid var(--h-accent);
-  background: var(--h-accent);
-  color: var(--h-accent-contrast, #fff);
   font-family: var(--h-font-cn);
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
 }
 
-.primaryButton:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--h-accent) 84%, var(--h-text));
-  border-color: color-mix(in srgb, var(--h-accent) 84%, var(--h-text));
+.refreshBtn:hover:not(:disabled) {
+  border-color: var(--h-accent);
+  color: var(--h-accent);
 }
 
-.secondaryButton {
-  height: var(--h-button-height-md);
-  min-height: var(--h-button-height-md);
-  padding: 0 12px;
-}
-
-.primaryButton:disabled,
-.secondaryButton:disabled {
+.refreshBtn:disabled {
   cursor: not-allowed;
   opacity: 0.58;
 }
 
-.hero,
-.card {
-  border: 1px solid var(--h-line);
+.secondaryBtn {
   border-radius: 0;
-  background: var(--h-bg-surface);
-  box-shadow: none;
-}
-
-.hero {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 20px;
-  align-items: start;
-  padding: 24px;
-  overflow: hidden;
-}
-
-.hero::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: transparent;
-  pointer-events: none;
-}
-
-.heroMark,
-.heroCopy,
-.statusBadge {
-  position: relative;
-  z-index: 1;
-}
-
-.heroMark {
-  width: 56px;
-  height: 56px;
-  border: 1px solid color-mix(in srgb, var(--h-accent) 34%, var(--h-line));
-  border-radius: 0;
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--h-accent) 10%, var(--h-bg-pane));
-  color: var(--h-accent);
-}
-
-.eyebrow,
-.cardEyebrow {
-  color: var(--h-accent);
-  font-family: var(--h-font-mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.heroCopy h2,
-.cardHeader h3 {
-  margin: 0;
-  color: var(--h-text);
-}
-
-.heroCopy h2 {
-  margin-top: 8px;
-  font-size: 22px;
-  letter-spacing: -0.03em;
-}
-
-.heroCopy p {
-  margin: 12px 0 0;
-  max-width: 720px;
-  color: var(--h-text-2);
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.heroCopy code {
-  color: var(--h-text);
-  font-family: var(--h-font-mono);
-}
-
-.statusBadge {
-  border: 1px solid var(--h-line-soft);
-  border-radius: 0;
-  padding: 4px 8px;
-  background: var(--h-bg-pane);
-  color: var(--h-text-2);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.statusBadge[data-tone="ready"] {
-  border-color: var(--h-ok-border);
-  color: var(--h-ok);
-  background: var(--h-ok-soft);
-}
-
-.statusBadge[data-tone="warn"] {
-  border-color: var(--h-warn-border);
-  color: var(--h-warn);
-  background: var(--h-warn-soft);
-}
-
-.card {
-  padding: 20px;
-}
-
-.cardHeader {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-
-.cardHeader h3 {
-  margin-top: 8px;
-  font-size: 15px;
-}
-
-.urlGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.urlField {
-  min-width: 0;
-  border: 1px solid var(--h-line-soft);
-  border-radius: 0;
-  background: var(--h-bg-pane);
-  padding: 12px 12px;
-}
-
-.urlField span {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--h-text-3);
-  font-size: 11px;
-}
-
-.urlField strong {
-  display: block;
-  overflow: hidden;
-  color: var(--h-text);
-  font-family: var(--h-font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.helpText {
-  margin: 16px 0 0;
+  justify-content: center;
+  gap: 8px;
+  height: var(--h-button-height-md);
+  min-height: var(--h-button-height-md);
+  padding: 0 12px;
+  border: 1px solid var(--h-line);
+  background: transparent;
   color: var(--h-text-2);
-  font-size: 12.5px;
-  line-height: 1.65;
+  font-size: 12px;
+  font-weight: 650;
+  font-family: var(--h-font-cn);
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
 }
 
+.secondaryBtn:hover:not(:disabled) {
+  border-color: var(--h-accent);
+  color: var(--h-accent);
+}
+
+/* --- Error box ---------------------------------------------- */
 .errorBox {
-  margin-top: 12px;
   border: 1px solid var(--h-err-border);
   border-radius: 0;
   background: var(--h-err-soft);
   color: var(--h-err);
-  padding: 12px 12px;
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.errorBox button {
+  margin-top: 8px;
+  padding: 8px 16px;
+  border: 1px solid var(--h-err-border);
+  border-radius: 0;
+  background: var(--h-bg-surface);
+  color: var(--h-err);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+/* --- Stats strip --------------------------------------------- */
+.statsStrip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding: 4px 0;
+}
+
+.statsStrip::-webkit-scrollbar {
+  display: none;
+}
+
+.statChip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  padding: 8px 12px;
+  background: var(--h-bg-surface);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--h-text);
+  white-space: nowrap;
+  min-height: 36px;
+}
+
+.statDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 8px;
+}
+
+.statCount {
+  color: var(--h-text-2);
+  font-weight: 400;
+}
+
+/* --- Status selector (mobile) -------------------------------- */
+.statusSelector {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding: 4px 0;
+}
+
+.statusSelector::-webkit-scrollbar {
+  display: none;
+}
+
+.statusTab {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  background: var(--h-bg-surface);
+  color: var(--h-text-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+.statusTab[data-active="true"] {
+  border-color: var(--h-accent);
+  color: var(--h-accent);
+  background: color-mix(in srgb, var(--h-accent) 8%, var(--h-bg-surface));
+}
+
+.statusTab .tabCount {
+  font-weight: 400;
+  color: var(--h-text-3);
+}
+
+/* --- Multi-column board (desktop) ---------------------------- */
+.columnsScroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  padding: 4px 0;
+}
+
+.columns {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.column {
+  flex: 0 0 280px;
+  min-width: 240px;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 200px;
+}
+
+.columnHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 2px solid var(--h-line);
+}
+
+.columnDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 12px;
+}
+
+.columnName {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--h-text);
+  text-transform: capitalize;
+}
+
+.columnCount {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--h-text-3);
+}
+
+.taskList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* --- Empty state --------------------------------------------- */
+.emptyColumn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100px;
+  border: 1px dashed var(--h-line-soft);
+  border-radius: 0;
+  color: var(--h-text-3);
   font-size: 12px;
 }
 
-@media (max-width: 840px) {
-  .hero {
-    grid-template-columns: auto minmax(0, 1fr);
+/* --- Task card ----------------------------------------------- */
+.taskCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-surface);
+  cursor: pointer;
+  transition: border-color 0.15s;
+  touch-action: manipulation;
+  min-height: 44px;
+}
+
+.taskCard:hover,
+.taskCard:focus-visible {
+  border-color: var(--h-accent);
+}
+
+.taskCard:active {
+  background: color-mix(in srgb, var(--h-accent) 4%, var(--h-bg-surface));
+}
+
+.taskTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--h-text);
+  line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.taskSummary {
+  color: var(--h-text-2);
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.taskMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.taskId {
+  font-size: 11px;
+  font-family: var(--h-font-mono);
+  color: var(--h-text-3);
+}
+
+.taskPriority,
+.taskAssignee {
+  font-size: 11px;
+  color: var(--h-text-2);
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+/* --- Single-column task list (mobile selected status) --------- */
+.mobileTaskList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* --- Loading skeleton ----------------------------------------- */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--h-text-3);
+  font-size: 14px;
+}
+
+/* --- Detail drawer / sidebar --------------------------------- */
+.detailOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.4);
+  animation: fadeIn 0.15s ease;
+}
+
+.detailDrawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 100vw);
+  z-index: 101;
+  background: var(--h-bg-pane);
+  border-left: 1px solid var(--h-line);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  animation: slideIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.detailHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--h-line);
+  background: var(--h-bg-pane);
+}
+
+.detailTitle {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--h-text);
+  line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+
+.closeBtn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-2);
+  cursor: pointer;
+  touch-action: manipulation;
+  min-height: 44px;
+}
+
+.closeBtn:hover {
+  border-color: var(--h-accent);
+  color: var(--h-accent);
+}
+
+.detailBody {
+  flex: 1;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detailFields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.detailField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.detailFieldLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--h-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.detailFieldValue {
+  font-size: 13px;
+  color: var(--h-text);
+  word-break: break-word;
+}
+
+.detailStatusDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detailSectionTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--h-text);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--h-line-soft);
+}
+
+.detailDescription {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--h-text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.commentItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  background: var(--h-bg-surface);
+}
+
+.commentAuthor {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--h-accent);
+}
+
+.commentText {
+  font-size: 13px;
+  color: var(--h-text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.commentTime {
+  font-size: 11px;
+  color: var(--h-text-3);
+}
+
+.runItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  background: var(--h-bg-surface);
+  font-size: 12px;
+  color: var(--h-text-2);
+}
+
+.runStatus {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* --- Mobile overrides (<= 720px) ----------------------------- */
+@media (max-width: 720px) {
+  .detailDrawer {
+    width: 100vw;
   }
 
-  .statusBadge {
-    grid-column: 1 / -1;
-    justify-self: start;
+  .detailFields {
+    grid-template-columns: 1fr;
   }
 
-  .urlGrid {
-    grid-template-columns: minmax(0, 1fr);
+  .column {
+    flex: none;
+    min-width: 0;
+    max-width: 100%;
   }
 }
