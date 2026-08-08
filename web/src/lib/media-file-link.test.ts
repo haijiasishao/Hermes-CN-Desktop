@@ -15,6 +15,14 @@ describe("hasMediaFileRefs", () => {
     expect(hasMediaFileRefs("MEDIA:/tmp/my files/report.pdf")).toBe(true);
   });
 
+  it("detects MEDIA: when the producer inserts a space after the colon", () => {
+    expect(hasMediaFileRefs("MEDIA: /tmp/report.txt")).toBe(true);
+  });
+
+  it("detects MEDIA: when a Chinese sentence terminator follows the path", () => {
+    expect(hasMediaFileRefs("MEDIA:/tmp/report.txt。")) .toBe(true);
+  });
+
   it("detects MEDIA: on its own line in multiline text", () => {
     const text = "Here is your file:\nMEDIA:/tmp/output.csv\nLet me know if you need more.";
     expect(hasMediaFileRefs(text)).toBe(true);
@@ -53,6 +61,12 @@ describe("parseMediaFileRefs", () => {
     expect(refs[1].filename).toBe("b.pdf");
   });
 
+  it("strips the optional separator and terminal Chinese punctuation", () => {
+    const refs = parseMediaFileRefs("MEDIA: /tmp/report.txt。\n");
+    expect(refs).toHaveLength(1);
+    expect(refs[0].path).toBe("/tmp/report.txt");
+  });
+
   it("returns empty array for text without MEDIA:", () => {
     expect(parseMediaFileRefs("No files here.")).toEqual([]);
   });
@@ -81,6 +95,19 @@ describe("buildMediaDownloadUrl", () => {
     vi.stubGlobal("window", {});
     const url = buildMediaDownloadUrl("/tmp/file.txt");
     expect(url).toBeNull();
+  });
+
+  it("uses dashboardApiBaseUrl when the production bridge hides apiBaseUrl", () => {
+    vi.stubGlobal("window", {
+      __HERMES_RUNTIME__: {
+        dashboardApiBaseUrl: "http://192.168.1.10:9119",
+        sessionToken: "tok123",
+      },
+    });
+
+    const url = buildMediaDownloadUrl("/tmp/report.txt");
+    expect(url).toContain("http://192.168.1.10:9119/api/files/download?path=");
+    expect(url).toContain("token=tok123");
   });
 
   it("handles paths with spaces correctly", () => {

@@ -28,4 +28,15 @@ describe("MessageText media download card", () => {
     expect(html).not.toContain("<a");
     expect(html).not.toContain("/api/files/download");
   });
+
+  it("keeps the MEDIA reference actionable while runtime bridge is unavailable", () => {
+    vi.stubGlobal("window", {});
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      <MessageText text="MEDIA:/tmp/report.txt" />,
+    );
+
+    expect(html).toContain("<button");
+    expect(html).not.toContain("mediaFilePlaceholder");
+  });
 });

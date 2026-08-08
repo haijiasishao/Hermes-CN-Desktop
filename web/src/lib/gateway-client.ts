@@ -19,6 +19,16 @@ const WAKE_WATCHDOG_INTERVAL_MS = 2_000;
 // 进程被冻结过（macOS 睡眠 / OS 节流 / 标签页 background）才会出现。
 const WAKE_GAP_THRESHOLD_MS = 5_000;
 
+/**
+ * Android WebView may keep a backgrounded WebSocket in OPEN state even after
+ * its network path has stopped delivering frames.  Desktop browsers are
+ * better at surfacing the close/error transition, so their visibility hint
+ * remains non-forceful.  Keep this policy explicit and unit-testable.
+ */
+export function shouldForceReconnectOnVisibility(androidRemoteOnly: boolean): boolean {
+  return androidRemoteOnly;
+}
+
 interface PendingRequest {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
@@ -397,17 +407,24 @@ export class GatewayClient {
       }, WAKE_WATCHDOG_INTERVAL_MS);
     }
 
-    // visibility / online 是"提示"级信号——用户 alt-tab 切回前台或网络恢复
-    // 时触发，**OS 没睡过觉**，已有 socket 通常仍然健康。强行 tear down 会
-    // 在每次窗口切换都向 UI 砸一发 "连接已断开"。这两条只在 ws 当前不是 OPEN
-    // 时才走重连路径（forceful=false）。
+    // visibility / online are hints from the renderer. Desktop keeps them
+    // non-forceful because the native resume signal and socket close/error
+    // handling are more reliable there. Android Remote-only deliberately treats
+    // visible as forceful: its WebView can report OPEN for a dead socket after
+    // the activity was backgrounded, so the foreground transition is the
+    // earliest reliable time to replace it.
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
       this.boundOnlineHandler = () => this.handleWake("online", false);
       window.addEventListener("online", this.boundOnlineHandler);
     }
     if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
       this.boundVisibilityHandler = () => {
-        if (document.visibilityState === "visible") this.handleWake("visible", false);
+        if (document.visibilityState === "visible") {
+          this.handleWake(
+            "visible",
+            shouldForceReconnectOnVisibility(runtime.androidRemoteOnly),
+          );
+        }
       };
       document.addEventListener("visibilitychange", this.boundVisibilityHandler);
     }

@@ -1071,7 +1071,22 @@ function recoverableAssistantId(
   const matched = storedMessages.some((storedMessage) =>
     isRecoverableStoredAssistant(liveAssistant, storedMessage, runtime.turnStartedAt),
   );
-  return matched ? liveAssistant.id : undefined;
+  if (matched) return liveAssistant.id;
+
+  // Android can miss the final gateway frame after the WebView is backgrounded
+  // even though the REST session log is already complete. If the stored
+  // assistant has real final text from this turn, it is safer to retire the
+  // optimistic live row than to leave a completed tool call spinning forever.
+  // Require createdAt >= turnStartedAt (stricter than the fuzzy text matcher)
+  // so a previous assistant reply cannot close a newly-started turn.
+  const turnStartedAt = runtime.turnStartedAt;
+  const storedFinalText = storedMessages.some((storedMessage) =>
+    storedMessage.role === "assistant" &&
+    storedMessage.status === "complete" &&
+    (turnStartedAt === undefined || storedMessage.createdAt >= turnStartedAt) &&
+    textFromParts(withoutProgressParts(storedMessage.parts)).trim().length > 0,
+  );
+  return storedFinalText ? liveAssistant.id : undefined;
 }
 
 export const recoverCompletedTurnFromStoredMessagesAtom = atom(

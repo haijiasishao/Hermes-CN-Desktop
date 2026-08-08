@@ -9,10 +9,10 @@
 
 import { runtime } from "./runtime";
 
-// Matches MEDIA: followed by an absolute path (Unix or Windows-style).
-// Must be on its own line or surrounded by whitespace to avoid false positives
-// inside code blocks or regular prose.
-const MEDIA_LINE_RE = /^MEDIA:(\/[^\r\n]*\.[a-zA-Z0-9]{1,10}|[A-Z]:\\[^\r\n]*\.[a-zA-Z0-9]{1,10})$/;
+// Matches MEDIA: followed by an absolute path (Unix or Windows-style). The
+// producer may insert one or more spaces after the colon and a sentence may
+// append Chinese/ASCII punctuation after the path; keep those out of `path`.
+const MEDIA_LINE_RE = /^MEDIA:\s*((?:\/[^\r\n]*?\.[a-zA-Z0-9]{1,64}|[A-Z]:\\[^\r\n]*?\.[a-zA-Z0-9]{1,64}))(?:[。！？？，,.;；])?$/;
 
 export interface MediaFileRef {
   /** Original path from the MEDIA: line. */
@@ -38,7 +38,9 @@ export function buildMediaDownloadUrl(filePath: string): string | null {
   let apiBaseUrl: string;
   let token: string | undefined;
   try {
-    apiBaseUrl = runtime.getApiUrl("");
+    const configuredBaseUrl = window.__HERMES_RUNTIME__?.apiBaseUrl
+      ?? window.__HERMES_RUNTIME__?.dashboardApiBaseUrl;
+    apiBaseUrl = configuredBaseUrl || runtime.getApiUrl("");
     token = runtime.getSessionToken();
   } catch {
     return null;

@@ -946,6 +946,52 @@ describe("startPromptAtom", () => {
     expect(runtime.turnStartedAt).toBeUndefined();
     expect(runtime.messages.map((message) => message.id)).toEqual(["live-user-1000"]);
   });
+
+  it("recovers a tool-bearing turn when the final answer arrived while Android was backgrounded", () => {
+    const store = createStore();
+
+    store.set(startPromptAtom, { sessionId: "s1", text: "读取文件并总结", now: 1_000 });
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        reduceGatewayEvent(
+          state.s1,
+          {
+            type: "reasoning.delta",
+            session_id: "s1",
+            payload: { text: "先读取文件。" },
+          },
+          1_500,
+        ),
+        {
+          type: "tool.start",
+          session_id: "s1",
+          payload: { tool_id: "t1", name: "read", context: "report.txt" },
+        },
+        1_600,
+      ),
+    }));
+
+    store.set(recoverCompletedTurnFromStoredMessagesAtom, {
+      sessionId: "s1",
+      now: 3_000,
+      storedMessages: [
+        runtimeMessage({
+          id: "stored-final",
+          sessionId: "s1",
+          role: "assistant",
+          status: "complete",
+          createdAt: 2_500,
+          parts: [{ type: "text", text: "文件读取完成，摘要如下。" }],
+        }),
+      ],
+    });
+
+    const runtime = store.get(chatRuntimeBySessionAtom).s1;
+    expect(runtime.streamStatus).toBe("complete");
+    expect(runtime.activeAssistantId).toBeUndefined();
+    expect(runtime.messages.map((message) => message.id)).toEqual(["live-user-1000"]);
+  });
 });
 
 describe("terminateAllStreamsAtom", () => {

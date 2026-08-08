@@ -1334,13 +1334,6 @@
   text-decoration: underline;
 }
 
-.mediaFilePlaceholder {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--h-text-muted, rgba(0, 0, 0, 0.5));
-}
-
 /* Reset button styles when .mediaFileLink is rendered as <button> */
 button.mediaFileLink {
   background: none;
@@ -1363,5 +1356,11 @@ button.mediaFileLink:disabled {
 .mediaFileError {
   font-size: 12px;
   color: var(--h-error, #d32f2f);
+  margin-left: 4px;
+}
+
+.mediaFileSuccess {
+  font-size: 12px;
+  color: var(--h-success, #2e7d32);
   margin-left: 4px;
 }

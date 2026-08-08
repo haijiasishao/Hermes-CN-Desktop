@@ -7,6 +7,7 @@ import {
   parseMediaFileRefs,
   type MediaFileRef,
 } from "@/lib/media-file-link";
+import { runtime } from "@/lib/runtime";
 import s from "./message-timeline.module.css";
 
 interface MessageTextProps {
@@ -63,37 +64,128 @@ function PlainMessageText({ text }: Pick<MessageTextProps, "text">) {
   );
 }
 
+function isShareAbort(error: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+/**
+ * Save the bytes returned by the native authenticated download command.
+ * Android Remote-only first uses the Tauri system save dialog and writes to
+ * its selected content URI. Web Share and a Blob anchor remain fallbacks for
+ * older/unsupported runtimes.
+ */
+async function saveDownloadedFile(
+  dataBase64: string,
+  filename: string,
+  mimeType: string | undefined,
+): Promise<"saved" | "shared" | "downloaded"> {
+  const binary = atob(dataBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const effectiveMimeType = mimeType || "application/octet-stream";
+  const blob = new Blob([bytes], { type: effectiveMimeType });
+  let nativeSaveError: unknown;
+
+  if (runtime.androidRemoteOnly) {
+    try {
+      const [{ save }, { writeFile }] = await Promise.all([
+        import("@tauri-apps/plugin-dialog"),
+        import("@tauri-apps/plugin-fs"),
+      ]);
+      const extension = filename.includes(".") ? filename.split(".").pop() : undefined;
+      const savePath = await save({
+        defaultPath: filename,
+        filters: extension ? [{ name: "文件", extensions: [extension] }] : undefined,
+      });
+      if (!savePath) throw new Error("已取消保存");
+      await writeFile(savePath, bytes);
+      return "saved";
+    } catch (error) {
+      if (isShareAbort(error) || (error instanceof Error && error.message === "已取消保存")) {
+        throw error;
+      }
+      nativeSaveError = error;
+    }
+  }
+
+  const navigatorLike = typeof navigator !== "undefined" ? navigator : undefined;
+
+  if (
+    runtime.androidRemoteOnly &&
+    typeof File !== "undefined" &&
+    navigatorLike &&
+    typeof navigatorLike.share === "function" &&
+    typeof navigatorLike.canShare === "function"
+  ) {
+    const file = new File([blob], filename, { type: effectiveMimeType });
+    try {
+      if (navigatorLike.canShare({ files: [file] })) {
+        await navigatorLike.share({ files: [file], title: filename });
+        return "shared";
+      }
+    } catch (error) {
+      if (isShareAbort(error)) throw new Error("已取消保存");
+      // A WebView can expose canShare but reject the later share call. Fall
+      // through to the ordinary anchor path before surfacing an error.
+    }
+  }
+
+  // If the Android system save plugin was present but failed, do not report a
+  // misleading successful blob download: Android WebView may silently ignore
+  // that fallback. Surface the native error to the visible card instead.
+  if (runtime.androidRemoteOnly && nativeSaveError) {
+    throw new Error(
+      `系统保存失败：${nativeSaveError instanceof Error ? nativeSaveError.message : "未知错误"}`,
+    );
+  }
+
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noreferrer";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return "downloaded";
+}
+
 /**
  * A card that renders a MEDIA: file reference as a downloadable link.
  * On Tauri/Android the native bridge carries cookies; on plain web it
  * falls back to a token-in-query download.
  */
 function MediaFileCard({ ref: mediaRef }: { ref: MediaFileRef }) {
-  const { filename, downloadUrl, path } = mediaRef;
+  const { filename, path } = mediaRef;
   const label = filename || path;
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   const handleDownload = async () => {
     if (downloading) return;
     setDownloading(true);
     setError(null);
+    setFeedback(null);
     try {
       const result = await downloadMediaFile(path);
       if (result.ok && result.dataBase64) {
-        // Native bridge: convert base64 → Blob → trigger save.
-        const binary = atob(result.dataBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes], { type: result.mimeType });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = result.filename ?? filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        const outcome = await saveDownloadedFile(
+          result.dataBase64,
+          result.filename ?? filename,
+          result.mimeType,
+        );
+        setFeedback(
+          outcome === "saved"
+            ? "已保存到所选位置"
+            : outcome === "shared"
+              ? "已打开系统保存面板"
+              : "已发起下载",
+        );
       } else if (result.ok && result.fallbackUrl) {
         // Browser fallback: use a temporary anchor to trigger download.
         const a = document.createElement("a");
@@ -104,8 +196,9 @@ function MediaFileCard({ ref: mediaRef }: { ref: MediaFileRef }) {
         document.body.appendChild(a);
         a.click();
         a.remove();
+        setFeedback("已发起下载");
       } else {
-        setError("下载失败");
+        setError("下载通道未就绪，请重新连接后重试");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "下载失败");
@@ -114,35 +207,24 @@ function MediaFileCard({ ref: mediaRef }: { ref: MediaFileRef }) {
     }
   };
 
-  if (downloadUrl || (typeof window !== "undefined" && window.hermesDesktop?.downloadFile)) {
-    return (
-      <div className={s.mediaFileCard}>
-        <FileDown size={16} aria-hidden="true" />
-        <button
-          type="button"
-          className={s.mediaFileLink}
-          title={`下载文件：${path}`}
-          onClick={handleDownload}
-          disabled={downloading}
-        >
-          {downloading ? "下载中…" : label}
-        </button>
-        {error && (
-          <span className={s.mediaFileError} role="alert">
-            {error}
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  // Safe fallback when runtime API info is unavailable.
   return (
     <div className={s.mediaFileCard}>
       <FileDown size={16} aria-hidden="true" />
-      <span className={s.mediaFilePlaceholder} title={path}>
-        {label}
-      </span>
+      <button
+        type="button"
+        className={s.mediaFileLink}
+        title={`下载文件：${path}`}
+        onClick={handleDownload}
+        disabled={downloading}
+      >
+        {downloading ? "下载中…" : label}
+      </button>
+      {feedback && <span className={s.mediaFileSuccess} role="status">{feedback}</span>}
+      {error && (
+        <span className={s.mediaFileError} role="alert">
+          {error}
+        </span>
+      )}
     </div>
   );
 }

@@ -310,6 +310,64 @@ describe("GatewayClient: auth close codes", () => {
   });
 });
 
+// ── Android lifecycle: foreground must force a socket health check ─────────
+
+describe("Android Remote lifecycle recovery", () => {
+  it("forces reconnect on foreground for Android Remote-only but not desktop", async () => {
+    const { shouldForceReconnectOnVisibility } = await import("./gateway-client");
+
+    expect(shouldForceReconnectOnVisibility(true)).toBe(true);
+    expect(shouldForceReconnectOnVisibility(false)).toBe(false);
+  });
+
+  it("replaces a half-open WebSocket when Android returns to the foreground", async () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, () => void>();
+    const MockWebSocket = class {
+      static instances: Array<InstanceType<typeof MockWebSocket>> = [];
+      static OPEN = 1;
+      readyState = 0;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      constructor(public url: string) {
+        MockWebSocket.instances.push(this);
+      }
+      close() {
+        this.readyState = 3;
+        this.onclose?.();
+      }
+    };
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal("window", {
+      location: { href: "http://localhost/", protocol: "http:" },
+      __HERMES_RUNTIME__: { androidRemoteOnly: true },
+      addEventListener: (type: string, callback: () => void) => listeners.set(`window:${type}`, callback),
+      removeEventListener: (type: string) => listeners.delete(`window:${type}`),
+    });
+    vi.stubGlobal("document", {
+      visibilityState: "hidden",
+      addEventListener: (type: string, callback: () => void) => listeners.set(`document:${type}`, callback),
+      removeEventListener: (type: string) => listeners.delete(`document:${type}`),
+    });
+
+    const { GatewayClient } = await import("./gateway-client");
+    const client = new GatewayClient((url) => new MockWebSocket(url) as unknown as WebSocket);
+    client.enableAutoReconnect();
+    const connected = client.connect();
+    MockWebSocket.instances[0].readyState = MockWebSocket.OPEN;
+    MockWebSocket.instances[0].onopen?.();
+    await connected;
+
+    (globalThis.document as { visibilityState: string }).visibilityState = "visible";
+    listeners.get("document:visibilitychange")?.();
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.close();
+  });
+});
+
 // ── GatewayClient: event parsing ──────────────────────────────────────
 
 describe("GatewayClient: event parsing from relay frames", () => {
