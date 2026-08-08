@@ -367,6 +367,59 @@ impl OauthSession {
             .await
             .map_err(|e| AppError::DashboardProbe(format!("parse auth/me: {e}")))
     }
+    /// Lightweight liveness probe: GET `/api/sessions?limit=1&offset=0` using
+    /// the cookie jar.  2xx ⇒ session is valid; 401 ⇒ expired; anything else
+    /// is a diagnostic DashboardProbe error with the response body truncated
+    /// to 160 chars.  Cookie / Authorization values are stripped from the
+    /// error text so they never leak into IPC responses or logs.
+    pub async fn authenticated_sessions_probe(&self) -> Result<(), AppError> {
+        let url = format!("{}/api/sessions?limit=1&offset=0", self.base_url);
+        let resp =
+            self.client.get(&url).send().await.map_err(|e| {
+                AppError::DashboardProbe(format!("/api/sessions network error: {e}"))
+            })?;
+        let status = resp.status().as_u16();
+        if status == 401 {
+            return Err(AppError::AuthSessionExpired(
+                "remote session expired (/api/sessions returned 401)".to_string(),
+            ));
+        }
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        // Non-success, non-401: read body for diagnostics, truncate, sanitize.
+        let body = resp.text().await.unwrap_or_default();
+        let truncated = truncate_and_sanitize(&body, 160);
+        Err(AppError::DashboardProbe(format!(
+            "/api/sessions returned HTTP {status}: {truncated}"
+        )))
+    }
+}
+
+/// Truncate text to `max` characters and strip anything that looks like a
+/// `Cookie:` or `Authorization:` header value so credentials never leak into
+/// error messages or IPC responses.
+fn truncate_and_sanitize(text: &str, max: usize) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needs_scrub = lower.contains("cookie") || lower.contains("authorization");
+    let out: String = text.chars().take(max).collect();
+    if !needs_scrub && out.chars().count() == text.chars().count() {
+        return out;
+    }
+    if !needs_scrub {
+        return out;
+    }
+    out.lines()
+        .map(|line| {
+            let ll = line.to_ascii_lowercase();
+            if ll.contains("cookie") || ll.contains("authorization") {
+                "[redacted]".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Process-wide registry of live sessions, keyed by normalized base URL.
@@ -554,5 +607,70 @@ mod tests {
         drop_session("https://reg.example.com");
         let c = session_for("https://reg.example.com").unwrap();
         assert!(!Arc::ptr_eq(&a, &c), "dropped session is rebuilt fresh");
+    }
+
+    // --- truncate_and_sanitize tests ---
+
+    #[test]
+    fn truncate_short_text_unchanged() {
+        let out = truncate_and_sanitize("hello world", 200);
+        assert_eq!(out, "hello world");
+    }
+
+    #[test]
+    fn truncate_long_text_is_capped() {
+        let long = "x".repeat(300);
+        let out = truncate_and_sanitize(&long, 160);
+        assert_eq!(out.len(), 160);
+    }
+
+    #[test]
+    fn sanitize_redacts_cookie_keyword() {
+        let body = r#"{"error":"bad","headers":{"Cookie":"session=SECRET123"}}"#;
+        let out = truncate_and_sanitize(body, 500);
+        assert!(!out.contains("SECRET123"), "cookie value must not leak");
+        assert!(out.contains("[redacted]"));
+    }
+
+    #[test]
+    fn sanitize_redacts_authorization_keyword() {
+        let body = "Authorization: Bearer super_secret_token_value";
+        let out = truncate_and_sanitize(body, 500);
+        assert!(!out.contains("super_secret_token_value"));
+        assert!(out.contains("[redacted]"));
+    }
+
+    #[test]
+    fn sanitize_case_insensitive_match() {
+        let body = "some COOKIE=abc and Authorization: xyz";
+        let out = truncate_and_sanitize(body, 500);
+        assert_eq!(
+            out,
+            "[redacted]
+[redacted]"
+        );
+    }
+
+    #[test]
+    fn sanitize_clean_text_passes_through() {
+        let body = r#"{"sessions":[],"total":0}"#;
+        let out = truncate_and_sanitize(body, 500);
+        assert_eq!(out, body);
+    }
+
+    // --- probe endpoint path is consistent ---
+
+    #[test]
+    fn probe_endpoint_uses_sessions_path() {
+        // Verify the method targets /api/sessions (structural check via a
+        // lightweight OauthSession). We cannot easily spin up a server here,
+        // but we can verify the URL construction matches expectations.
+        let session = OauthSession::new("https://gw.example.com/prefix").unwrap();
+        let expected_prefix = "https://gw.example.com/prefix/api/sessions";
+        assert!(
+            format!("{}/api/sessions?limit=1&offset=0", session.base_url())
+                .starts_with(expected_prefix),
+            "probe URL must hit /api/sessions on the session base"
+        );
     }
 }

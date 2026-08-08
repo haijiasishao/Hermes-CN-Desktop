@@ -353,6 +353,35 @@ export function formatKanbanDate(value: string | number | null | undefined): str
   });
 }
 
+/** Return a human-readable relative time string (Chinese). */
+export function formatRelativeTime(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "";
+  let ts: number;
+  if (typeof value === "number") {
+    ts = Math.abs(value) < 1_000_000_000_000 ? value * 1000 : value;
+  } else if (/^\d+(?:\.\d+)?$/.test(String(value).trim())) {
+    const n = Number(value);
+    ts = Math.abs(n) < 1_000_000_000_000 ? n * 1000 : n;
+  } else {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "";
+    ts = d.getTime();
+  }
+  const diff = Date.now() - ts;
+  if (diff < 0) return "刚刚";
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return "刚刚";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} 个月前`;
+  return `${Math.floor(months / 12)} 年前`;
+}
+
 /** Keep the current mobile column when possible, otherwise select the first API column. */
 export function selectKanbanStatus(
   columns: Array<{ name: string }>,

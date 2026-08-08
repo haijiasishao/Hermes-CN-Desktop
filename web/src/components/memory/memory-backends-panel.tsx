@@ -21,6 +21,12 @@ import {
 } from "./memory-backend-utils";
 import { dashboardAuthErrorMessage, isDashboardAuthError } from "@/lib/dashboard-error";
 import s from "./memory-backends.module.css";
+function isDashboardStatusNotFound(error: unknown): boolean {
+  if (error instanceof Error && /HTTP\s+404/.test(error.message)) return true;
+  if (error && typeof error === "object" && "status" in error && (error as { status: number }).status === 404) return true;
+  return false;
+}
+
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -62,7 +68,24 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
     hindsightStatus.error,
     configQuery.error,
   ].some(isDashboardAuthError);
-  const overallState = memoryBackendState(activeStatus, dashboardAuthRequired);
+  const activeProviderOption = providersQuery.data?.options?.find((o) => o.name === active);
+  const activeStatusUnavailable = Boolean(
+    active && isDashboardStatusNotFound(statusQueries[active as VisibleMemoryProvider]?.error) && !statusQueries[active as VisibleMemoryProvider]?.data,
+  );
+  // Non-404, non-auth status errors (500, network) — surface as failure state
+  // instead of silently falling through to the misleading "未配置" label.
+  const activeStatusError = Boolean(
+    active && statusQueries[active as VisibleMemoryProvider]?.isError
+    && !statusQueries[active as VisibleMemoryProvider]?.data
+    && !activeStatusUnavailable
+    && !isDashboardAuthError(statusQueries[active as VisibleMemoryProvider]?.error),
+  );
+  const overallState = memoryBackendState(activeStatus, dashboardAuthRequired, {
+    statusUnavailable: activeStatusUnavailable,
+    statusError: activeStatusError,
+    providerActive: active === providersQuery.data?.active,
+    providerConfigured: activeProviderOption?.configured,
+  });
 
   const refreshAll = () => {
     void providersQuery.refetch();
@@ -146,7 +169,22 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
           {VISIBLE_MEMORY_PROVIDERS.map((provider) => {
             const meta = MEMORY_BACKEND_META[provider];
             const status = statusQueries[provider].data;
-            const state = memoryBackendState(status, dashboardAuthRequired);
+            const providerStatusUnavailable = Boolean(
+              isDashboardStatusNotFound(statusQueries[provider].error) && !statusQueries[provider].data,
+            );
+            const providerStatusError = Boolean(
+              statusQueries[provider].isError
+              && !statusQueries[provider].data
+              && !providerStatusUnavailable
+              && !isDashboardAuthError(statusQueries[provider].error),
+            );
+            const providerOption = providersQuery.data?.options?.find((o) => o.name === provider);
+            const state = memoryBackendState(status, dashboardAuthRequired, {
+              statusUnavailable: providerStatusUnavailable,
+              statusError: providerStatusError,
+              providerActive: provider === providersQuery.data?.active,
+              providerConfigured: providerOption?.configured,
+            });
             return (
               <Link
                 key={provider}

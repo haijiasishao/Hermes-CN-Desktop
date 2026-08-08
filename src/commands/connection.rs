@@ -753,6 +753,24 @@ async fn apply_remote_oauth(
         });
     }
 
+    // Verify the REST session boundary with the same cookie client as the WS
+    // ticket. Do this before detaching the current backend so a failed probe
+    // leaves the existing connection intact.
+    if let Err(err) = session.authenticated_sessions_probe().await {
+        let msg = match err {
+            AppError::AuthSessionExpired(_) => {
+                "远程登录已过期或尚未登录，请在设置中登录后再连接".to_string()
+            }
+            other => format!("远程会话 REST 探针失败：{}，已保存配置但未切换", other),
+        };
+        return Ok(ApplyConnectionResult {
+            ok: false,
+            mode: "remote".to_string(),
+            error: Some(msg),
+            ..Default::default()
+        });
+    }
+
     detach_current_backend(state)?;
 
     // Gateway URL carries no token in oauth mode; the relay mints a ticket per

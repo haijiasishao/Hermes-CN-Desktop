@@ -158,6 +158,17 @@ export function ConnectionSection({
       const r = await desktop.connectionOauthLogin(trimmedRemoteUrl);
       if (r.ok) {
         setIdentity(r.identity ?? null);
+        if (desktop.applyConnectionConfig) {
+          const applied = await desktop.applyConnectionConfig({
+            mode: "remote",
+            remoteUrl: trimmedRemoteUrl,
+            remoteAuthMode: "oauth",
+          });
+          if (!applied.ok) {
+            setMessage({ tone: "error", text: applied.error ?? "OAuth 连接应用失败" });
+            return;
+          }
+        }
         setMessage({ tone: "ok", text: "登录成功" });
         notifyConnectionAuthRestored();
       } else {
@@ -184,6 +195,17 @@ export function ConnectionSection({
       if (r.ok) {
         setIdentity(r.identity ?? null);
         setPwPass("");
+        if (desktop.applyConnectionConfig) {
+          const applied = await desktop.applyConnectionConfig({
+            mode: "remote",
+            remoteUrl: trimmedRemoteUrl,
+            remoteAuthMode: "oauth",
+          });
+          if (!applied.ok) {
+            setMessage({ tone: "error", text: applied.error ?? "OAuth 连接应用失败" });
+            return;
+          }
+        }
         setMessage({ tone: "ok", text: "登录成功" });
         notifyConnectionAuthRestored();
       } else {

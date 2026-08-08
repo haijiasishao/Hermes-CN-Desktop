@@ -84,7 +84,7 @@ export function useSessions(limit = 50, offset = 0, opts: UseSessionsOptions = {
     queryKey: ["sessions", profile, limit, offset, includeArchived ? "all" : "active"],
     queryFn: ({ signal }) =>
       fetchJSON(
-        `/api/sessions?limit=${limit}&offset=${offset}${includeArchived ? "&include_archived=true" : ""}`,
+        `/api/sessions?limit=${limit}&offset=${offset}${includeArchived ? "&archived=include" : ""}`,
         { signal },
         SessionsResponse,
       ),

@@ -66,7 +66,12 @@ fn in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
 /// configured oauth remote for this URL (so a fresh login is remembered).
 fn persist_login(base_url: &str, cookies: Vec<PersistedCookie>) {
     let mut config = connection::read_config();
-    let is_target = config.remote_url.as_deref() == Some(base_url);
+    let is_target = config
+        .remote_url
+        .as_deref()
+        .and_then(|u| connection::normalize_remote_base_url(u).ok())
+        .as_deref()
+        == Some(base_url);
     if is_target {
         config.remote_session = Some(cookies);
         if config.remote_auth_mode == connection::RemoteAuthMode::Token {
@@ -104,8 +109,16 @@ fn promote_active_remote_to_oauth(
     session: std::sync::Arc<oauth_session::OauthSession>,
 ) -> AppResult<()> {
     let mut inner = state.inner.lock()?;
-    if inner.connection_mode == connection::ConnectionMode::Remote && inner.api_base_url == base_url
-    {
+    if inner.connection_mode == connection::ConnectionMode::Remote {
+        let matches = connection::normalize_remote_base_url(&inner.api_base_url).ok()
+            == connection::normalize_remote_base_url(base_url).ok();
+        if !matches {
+            log::debug!(
+                "promote_active_remote_to_oauth: skipping, api_base_url={} != base_url (normalized)",
+                inner.api_base_url,
+            );
+            return Ok(());
+        }
         inner.gateway_url = dashboard::build_gateway_url(base_url, None);
         inner.session_token = None;
         inner.oauth_session = Some(session);
@@ -340,7 +353,13 @@ pub async fn connection_oauth_logout(
 
     // Clear persisted session cookies.
     let mut config = connection::read_config();
-    if config.remote_url.as_deref() == Some(base_url.as_str()) {
+    if config
+        .remote_url
+        .as_deref()
+        .and_then(|u| connection::normalize_remote_base_url(u).ok())
+        .as_deref()
+        == Some(base_url.as_str())
+    {
         config.remote_session = None;
         let _ = connection::write_config(&config);
     }
@@ -348,7 +367,9 @@ pub async fn connection_oauth_logout(
     // If the live connection uses this session, drop it so REST/WS stop.
     {
         let mut inner = state.inner.lock()?;
-        if inner.api_base_url == base_url {
+        if connection::normalize_remote_base_url(&inner.api_base_url).ok()
+            == connection::normalize_remote_base_url(base_url).ok()
+        {
             inner.oauth_session = None;
         }
     }
@@ -461,5 +482,35 @@ mod tests {
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].name, "__Host-hermes_session_at");
         assert_eq!(extracted[0].value, "GATEWAY");
+    }
+
+    // --- URL normalization equivalence for persist/promote/logout ---
+
+    #[test]
+    fn normalized_urls_match_despite_trailing_slash() {
+        let a = connection::normalize_remote_base_url("http://gateway.example.com/").unwrap();
+        let b = connection::normalize_remote_base_url("http://gateway.example.com").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn normalized_urls_match_despite_host_case() {
+        let a = connection::normalize_remote_base_url("http://Gateway.Example.COM:9119").unwrap();
+        let b = connection::normalize_remote_base_url("http://gateway.example.com:9119").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn normalized_urls_match_despite_path_trailing_slash() {
+        let a = connection::normalize_remote_base_url("http://host:9120/prefix/").unwrap();
+        let b = connection::normalize_remote_base_url("http://host:9120/prefix").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn normalized_urls_differ_for_distinct_hosts() {
+        let a = connection::normalize_remote_base_url("http://host-a:9120").unwrap();
+        let b = connection::normalize_remote_base_url("http://host-b:9120").unwrap();
+        assert_ne!(a, b);
     }
 }

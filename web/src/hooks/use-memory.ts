@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchJSON, postJSON, putJSON, raceAbort } from "@/lib/transport";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import type { MemoryInfo, MemoryMutationResult } from "@/lib/runtime";
+import { errorStatus } from "@/lib/dashboard-error";
 import {
   MemoryProviderConfigMutationResponse,
   MemoryProviderConfigResponse,
@@ -188,7 +189,14 @@ export function useMemoryProviderStatus(provider: VisibleMemoryProvider, enabled
     ),
     enabled,
     staleTime: 10_000,
-    refetchInterval: enabled ? 30_000 : false,
+    // Older Dashboards do not expose this optional capability. Once a 404 is
+    // observed, do not retry or poll every 30s; configuration metadata from
+    // /api/memory remains authoritative for the UI.
+    retry: (failureCount, error) => errorStatus(error) !== 404 && failureCount < 2,
+    refetchInterval: (query) => {
+      if (!enabled || errorStatus(query.state.error) === 404) return false;
+      return 30_000;
+    },
     refetchOnWindowFocus: true,
   });
 }

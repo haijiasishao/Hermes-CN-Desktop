@@ -102,6 +102,17 @@ function checkPixels(file, source, index, property, value, excerpt) {
 function checkRadius(file, source, index, property, value, excerpt, selector = "") {
   const parts = String(value).trim().split(/\s+/);
   if (parts.length > 0 && parts.every((part) => /^(?:0|0px)$/.test(part))) return;
+  // The Android Kanban intentionally adopts Hermes Studio's rounded card and
+  // column surfaces. Keep this exception scoped to the module and approved
+  // 4px-grid radii; all other application surfaces remain square.
+  if (
+    /kanban\.module\.css$/.test(file)
+    && (
+      /\.(?:column|taskCard|statusMarker)\b/.test(selector)
+      || parts.every((part) => part === "50%")
+    )
+    && parts.every((part) => /^(?:4|8|12)px$/.test(part) || part === "50%")
+  ) return;
   if (parts.length === 1 && parts[0] === "50%" && circularSelector.test(selector)) return;
   addViolation(file, source, index, property, String(value).trim(), excerpt);
 }

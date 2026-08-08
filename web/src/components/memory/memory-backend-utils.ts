@@ -79,12 +79,32 @@ export function isMemoryFieldVisible(
   return Object.entries(field.when).every(([key, expected]) => String(values[key] ?? "") === String(expected));
 }
 
-export function memoryBackendState(status?: MemoryProviderRuntimeStatusResponse, authRequired = false): {
-  label: "未配置" | "需登录" | "已保存但离线" | "在线可用" | "当前启用" | "运行异常";
+export function memoryBackendState(
+  status?: MemoryProviderRuntimeStatusResponse,
+  authRequired = false,
+  opts?: { statusUnavailable?: boolean; statusError?: boolean; providerActive?: boolean; providerConfigured?: boolean },
+): {
+  label: "未配置" | "需登录" | "已保存但离线" | "在线可用" | "当前启用" | "运行异常" | "当前启用（状态接口不可用）" | "已配置（状态接口不可用）" | "状态未知（状态接口不可用）" | "当前启用（状态读取失败）" | "已配置（状态读取失败）" | "状态读取失败";
   tone: "muted" | "warn" | "ok" | "active" | "error";
 } {
   if (authRequired) return { label: "需登录", tone: "warn" };
-  if (!status?.configured) return { label: "未配置", tone: "muted" };
+  // 404 (statusUnavailable) takes precedence: the endpoint genuinely does not
+  // exist, so the provider metadata is simply unavailable — not a runtime error.
+  if (!status?.configured) {
+    if (opts?.statusUnavailable) {
+      if (opts.providerActive) return { label: "当前启用（状态接口不可用）", tone: "active" };
+      if (opts.providerConfigured) return { label: "已配置（状态接口不可用）", tone: "ok" };
+      return { label: "状态未知（状态接口不可用）", tone: "warn" };
+    }
+    // Non-404 status error (500, network, etc.) — surface the failure rather
+    // than silently falling through to the misleading "未配置" label.
+    if (opts?.statusError) {
+      if (opts.providerActive) return { label: "当前启用（状态读取失败）", tone: "error" };
+      if (opts.providerConfigured) return { label: "已配置（状态读取失败）", tone: "error" };
+      return { label: "状态读取失败", tone: "error" };
+    }
+    return { label: "未配置", tone: "muted" };
+  }
   if (!status.reachable) return { label: "已保存但离线", tone: "warn" };
   if (!status.healthy) return { label: "运行异常", tone: "error" };
   if (status.active) return { label: "当前启用", tone: "active" };

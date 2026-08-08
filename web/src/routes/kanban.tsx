@@ -8,6 +8,7 @@ import {
   STATUS_COLORS,
   kanbanErrorToChinese,
   formatKanbanDate,
+  formatRelativeTime,
   selectKanbanStatus,
   fetchKanbanBoard,
   fetchKanbanStats,
@@ -73,18 +74,33 @@ function StatsBar({ stats }: { stats: KanbanStats | null }) {
 /* ------------------------------------------------------------------ */
 
 function TaskCard({ task, onClick }: { task: KanbanTask; onClick: () => void }) {
+  const color = STATUS_COLORS[task.status] ?? "#888";
+  const relTime = formatRelativeTime(task.completed_at ?? task.started_at ?? task.created_at);
   return (
     <button type="button" className={s.taskCard} onClick={onClick} aria-label={task.title}>
+      <div className={s.cardHeading}>
+        <span className={s.statusMarker} style={{ background: color }} />
+        {task.id ? <span className={s.taskId}>{task.id}</span> : null}
+        {task.priority && task.priority !== "normal" ? (
+          <span className={s.taskPriority} data-priority={task.priority}>{task.priority}</span>
+        ) : null}
+      </div>
       <div className={s.taskTitle}>{task.title || "未命名任务"}</div>
       {task.latest_summary || task.result ? (
         <div className={s.taskSummary}>{task.latest_summary || task.result}</div>
       ) : null}
-      <div className={s.taskMeta}>
-        {task.id ? <span className={s.taskId}>{task.id}</span> : null}
-        {task.priority && task.priority !== "normal" ? (
-          <span className={s.taskPriority}>{task.priority}</span>
-        ) : null}
-        {task.assignee ? <span className={s.taskAssignee}>{task.assignee}</span> : null}
+      <div className={s.cardFooter}>
+        <div className={s.cardFooterLeft}>
+          {task.assignee ? (
+            <span className={s.assignee}>
+              <span className={s.assigneeAvatar} aria-hidden="true">
+                {task.assignee.charAt(0).toUpperCase()}
+              </span>
+              <span className={s.assigneeName}>{task.assignee}</span>
+            </span>
+          ) : null}
+        </div>
+        {relTime ? <span className={s.relativeTime}>{relTime}</span> : null}
       </div>
     </button>
   );
