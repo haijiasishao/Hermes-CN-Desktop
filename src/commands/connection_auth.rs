@@ -368,7 +368,7 @@ pub async fn connection_oauth_logout(
     {
         let mut inner = state.inner.lock()?;
         if connection::normalize_remote_base_url(&inner.api_base_url).ok()
-            == connection::normalize_remote_base_url(base_url).ok()
+            == connection::normalize_remote_base_url(&base_url).ok()
         {
             inner.oauth_session = None;
         }
