@@ -2,6 +2,7 @@ import { Activity, CheckCircle2, Cpu, Database, XCircle } from "lucide-react";
 import { Button, LoadingState } from "@hermes/shared-ui";
 import type { MemoryProviderRuntimeStatusResponse } from "@hermes/protocol";
 import type { VisibleMemoryProvider } from "@/hooks/use-memory";
+import { dashboardAuthErrorMessage } from "@/lib/dashboard-error";
 import {
   asRecord,
   compactHealthDetail,
@@ -18,6 +19,7 @@ interface Props {
   status?: MemoryProviderRuntimeStatusResponse;
   loading: boolean;
   refreshing: boolean;
+  authRequired?: boolean;
   onRefresh(): void;
 }
 
@@ -192,8 +194,8 @@ function HindsightStatus({ status }: { status: MemoryProviderRuntimeStatusRespon
   );
 }
 
-export function MemoryProviderStatus({ provider, status, loading, refreshing, onRefresh }: Props) {
-  const state = memoryBackendState(status);
+export function MemoryProviderStatus({ provider, status, loading, refreshing, authRequired = false, onRefresh }: Props) {
+  const state = memoryBackendState(status, authRequired);
   if (loading && !status) return <LoadingState variant="block" label="正在检测运行状态…" />;
 
   return (
@@ -212,6 +214,7 @@ export function MemoryProviderStatus({ provider, status, loading, refreshing, on
         </div>
       </div>
 
+      {authRequired && <div className={s.inlineError}>{dashboardAuthErrorMessage("远程 Dashboard")} OpenViking 配置和运行状态将在登录后重新读取。</div>}
       {status && (
         <div className={s.connectionStrip}>
           <span><strong>Endpoint</strong>{status.endpoint || "未配置"}</span>

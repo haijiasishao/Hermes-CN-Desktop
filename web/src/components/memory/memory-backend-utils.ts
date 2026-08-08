@@ -79,10 +79,11 @@ export function isMemoryFieldVisible(
   return Object.entries(field.when).every(([key, expected]) => String(values[key] ?? "") === String(expected));
 }
 
-export function memoryBackendState(status?: MemoryProviderRuntimeStatusResponse): {
-  label: "未配置" | "已保存但离线" | "在线可用" | "当前启用" | "运行异常";
+export function memoryBackendState(status?: MemoryProviderRuntimeStatusResponse, authRequired = false): {
+  label: "未配置" | "需登录" | "已保存但离线" | "在线可用" | "当前启用" | "运行异常";
   tone: "muted" | "warn" | "ok" | "active" | "error";
 } {
+  if (authRequired) return { label: "需登录", tone: "warn" };
   if (!status?.configured) return { label: "未配置", tone: "muted" };
   if (!status.reachable) return { label: "已保存但离线", tone: "warn" };
   if (!status.healthy) return { label: "运行异常", tone: "error" };

@@ -33,6 +33,7 @@ function status(overrides: Partial<MemoryProviderRuntimeStatusResponse> = {}): M
 describe("memory backend UI state", () => {
   it("maps all runtime combinations to the locked product labels", () => {
     expect(memoryBackendState(undefined).label).toBe("未配置");
+    expect(memoryBackendState(undefined, true)).toEqual({ label: "需登录", tone: "warn" });
     expect(memoryBackendState(status({ reachable: false, healthy: false })).label).toBe("已保存但离线");
     expect(memoryBackendState(status()).label).toBe("在线可用");
     expect(memoryBackendState(status({ active: true })).label).toBe("当前启用");

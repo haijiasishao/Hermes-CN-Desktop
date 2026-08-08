@@ -41,7 +41,15 @@ export function ConnectionAuthBanner() {
     // both paths instead of requiring another save/reload cycle.
     const offRestored = onConnectionAuthRestored(() => {
       setExpired(false);
-      forceExistingGatewayReconnect("oauth-relogin");
+      void (async () => {
+        // Password/OAuth login promotes the native AppState to cookie mode.
+        // Refresh the renderer's gateway URL before replacing the old
+        // token-authenticated WebSocket.
+        try {
+          await desktop?.refreshGatewayUrl?.();
+        } catch {}
+        forceExistingGatewayReconnect("oauth-relogin");
+      })();
     });
 
     return () => {

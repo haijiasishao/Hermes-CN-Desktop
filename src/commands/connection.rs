@@ -323,6 +323,20 @@ async fn fetch_status(
     Ok((status, body))
 }
 
+async fn fetch_status_with_client(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<(u16, Option<serde_json::Value>), reqwest::Error> {
+    let response = client
+        .get(format!("{}/api/status", base_url))
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    let status = response.status().as_u16();
+    let body = response.json::<serde_json::Value>().await.ok();
+    Ok((status, body))
+}
+
 fn status_field<'a>(
     body: &'a Option<serde_json::Value>,
     key: &str,
@@ -549,7 +563,7 @@ async fn test_oauth_connection(
         return Ok(result);
     }
 
-    match fetch_status(&base_url, None).await {
+    match fetch_status_with_client(session.client(), &base_url).await {
         Ok((status, _)) => {
             result.http_status = Some(status);
             result.http_ok = (200..300).contains(&status);

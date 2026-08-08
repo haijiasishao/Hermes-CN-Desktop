@@ -347,7 +347,7 @@ const tauriBridge = {
     return window.__HERMES_RUNTIME__;
   },
 
-  async refreshGatewayUrl(): Promise<{ gatewayUrl: string; sessionToken?: string }> {
+  async refreshGatewayUrl(): Promise<{ gatewayUrl: string; sessionToken?: string | null }> {
     return invokeCommand("refresh_gateway_url");
   },
 

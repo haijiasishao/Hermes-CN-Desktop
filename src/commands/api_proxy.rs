@@ -396,6 +396,19 @@ mod tests {
     }
 
     #[test]
+    fn auth_expired_detection_requires_a_401_auth_envelope() {
+        assert!(should_emit_auth_expired(
+            401,
+            r#"{"error":"unauthenticated","reason":"no_cookie","login_url":"/login"}"#,
+        ));
+        assert!(!should_emit_auth_expired(
+            502,
+            r#"{"error":"unauthenticated"}"#,
+        ));
+        assert!(!should_emit_auth_expired(401, r#"{"error":"other"}"#));
+    }
+
+    #[test]
     fn external_url_shape_accepts_public_https_hosts() {
         let url = validate_external_url_shape("https://api.example.com/v1/models").unwrap();
         assert_eq!(url.scheme(), "https");
@@ -645,7 +658,7 @@ pub async fn api_request_from_state(
         if session.take_dirty() {
             crate::oauth_session::persist_if_dirty(&api_base_url, session);
         }
-        if result.status == 401 && is_auth_expired_body(&result.body) {
+        if should_emit_auth_expired(result.status, &result.body) {
             emit_auth_expired(app, state, &api_base_url, &result.body);
         }
         return Ok(result);
@@ -663,6 +676,9 @@ pub async fn api_request_from_state(
         &hermes_home_base,
     )
     .await?;
+    if should_emit_auth_expired(first.status, &first.body) {
+        emit_auth_expired(app, state, &api_base_url, &first.body);
+    }
     // Remote tokens are static (entered in Settings or via env); the
     // refresh-by-scraping-the-dashboard-HTML recovery below only applies to
     // managed runtime and loopback local CLI dashboards, whose token may
@@ -725,6 +741,10 @@ fn is_auth_expired_body(body: &str) -> bool {
         .map(|e| e == "session_expired" || e == "unauthenticated")
         .unwrap_or(false)
         || json.get("login_url").is_some()
+}
+
+fn should_emit_auth_expired(status: u16, body: &str) -> bool {
+    status == 401 && is_auth_expired_body(body)
 }
 
 /// Emit `connection-auth-expired` to the frontend so it can surface the

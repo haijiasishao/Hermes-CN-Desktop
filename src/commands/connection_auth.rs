@@ -16,14 +16,15 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+use crate::android_compat as dashboard;
 use crate::connection;
 use crate::error::{AppError, AppResult};
 use crate::oauth_session::{
     self, AuthIdentity, PersistedCookie, AT_COOKIE_VARIANTS, RT_COOKIE_VARIANTS,
 };
-use crate::state::AppState;
+use crate::state::{AppState, DashboardHandle};
 
 const LOGIN_WINDOW_LABEL: &str = "hermes-oauth-login";
 const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(750);
@@ -94,11 +95,31 @@ async fn finish_login(
     Ok(identity)
 }
 
+/// Promote an already-connected token-mode remote to the authenticated cookie
+/// session immediately after login. Without this live-state swap, the next
+/// REST request would keep using the old token proxy until a full reconnect.
+fn promote_active_remote_to_oauth(
+    state: &State<'_, AppState>,
+    base_url: &str,
+    session: std::sync::Arc<oauth_session::OauthSession>,
+) -> AppResult<()> {
+    let mut inner = state.inner.lock()?;
+    if inner.connection_mode == connection::ConnectionMode::Remote && inner.api_base_url == base_url
+    {
+        inner.gateway_url = dashboard::build_gateway_url(base_url, None);
+        inner.session_token = None;
+        inner.oauth_session = Some(session);
+        inner.dashboard_handle = Some(DashboardHandle::remote_oauth(base_url.to_string()));
+    }
+    Ok(())
+}
+
 /// Open the OAuth login window and wait for the session cookie to appear.
 #[tauri::command]
 pub async fn connection_oauth_login(
     input: OauthLoginInput,
     app: tauri::AppHandle,
+    state: State<'_, AppState>,
 ) -> Result<OauthLoginResult, AppError> {
     let base_url = connection::normalize_remote_base_url(&input.remote_url)?;
 
@@ -176,6 +197,7 @@ pub async fn connection_oauth_login(
             session.import_cookies(&extracted);
             match finish_login(&base_url, &session).await {
                 Ok(identity) => {
+                    promote_active_remote_to_oauth(&state, &base_url, session.clone())?;
                     let _ = window.destroy();
                     return Ok(OauthLoginResult {
                         ok: true,
@@ -199,6 +221,7 @@ pub async fn connection_oauth_login(
 #[tauri::command]
 pub async fn connection_password_login(
     input: PasswordLoginInput,
+    state: State<'_, AppState>,
 ) -> Result<OauthLoginResult, AppError> {
     let base_url = connection::normalize_remote_base_url(&input.remote_url)?;
     let session = oauth_session::session_for(&base_url)?;
@@ -257,11 +280,14 @@ pub async fn connection_password_login(
     }
 
     match finish_login(&base_url, &session).await {
-        Ok(identity) => Ok(OauthLoginResult {
-            ok: true,
-            identity: Some(identity),
-            error: None,
-        }),
+        Ok(identity) => {
+            promote_active_remote_to_oauth(&state, &base_url, session.clone())?;
+            Ok(OauthLoginResult {
+                ok: true,
+                identity: Some(identity),
+                error: None,
+            })
+        }
         Err(AppError::AuthSessionExpired(_)) => Ok(OauthLoginResult {
             ok: false,
             identity: None,

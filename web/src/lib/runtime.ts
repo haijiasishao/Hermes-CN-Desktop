@@ -477,7 +477,7 @@ declare global {
       codingAgentsCheck?(): Promise<CodingAgentsCheckResult>;
       checkDesktopUpdate?(): Promise<DesktopUpdateManifestFetchResult>;
       getRuntimeConfig?(): Window["__HERMES_RUNTIME__"];
-      refreshGatewayUrl?(): Promise<{ gatewayUrl: string; sessionToken?: string }>;
+      refreshGatewayUrl?(): Promise<{ gatewayUrl: string; sessionToken?: string | null }>;
       getRuntimeInfo?(): Promise<RuntimeInfo>;
       checkRuntimeUpdate?(): Promise<RuntimeUpdateCheckResult>;
       installRuntimeUpdate?(): Promise<RuntimeInstallUpdateResult>;
@@ -655,9 +655,7 @@ export const runtime = {
         const result = await window.hermesDesktop.refreshGatewayUrl();
         if (window.__HERMES_RUNTIME__) {
           window.__HERMES_RUNTIME__.gatewayUrl = result.gatewayUrl;
-          if (result.sessionToken) {
-            window.__HERMES_RUNTIME__.sessionToken = result.sessionToken;
-          }
+          window.__HERMES_RUNTIME__.sessionToken = result.sessionToken ?? undefined;
         }
         return result.gatewayUrl;
       } catch {}

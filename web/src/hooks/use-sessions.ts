@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tansta
 import { fetchJSON, deleteJSON, postJSON } from "@/lib/transport";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import { unpinSessions } from "@/lib/session-ui-state";
+import { dashboardAuthErrorMessage, errorStatus, errorText, isDashboardAuthError } from "@/lib/dashboard-error";
 import {
   MessagesResponse,
   MutationOkResponse,
@@ -91,11 +92,12 @@ export function useSessions(limit = 50, offset = 0, opts: UseSessionsOptions = {
 }
 
 export function sessionListErrorMessage(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error ?? "");
-  if (/\bHTTP\s+401\b/i.test(text)) {
-    return "远程 Dashboard 登录状态无效，请重新登录后重试。";
+  const status = errorStatus(error);
+  const text = errorText(error);
+  if (isDashboardAuthError(error)) {
+    return dashboardAuthErrorMessage();
   }
-  if (/\bHTTP\s+403\b/i.test(text)) {
+  if (status === 403 || /\bHTTP\s+403\b/i.test(text)) {
     return "远程 Dashboard 拒绝访问，请检查当前登录账号权限。";
   }
   return "无法加载会话列表，请检查 Dashboard 服务。";

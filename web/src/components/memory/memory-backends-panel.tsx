@@ -19,6 +19,7 @@ import {
   MEMORY_BACKEND_META,
   memoryBackendState,
 } from "./memory-backend-utils";
+import { dashboardAuthErrorMessage, isDashboardAuthError } from "@/lib/dashboard-error";
 import s from "./memory-backends.module.css";
 
 function message(error: unknown): string {
@@ -55,7 +56,13 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
   const activeMeta = VISIBLE_MEMORY_PROVIDERS.includes(active as VisibleMemoryProvider)
     ? MEMORY_BACKEND_META[active as VisibleMemoryProvider]
     : undefined;
-  const overallState = memoryBackendState(activeStatus);
+  const dashboardAuthRequired = [
+    providersQuery.error,
+    openVikingStatus.error,
+    hindsightStatus.error,
+    configQuery.error,
+  ].some(isDashboardAuthError);
+  const overallState = memoryBackendState(activeStatus, dashboardAuthRequired);
 
   const refreshAll = () => {
     void providersQuery.refetch();
@@ -102,15 +109,15 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
           <div className={s.summaryIcon}><Database size={20} /></div>
           <div>
             <small>当前启用后端</small>
-            <strong>{activeMeta?.label ?? "未启用外置后端"}</strong>
-            <span>{activeMeta ? overallState.label : "内置记忆继续可用"}</span>
+            <strong>{dashboardAuthRequired ? "登录后读取外置记忆" : activeMeta?.label ?? "未启用外置后端"}</strong>
+            <span>{dashboardAuthRequired ? "远程 Dashboard 尚未完成 Cookie 登录" : activeMeta ? overallState.label : "内置记忆继续可用"}</span>
           </div>
           <div className={s.summaryCheck}>
             <small>总体状态</small>
-            <span className={s.stateBadge} data-tone={activeMeta ? overallState.tone : "muted"}>
-              {activeMeta ? overallState.label : "未配置"}
+            <span className={s.stateBadge} data-tone={dashboardAuthRequired || activeMeta ? overallState.tone : "muted"}>
+              {dashboardAuthRequired ? "需登录" : activeMeta ? overallState.label : "未配置"}
             </span>
-            <em>最后检查 {formatCheckedAt(activeStatus?.checked_at)}</em>
+            <em>{dashboardAuthRequired ? "登录后重新检查" : `最后检查 ${formatCheckedAt(activeStatus?.checked_at)}`}</em>
           </div>
           <Button
             type="button"
@@ -127,13 +134,19 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
           每个 Hermes 档案只能启用一个外置记忆后端。先保存并检测，确认在线可用后再设为当前；另一个后端的配置不会被删除。
         </p>
 
-        {providersQuery.isError && <div className={s.inlineError}>无法读取记忆后端列表：{message(providersQuery.error)}</div>}
+        {dashboardAuthRequired && (
+          <div className={s.inlineError} role="alert">
+            {dashboardAuthErrorMessage("远程 Dashboard")} OpenViking 当前状态和配置不会被误判为“未配置”。{" "}
+            <Link to="/connection">打开连接设置</Link>
+          </div>
+        )}
+        {providersQuery.isError && !dashboardAuthRequired && <div className={s.inlineError}>无法读取记忆后端列表：{message(providersQuery.error)}</div>}
 
         <div className={s.backendSwitcher}>
           {VISIBLE_MEMORY_PROVIDERS.map((provider) => {
             const meta = MEMORY_BACKEND_META[provider];
             const status = statusQueries[provider].data;
-            const state = memoryBackendState(status);
+            const state = memoryBackendState(status, dashboardAuthRequired);
             return (
               <Link
                 key={provider}
@@ -160,7 +173,13 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
 
   return (
     <section className={s.backendPanel} data-view="provider">
-      {providersQuery.isError && <div className={s.inlineError}>无法读取记忆后端列表：{message(providersQuery.error)}</div>}
+      {dashboardAuthRequired && (
+        <div className={s.inlineError} role="alert">
+          {dashboardAuthErrorMessage("远程 Dashboard")} 配置和运行状态将在登录后重新读取。{" "}
+          <Link to="/connection">打开连接设置</Link>
+        </div>
+      )}
+      {providersQuery.isError && !dashboardAuthRequired && <div className={s.inlineError}>无法读取记忆后端列表：{message(providersQuery.error)}</div>}
       <div className={s.backendDetail} data-standalone="true">
         <div className={s.detailHeader}>
           <div>
@@ -188,6 +207,7 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
           status={selectedStatus}
           loading={selectedStatusQuery.isLoading}
           refreshing={selectedStatusQuery.isFetching}
+          authRequired={dashboardAuthRequired}
           onRefresh={() => void selectedStatusQuery.refetch()}
         />
 
@@ -197,7 +217,7 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
           loading={configQuery.isLoading}
           saving={saveConfig.isPending}
           setupPending={setupProvider.isPending}
-          error={actionError || (configQuery.error ? message(configQuery.error) : undefined)}
+          error={actionError || (dashboardAuthRequired ? dashboardAuthErrorMessage("远程 Dashboard") : configQuery.error ? message(configQuery.error) : undefined)}
           onSave={handleSave}
           onSetup={handleSetup}
         />
