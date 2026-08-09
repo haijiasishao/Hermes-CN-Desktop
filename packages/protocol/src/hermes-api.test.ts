@@ -1064,3 +1064,40 @@ describe("MessagesResponse vs SessionDetail: session-wrapper normalization", () 
     expect(msgs.messages).toHaveLength(1);
   });
 });
+
+// FastAPI serializes pagination.limit as explicit null when the /messages
+// route was called without a limit query parameter.  Zod v3's bare
+// `.optional()` rejects `null`, causing the parse to fail and the UI to
+// fall back to a 404-ing local session-log endpoint.  This regression test
+// uses the exact upstream shape to ensure MessagesResponse tolerates nulls.
+describe("MessagesResponse: upstream null pagination regression", () => {
+  function sessionMessage(id: number): Record<string, unknown> {
+    return {
+      id,
+      session_id: "s1",
+      role: "user",
+      content: "hi",
+      timestamp: 100 + id,
+    };
+  }
+
+  it("accepts pagination with limit=null, null booleans, and preserves messages", () => {
+    const upstream = {
+      object: "list",
+      session_id: "s1",
+      data: [sessionMessage(1), sessionMessage(2)],
+      pagination: { limit: null, offset: 0, returned: 2, total: null, has_more: null },
+    };
+    const parsed = MessagesResponse.parse(upstream);
+
+    expect(parsed.session_id).toBe("s1");
+    expect(parsed.messages).toHaveLength(2);
+    expect(parsed.messages[0]!.id).toBe(1);
+    expect(parsed.messages[1]!.id).toBe(2);
+    // null values should be normalized to undefined (NullishNumber/NullishBoolean)
+    expect(parsed.pagination?.limit).toBeUndefined();
+    expect(parsed.pagination?.offset).toBe(0);
+    expect(parsed.pagination?.total).toBeUndefined();
+    expect(parsed.pagination?.has_more).toBeUndefined();
+  });
+});

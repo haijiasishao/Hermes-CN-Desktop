@@ -88,6 +88,17 @@ export const themeWriteAtom = atom(null, (_get, set, update: Partial<ThemeConfig
  *  free of a hard dependency on the web app's global typings. */
 type DesktopZoomBridge = { setUiZoom?: (factor: number) => void };
 
+/** Detect Android WebView via user agent.  This is the most reliable signal:
+ *  `navigator.userAgent` is not overridable by the WebView host, so even a
+ *  Tauri shell that injects `hermesDesktop` cannot fake it. */
+function isAndroidWebView(): boolean {
+  try {
+    return /Android/i.test(navigator.userAgent);
+  } catch {
+    return false;
+  }
+}
+
 export function applyThemeToDOM(config: ThemeConfig) {
   const root = document.documentElement;
   root.setAttribute("data-theme", config.theme);
@@ -97,6 +108,7 @@ export function applyThemeToDOM(config: ThemeConfig) {
   const factor = SCALE_FACTORS[config.scale] ?? 1;
   const desktop = (globalThis as unknown as { hermesDesktop?: DesktopZoomBridge })
     .hermesDesktop;
+  const android = isAndroidWebView();
 
   // Prefer the native webview page zoom on the desktop. Page zoom reflows the
   // layout AND shrinks the layout viewport, so `100vw`/`100vh` keep tracking the
@@ -107,7 +119,10 @@ export function applyThemeToDOM(config: ThemeConfig) {
   // painted `factor`× larger than the window and overflow — exactly the reported
   // bug where the right edge and bottom status bar are cut off at 150%. Use it
   // only as a fallback in a plain browser, where native zoom isn't reachable.
-  if (desktop?.setUiZoom) {
+  //
+  // On Android WebView the Tauri webview plugin is not available, so calling
+  // setUiZoom produces "Plugin webview not initialized".  Fall back to CSS zoom.
+  if (desktop?.setUiZoom && !android) {
     root.style.removeProperty("zoom");
     desktop.setUiZoom(factor);
   } else if (factor === 1) {

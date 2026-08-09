@@ -16,7 +16,7 @@ import {
 } from "@hermes/protocol";
 
 // 桌面版的 MCP 管理直接打官方上游接口 /api/mcp/*（增删改 / 启停 / 测试 / 目录），
-// 与只读的 fork 端点 /api/mcp-servers（health 面板用）相互独立。
+// 与旧版只读 summary 端点（/api/mcp-servers，health 面板兼容形状）相互独立。
 
 const SERVERS_KEY = "mcp-servers-full";
 const CATALOG_KEY = "mcp-catalog";

@@ -587,6 +587,12 @@ export const runtime = {
   },
 
   get androidRemoteOnly(): boolean {
+    if (typeof window === "undefined") {
+      return Boolean(
+        (globalThis as { __HERMES_RUNTIME__?: { androidRemoteOnly?: boolean } })
+          .__HERMES_RUNTIME__?.androidRemoteOnly,
+      );
+    }
     return window.__HERMES_RUNTIME__?.androidRemoteOnly ?? false;
   },
 

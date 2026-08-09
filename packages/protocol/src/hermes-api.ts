@@ -8,6 +8,7 @@ const NullableStringAsEmpty = z.string().nullable().optional().transform((value)
 // how routes serialize unset columns — hence these tolerant helpers.
 const NullishString = z.string().nullish().transform((value) => value ?? undefined);
 const NullishNumber = z.number().nullish().transform((value) => value ?? undefined);
+const NullishBoolean = z.boolean().nullish().transform((value) => value ?? undefined);
 
 function stringifyMessageContent(value: unknown): string | null {
   if (typeof value === "string") return value;
@@ -481,10 +482,10 @@ export const MessagesResponse = z.preprocess(
     messages: z.array(SessionMessage).default([]),
     ui_messages: z.array(HermesUIMessage).optional(),
     pagination: z.object({
-      limit: z.number().optional(),
-      offset: z.number().optional(),
-      total: z.number().optional(),
-      has_more: z.boolean().optional(),
+      limit: NullishNumber,
+      offset: NullishNumber,
+      total: NullishNumber,
+      has_more: NullishBoolean,
     }).optional(),
   }),
 );
@@ -811,7 +812,10 @@ export const ToolsetInfo = z.object({
 });
 export type ToolsetInfo = z.infer<typeof ToolsetInfo>;
 
-// ── MCP Servers (/api/mcp-servers) ────────────────────────────────────
+// ── MCP Servers legacy summary shape ────────────────────────────────
+// Older Dashboard builds exposed this response at /api/mcp-servers. Keep the
+// schema for compatibility with callers that still consume the summary shape;
+// the current hook uses McpServersFullResponse at /api/mcp/servers.
 
 export const McpServerInfo = z.object({
   name: z.string(),

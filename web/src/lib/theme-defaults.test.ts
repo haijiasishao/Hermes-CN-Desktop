@@ -77,3 +77,91 @@ describe("applyThemeToDOM interface scaling", () => {
     expect(style.has("zoom")).toBe(false);
   });
 });
+
+// ── Android WebView zoom regression ───────────────────────────────────
+// On Android the Tauri webview plugin is unavailable ("Plugin webview not
+// initialized").  applyThemeToDOM must skip setUiZoom and fall back to CSS
+// zoom when the UA indicates Android.  These tests mock navigator.userAgent
+// and carefully restore it to avoid leaking into other test files.
+describe("applyThemeToDOM Android WebView zoom", () => {
+  const style = new Map<string, string>();
+  const attrs = new Map<string, string>();
+  const root = {
+    setAttribute: (key: string, value: string) => attrs.set(key, value),
+    style: {
+      setProperty: (key: string, value: string) => style.set(key, value),
+      removeProperty: (key: string) => style.delete(key),
+    },
+  };
+
+  // Save the original navigator.userAgent descriptor so we can restore it.
+  let origUADescriptor: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    style.clear();
+    attrs.clear();
+    (globalThis as { document?: unknown }).document = { documentElement: root };
+    origUADescriptor = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  });
+
+  afterEach(() => {
+    delete (globalThis as { document?: unknown }).document;
+    delete (globalThis as { hermesDesktop?: unknown }).hermesDesktop;
+    // Restore original userAgent descriptor
+    if (origUADescriptor) {
+      Object.defineProperty(navigator, "userAgent", origUADescriptor);
+    } else {
+      // If there was no custom descriptor, delete any override
+      try { delete (navigator as any).userAgent; } catch { /* noop */ }
+    }
+  });
+
+  it("uses CSS zoom instead of native setUiZoom on Android UA even when bridge is present", () => {
+    Object.defineProperty(navigator, "userAgent", {
+      value: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+      configurable: true,
+    });
+    const zooms: number[] = [];
+    (globalThis as { hermesDesktop?: unknown }).hermesDesktop = {
+      setUiZoom: (factor: number) => zooms.push(factor),
+    };
+
+    applyThemeToDOM({ theme: "light-modern", density: "comfortable", scale: "2xl" });
+
+    // Android: must NOT call native setUiZoom (would fail with plugin error)
+    expect(zooms).toEqual([]);
+    // Must use CSS zoom instead
+    expect(style.get("zoom")).toBe(String(SCALE_FACTORS["2xl"]));
+  });
+
+  it("removes CSS zoom at scale=1 on Android", () => {
+    Object.defineProperty(navigator, "userAgent", {
+      value: "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36",
+      configurable: true,
+    });
+    (globalThis as { hermesDesktop?: unknown }).hermesDesktop = {
+      setUiZoom: () => { throw new Error("should not be called"); },
+    };
+    style.set("zoom", "1.25");
+
+    applyThemeToDOM({ theme: "dark-modern", density: "comfortable", scale: "md" });
+
+    expect(style.has("zoom")).toBe(false);
+  });
+
+  it("still uses native setUiZoom on non-Android UA with bridge", () => {
+    Object.defineProperty(navigator, "userAgent", {
+      value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      configurable: true,
+    });
+    const zooms: number[] = [];
+    (globalThis as { hermesDesktop?: unknown }).hermesDesktop = {
+      setUiZoom: (factor: number) => zooms.push(factor),
+    };
+
+    applyThemeToDOM({ theme: "light-modern", density: "comfortable", scale: "xl" });
+
+    expect(zooms).toEqual([SCALE_FACTORS["xl"]]);
+    expect(style.has("zoom")).toBe(false);
+  });
+});

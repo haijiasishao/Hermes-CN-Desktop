@@ -4,6 +4,7 @@ import { fetchJSON } from "@/lib/transport";
 import {
   deleteSessionsInBatches,
   fetchSessionMessages,
+  resolveSessionListLimit,
   sessionListErrorMessage,
   withoutSearchResults,
   withoutSessions,
@@ -56,6 +57,14 @@ describe("session list error messages", () => {
   it("keeps generic Dashboard failures distinguishable from authentication failures", () => {
     expect(sessionListErrorMessage(new Error("HTTP 502: upstream unavailable")))
       .toBe("无法加载会话列表，请检查 Dashboard 服务。");
+  });
+});
+
+describe("session list pagination boundary", () => {
+  it("caps oversized Android Remote requests while preserving desktop callers", () => {
+    expect(resolveSessionListLimit(200, true)).toBe(50);
+    expect(resolveSessionListLimit(50, true)).toBe(50);
+    expect(resolveSessionListLimit(200, false)).toBe(200);
   });
 });
 
@@ -163,5 +172,54 @@ describe("fetchSessionMessages 历史回退", () => {
     const result = await fetchSessionMessages("s4");
 
     expect(result.messages).toHaveLength(3);
+  });
+});
+
+// ── Android Remote: skip /__hermes_session_log fallback ────────────────
+// On Android Remote, the local session-log endpoint does not exist (404).
+// fetchSessionMessages should surface the primary endpoint error directly
+// instead of attempting the fallback and producing a second 404.
+describe("fetchSessionMessages Android Remote skip", () => {
+  beforeEach(() => {
+    mockFetchJSON.mockReset();
+  });
+
+  // Inline import to get the runtime reference used by the module.
+  // We mock window.__HERMES_RUNTIME__ before calling fetchSessionMessages.
+  it("skips session-log fallback when androidRemoteOnly is true", async () => {
+    const orig = (globalThis as any).__HERMES_RUNTIME__;
+    (globalThis as any).__HERMES_RUNTIME__ = { androidRemoteOnly: true };
+    try {
+      mockFetchJSON.mockImplementation(async () => {
+        throw new Error("HTTP 404: not found");
+      });
+      await expect(fetchSessionMessages("a1")).rejects.toThrow("HTTP 404: not found");
+      // Should only call the primary endpoint, not the fallback
+      expect(mockFetchJSON).toHaveBeenCalledTimes(1);
+      expect(mockFetchJSON.mock.calls[0][0]).toContain("/api/sessions/a1/messages");
+    } finally {
+      if (orig === undefined) delete (globalThis as any).__HERMES_RUNTIME__;
+      else (globalThis as any).__HERMES_RUNTIME__ = orig;
+    }
+  });
+
+  it("still uses fallback when androidRemoteOnly is false", async () => {
+    const orig = (globalThis as any).__HERMES_RUNTIME__;
+    (globalThis as any).__HERMES_RUNTIME__ = { androidRemoteOnly: false };
+    try {
+      mockFetchJSON.mockImplementation(async (path: string) => {
+        if (path.includes("/api/sessions/")) throw new Error("HTTP 404");
+        if (path.includes("/__hermes_session_log/")) {
+          return { session_id: "a2", messages: [{ id: 1 }] } as unknown as MessagesResponse;
+        }
+        throw new Error("unexpected");
+      });
+      const result = await fetchSessionMessages("a2");
+      expect(result.messages).toHaveLength(1);
+      expect(mockFetchJSON).toHaveBeenCalledTimes(2);
+    } finally {
+      if (orig === undefined) delete (globalThis as any).__HERMES_RUNTIME__;
+      else (globalThis as any).__HERMES_RUNTIME__ = orig;
+    }
   });
 });

@@ -11,8 +11,20 @@ import {
   SessionsResponse,
   type SearchResult,
 } from "@hermes/protocol";
+import { runtime } from "@/lib/runtime";
 
 export const DELETE_SESSION_CONCURRENCY = 3;
+export const ANDROID_SESSION_PAGE_SIZE = 50;
+
+/**
+ * The Dashboard's Android Remote-compatible baseline uses the same page size
+ * as the workbench. Keep the cap at the hook boundary because always-mounted
+ * consumers (for example CommandPalette) can request a larger desktop page
+ * even when History itself uses the Android branch.
+ */
+export function resolveSessionListLimit(limit: number, androidRemoteOnly: boolean): number {
+  return androidRemoteOnly ? Math.min(limit, ANDROID_SESSION_PAGE_SIZE) : limit;
+}
 
 export interface DeleteSessionsFailure {
   id: string;
@@ -59,6 +71,8 @@ export async function fetchSessionMessages(id: string, signal?: AbortSignal): Pr
     );
   } catch (error) {
     if (isAbortError(error)) throw error;
+    // Android Remote 没有本地 /__hermes_session_log 端点，直接抛错。
+    if (runtime.androidRemoteOnly) throw error;
     // 主端点 404（会话 id 形态与后端不一致 / 尚未落盘等）会让 fetchJSON 直接 throw，
     // 之前不会触发下面的会话日志兜底，导致历史整段丢失。先退回 /__hermes_session_log，
     // 拿不到再把原始错误抛给 React Query。
@@ -67,6 +81,8 @@ export async function fetchSessionMessages(id: string, signal?: AbortSignal): Pr
     throw error;
   }
   if (hasAnyMessages(result)) return result;
+  // Android Remote 没有本地会话日志端点，直接返回空结果。
+  if (runtime.androidRemoteOnly) return result;
   return await fetchSessionLogMessages(id, signal) ?? result;
 }
 
@@ -80,11 +96,12 @@ export interface UseSessionsOptions {
 export function useSessions(limit = 50, offset = 0, opts: UseSessionsOptions = {}) {
   const profile = useActiveProfileName();
   const includeArchived = opts.includeArchived ?? false;
+  const resolvedLimit = resolveSessionListLimit(limit, runtime.androidRemoteOnly);
   return useQuery<SessionsResponse>({
-    queryKey: ["sessions", profile, limit, offset, includeArchived ? "all" : "active"],
+    queryKey: ["sessions", profile, resolvedLimit, offset, includeArchived ? "all" : "active"],
     queryFn: ({ signal }) =>
       fetchJSON(
-        `/api/sessions?limit=${limit}&offset=${offset}${includeArchived ? "&archived=include" : ""}`,
+        `/api/sessions?limit=${resolvedLimit}&offset=${offset}${includeArchived ? "&archived=include" : ""}`,
         { signal },
         SessionsResponse,
       ),
