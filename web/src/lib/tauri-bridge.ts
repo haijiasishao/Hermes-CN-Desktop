@@ -51,6 +51,8 @@ import type {
 import type {
   DesktopNotifyInput,
   DesktopNotifyResult,
+  NotificationPermissionInput,
+  NotificationPermissionResult,
   DesktopFileDropPayload,
   DownloadExternalImageInput,
   DownloadedImageResult,
@@ -533,6 +535,10 @@ const tauriBridge = {
 
   async desktopNotify(input: DesktopNotifyInput): Promise<DesktopNotifyResult> {
     return invokeCommand("desktop_notify", { input });
+  },
+
+  async notificationPermission(input: NotificationPermissionInput): Promise<NotificationPermissionResult> {
+    return invokeCommand("notification_permission", { input });
   },
 
   async terminalStart(input: TerminalStartInput): Promise<TerminalStartResult> {

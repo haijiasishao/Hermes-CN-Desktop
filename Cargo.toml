@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 desktop = ["tauri/tray-icon", "dep:portable-pty", "dep:notify", "dep:open", "dep:fs2", "dep:tauri-plugin-notification", "dep:tauri-plugin-clipboard-manager", "dep:bytes", "dep:dotenvy", "dep:getrandom", "dep:http-body-util", "dep:hyper", "dep:hyper-util"]
-android = []
+android = ["dep:tauri-plugin-notification"]
 
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }

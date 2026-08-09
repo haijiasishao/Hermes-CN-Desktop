@@ -3,9 +3,11 @@ import { CircleOff, Compass, ExternalLink, Globe2, HardDrive, Palette } from "lu
 import { Button } from "@hermes/shared-ui";
 import { HermesLogoMark } from "@/components/brand/hermes-logo-mark";
 import { openExternalUrl } from "@/lib/external-links";
+import { runtime } from "@/lib/runtime";
 import { ThemeSection } from "./settings";
 import { ConnectionSection } from "./settings-connection-section";
 import { ManagedRuntimePanel } from "./managed-runtime-panel";
+import { shouldShowOfflineAbout } from "./offline-shell-policy";
 import s from "./offline-shell.module.css";
 
 function OfflinePage({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
@@ -43,6 +45,7 @@ function OfflineAbout() {
 
 export function OfflineShell() {
   const { pathname } = useLocation();
+  const showAbout = shouldShowOfflineAbout(runtime.androidRemoteOnly);
   return (
     <div className={s.shell}>
       <aside>
@@ -52,7 +55,7 @@ export function OfflineShell() {
           <Link data-active={pathname === "/connection" ? "true" : undefined} to="/connection"><Globe2 size={16} />连接</Link>
           <Link data-active={pathname === "/kernel" ? "true" : undefined} to="/kernel"><HardDrive size={16} />内核</Link>
           <Link data-active={pathname === "/theme" ? "true" : undefined} to="/theme"><Palette size={16} />主题</Link>
-          <Link data-active={pathname === "/about" ? "true" : undefined} to="/about"><Compass size={16} />关于</Link>
+          {showAbout ? <Link data-active={pathname === "/about" ? "true" : undefined} to="/about"><Compass size={16} />关于</Link> : null}
         </nav>
       </aside>
       <main>
@@ -61,7 +64,7 @@ export function OfflineShell() {
           <Route path="/connection" element={<OfflinePage title="连接外部 Hermes" sub="选择本机其他 Hermes 或远端服务器。"><ConnectionSection showHeading={false} /></OfflinePage>} />
           <Route path="/kernel" element={<OfflinePage title="内置内核" sub="安装、启动、卸载或重装内置内核。"><ManagedRuntimePanel /></OfflinePage>} />
           <Route path="/theme" element={<OfflinePage title="主题" sub="调整桌面界面的外观。"><ThemeSection showHeading={false} /></OfflinePage>} />
-          <Route path="/about" element={<OfflineAbout />} />
+          <Route path="/about" element={showAbout ? <OfflineAbout /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

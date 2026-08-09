@@ -8,6 +8,8 @@ pub mod devtools;
 pub mod gateway;
 pub mod log_export;
 pub mod memory;
+#[cfg(any(feature = "desktop", feature = "android"))]
+pub mod notify;
 pub mod profiles;
 pub mod runtime_compat;
 pub mod session_export;
@@ -33,8 +35,6 @@ pub mod file_dialogs;
 pub mod git;
 #[cfg(feature = "desktop")]
 pub mod im_onboarding;
-#[cfg(feature = "desktop")]
-pub mod notify;
 #[cfg(feature = "desktop")]
 pub mod preview;
 #[cfg(feature = "desktop")]

@@ -43,7 +43,9 @@ export const ADVANCED_ITEMS: readonly AdvancedItem[] = [
 
 export function getVisibleAdvancedItems(androidRemoteOnly: boolean): readonly AdvancedItem[] {
   if (!androidRemoteOnly) return ADVANCED_ITEMS;
-  return ADVANCED_ITEMS.filter((item) => item.path !== "/kernel" && item.path !== "/env");
+  return ADVANCED_ITEMS.filter(
+    (item) => item.path !== "/kernel" && item.path !== "/env" && item.path !== "/about",
+  );
 }
 
 const SECTIONS: readonly {

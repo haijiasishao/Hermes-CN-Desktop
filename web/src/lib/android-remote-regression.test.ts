@@ -163,6 +163,23 @@ describe("Android Remote bridge: guide state", () => {
 
 // ── installTauriBridge: androidRemoteOnly flag ────────────────────────
 
+describe("Android Remote bridge: notifications", () => {
+  it("checks and requests native notification permission through IPC", async () => {
+    const { installTauriBridge } = await import("./tauri-bridge");
+    await installTauriBridge();
+
+    await window.hermesDesktop?.notificationPermission?.({ request: false });
+    expect(mockInvoke).toHaveBeenCalledWith("notification_permission", {
+      input: { request: false },
+    });
+
+    await window.hermesDesktop?.notificationPermission?.({ request: true });
+    expect(mockInvoke).toHaveBeenCalledWith("notification_permission", {
+      input: { request: true },
+    });
+  });
+});
+
 describe("installTauriBridge: androidRemoteOnly", () => {
   it("populates androidRemoteOnly in __HERMES_RUNTIME__ from config", async () => {
     const { installTauriBridge } = await import("./tauri-bridge");

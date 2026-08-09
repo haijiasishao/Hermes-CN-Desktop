@@ -5,8 +5,10 @@ const ANDROID_REMOTE_ROUTE_REDIRECTS: Readonly<Record<string, string>> = {
   "/hindsight": "/health",
   "/kernel": "/health",
   "/env": "/health",
+  "/about": "/health",
   "/advanced/kernel": "/health",
   "/advanced/env": "/health",
+  "/advanced/about": "/health",
 };
 
 /**

@@ -53,7 +53,6 @@ import { useProviderCatalog } from "@/hooks/use-provider-catalog";
 import { ModelCombobox } from "@/components/settings/model-combobox";
 import { translateEnvCategory, translateEnvVar } from "@/lib/env-translations";
 import { rememberLastUsedModel } from "@/lib/last-used-model";
-import { reportPromoClick } from "@/lib/telemetry";
 import { openExternalUrl } from "@/lib/external-links";
 import {
   getLocalContextWarning,

@@ -4,7 +4,7 @@ import { useEffect, type ReactNode } from "react";
 import { useSetAtom } from "jotai";
 import { useBootstrapActiveProfile } from "@/hooks/use-profiles";
 import { readUiValue } from "@/lib/ui-store";
-import { sendTelemetryPingIfDue } from "@/lib/telemetry";
+import { clearLegacyTelemetryState } from "@/lib/privacy-migration";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ProfileSwitchOverlay } from "@/components/profile-switch-overlay";
 import { RuntimeUpdateOverlay } from "@/components/runtime-update-overlay";
@@ -61,6 +61,11 @@ function remoteSafeRoute(pathname: string, node: ReactNode) {
   return redirect ? <Navigate to={redirect} replace /> : withBoundary(node);
 }
 
+function RemoteSafeAdvancedRoute() {
+  const { pathname } = useLocation();
+  return remoteSafeRoute(pathname, <AdvancedRoute />);
+}
+
 function BackendApp() {
   useBootstrapActiveProfile();
   return (
@@ -111,8 +116,8 @@ function BackendApp() {
             ? <Navigate to="/health" replace />
             : withBoundary(<AdvancedRoute />)} />
           <Route path="/coding-agents" element={withBoundary(<CodingAgentsRoute />)} />
-          <Route path="/about" element={withBoundary(<AdvancedRoute />)} />
-          <Route path="/advanced/*" element={withBoundary(<AdvancedRoute />)} />
+          <Route path="/about" element={remoteSafeRoute("/about", <AdvancedRoute />)} />
+          <Route path="/advanced/*" element={<RemoteSafeAdvancedRoute />} />
           <Route path="/settings" element={<Navigate to="/common" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -134,7 +139,7 @@ export function App() {
     hydrateTheme(readUiValue<Partial<ThemeConfig>>("hermes-theme", DEFAULT_THEME_CONFIG));
   }, [hydrateTheme]);
   useEffect(() => {
-    void sendTelemetryPingIfDue();
+    clearLegacyTelemetryState();
   }, []);
 
   const isGuide = location.pathname === "/guide";

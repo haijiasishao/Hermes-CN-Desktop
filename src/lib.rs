@@ -54,9 +54,12 @@ pub fn run() {
     let quit_requested = Arc::new(AtomicBool::new(false));
     let close_quit_requested = Arc::clone(&quit_requested);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+    #[cfg(any(feature = "desktop", feature = "android"))]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+    let app = builder
         .manage(app_state)
         .setup(move |app| {
             // Persist all Android-local state below Tauri's writable app-private
@@ -116,7 +119,7 @@ pub fn run() {
                 .await;
             });
 
-            log::info!("Hermes Agent Mobile bootstrapping (Remote mode)");
+            log::info!("Hermes Agent bootstrapping (Remote mode)");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -150,6 +153,11 @@ pub fn run() {
             commands::ui_store::ui_store_get_turn_stats,
             commands::ui_store::ui_store_get_turn_stats_window,
             commands::ui_store::ui_store_record_event,
+            // Native notifications and explicit Android permission handling
+            #[cfg(any(feature = "desktop", feature = "android"))]
+            commands::notify::desktop_notify,
+            #[cfg(any(feature = "desktop", feature = "android"))]
+            commands::notify::notification_permission,
             // Session/memory
             commands::session_export::export_session_json,
             commands::memory::read_memory,
@@ -190,7 +198,7 @@ pub fn run() {
             _ => {}
         })
         .build(tauri::generate_context!())
-        .expect("error while building Hermes Agent Mobile");
+        .expect("error while building Hermes Agent");
 
     app.run(move |app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } => {

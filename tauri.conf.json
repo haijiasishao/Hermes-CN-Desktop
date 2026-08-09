@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegoodthings/tauri-schema/main/tauri.conf.schema.json",
-  "productName": "Hermes Agent CN Mobile",
+  "productName": "Hermes Agent",
   "version": "0.7.0",
   "identifier": "cn.org.hermesagent.mobile",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Hermes Agent CN Mobile",
+        "title": "Hermes Agent",
         "width": 800,
         "height": 600,
         "resizable": true
@@ -37,7 +37,7 @@
     "homepage": "https://hermesagent.org.cn",
     "copyright": "Copyright © 2026 Hermes Agent CN Contributors",
     "category": "Communication",
-    "shortDescription": "Hermes Agent Mobile Client",
+    "shortDescription": "Hermes Agent Android remote client",
     "longDescription": "Mobile client for Hermes Agent - connect to your Hermes backend remotely.",
     "android": {
       "minSdkVersion": 24

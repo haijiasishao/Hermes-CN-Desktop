@@ -55,7 +55,6 @@ import {
   notifySystemAtom,
   profileSwitchingAtom,
   showReasoningAtom,
-  telemetryEnabledAtom,
   normalizeAssistantDisplayName,
   type ConversationFontSizeMode,
 } from "@/stores/ui";
@@ -72,6 +71,7 @@ import {
   type ApprovalMode,
 } from "@/lib/approval-mode";
 import { buildNestedConfigUpdate, mergeConfigUpdate } from "@/lib/config-update";
+import { formatConfigFieldValue, parseConfigFieldValue } from "@/lib/config-field-value";
 import { translateConfigField, translateConfigOption } from "@/lib/config-translations";
 import { gatewayRestartButtonLabel, gatewayRestartTitle } from "@/lib/gateway-restart";
 import type { ComposerSubmitShortcut } from "@/lib/composer-submit-shortcut";
@@ -93,7 +93,6 @@ interface SettingsSectionProps {
 
 export function GeneralSection({ showHeading = true }: SettingsSectionProps) {
   const [showReasoning, setShowReasoning] = useAtom(showReasoningAtom);
-  const [telemetryEnabled, setTelemetryEnabled] = useAtom(telemetryEnabledAtom);
   const [composerSubmitShortcut, setComposerSubmitShortcut] = useAtom(composerSubmitShortcutAtom);
   const [assistantDisplayName, setAssistantDisplayName] = useAtom(assistantDisplayNameAtom);
   const [assistantAvatarDataUrl, setAssistantAvatarDataUrl] = useAtom(assistantAvatarDataUrlAtom);
@@ -192,9 +191,6 @@ export function GeneralSection({ showHeading = true }: SettingsSectionProps) {
       } />
       {assistantProfileError ? <p className={s.assistantProfileError}>{assistantProfileError}</p> : null}
       <p className={s.assistantProfileStorageHint}>名称和头像只改变桌面端显示，不影响模型本身。清空名称、移除头像后即可恢复默认样式。</p>
-      <Row label="匿名使用统计" sub="上报版本号、系统类型、语言等匿名信息帮助改进产品；不含对话内容、密钥或任何可识别个人的信息。" right={
-        <RadioGroup value={telemetryEnabled ? "on" : "off"} options={[{ value: "off", label: "关闭" }, { value: "on", label: "开启" }]} onChange={(v) => setTelemetryEnabled(v === "on")} />
-      } />
       <ApprovalModeSection />
     </div>
   );
@@ -215,28 +211,82 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
   const [notifyOnApproval, setNotifyOnApproval] = useAtom(notifyOnApprovalAtom);
   const [notifyOnlyBackground, setNotifyOnlyBackground] = useAtom(notifyOnlyBackgroundAtom);
   const [testState, setTestState] = useState<NotifyTestState>({ phase: "idle" });
+  const isAndroid = runtime.androidRemoteOnly;
+  const [permissionState, setPermissionState] = useState(
+    isAndroid ? "checking" : "granted",
+  );
+  const [permissionError, setPermissionError] = useState("");
 
   const allChannelsOff = !notifySystem && !notifySound;
   const toggleOptions = [{ value: "off", label: "关闭" }, { value: "on", label: "开启" }];
 
+  const updateAndroidPermission = useCallback(async (request: boolean): Promise<boolean> => {
+    if (!isAndroid) return true;
+    const permission = window.hermesDesktop?.notificationPermission;
+    if (typeof permission !== "function") {
+      setPermissionState("unavailable");
+      setPermissionError("当前 APK 未提供 Android 原生通知权限接口");
+      return false;
+    }
+    setPermissionState("checking");
+    setPermissionError("");
+    try {
+      const result = await permission({ request });
+      setPermissionState(result.state);
+      if (!result.granted && request) {
+        setPermissionError(
+          result.state === "denied"
+            ? "通知权限已被拒绝，请在 Android 系统设置中为 Hermes Agent 开启通知"
+            : "尚未授予 Android 通知权限",
+        );
+      }
+      return result.granted;
+    } catch (error) {
+      setPermissionState("unavailable");
+      setPermissionError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }, [isAndroid]);
+
+  useEffect(() => {
+    if (isAndroid) void updateAndroidPermission(false);
+  }, [isAndroid, updateAndroidPermission]);
+
+  const handleSystemChange = async (value: string) => {
+    if (value !== "on") {
+      setNotifySystem(false);
+      return;
+    }
+    if (!isAndroid || await updateAndroidPermission(true)) {
+      setNotifySystem(true);
+      setTestState({ phase: "idle" });
+    } else {
+      setNotifySystem(false);
+      setTestState({ phase: "error", message: "Android 通知权限未授予，系统通知未开启" });
+    }
+  };
+
   const handleTestNotification = async () => {
     const bridge = window.hermesDesktop;
     if (typeof bridge?.desktopNotify !== "function") {
-      setTestState({ phase: "error", message: "当前为 Web 模式，系统通知仅桌面端支持" });
+      setTestState({ phase: "error", message: "当前环境不支持原生系统通知" });
       return;
     }
     setTestState({ phase: "sending" });
     try {
+      if (isAndroid && notifySystem && !await updateAndroidPermission(true)) {
+        setTestState({ phase: "error", message: "Android 通知权限未授予，请先授权后再测试" });
+        return;
+      }
       const result = await bridge.desktopNotify({
         kind: "test",
-        title: "Hermes 通知测试",
-        body: "看到这条系统通知说明配置正常（macOS 首次会请求授权）。",
+        title: "Hermes Agent 通知测试",
+        body: "看到这条系统通知说明原生通知配置正常。",
         showSystemNotification: notifySystem,
         withSound: notifySound,
         respectFocus: false,
         requestAttention: false,
       });
-      // 复用真实链路的兜底判定，让用户能预听系统通知关闭时的提示音。
       const previewSettings = {
         system: notifySystem,
         sound: notifySound,
@@ -265,27 +315,53 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
     }
   };
 
+  const permissionLabel: Record<string, string> = {
+    checking: "检查中",
+    granted: "已授权",
+    denied: "已拒绝",
+    prompt: "待授权",
+    "prompt-with-rationale": "待说明后授权",
+    unavailable: "不可用",
+  };
   const testSub =
     testState.phase === "ok" || testState.phase === "error"
       ? testState.message
-      : "验证系统通知权限是否已授予（窗口在前台也会发送）";
+      : "验证原生系统通知是否可以正常送达（前台也会发送）";
 
   return (
     <div>
       {showHeading && <h2 className={s.heading}>通知</h2>}
-      <Row label="系统通知" sub="任务需要关注时通过 macOS 通知中心 / Windows 通知横幅提醒" right={
-        <RadioGroup value={notifySystem ? "on" : "off"} options={toggleOptions} onChange={(v) => setNotifySystem(v === "on")} />
+      <Row label={isAndroid ? "Android 系统通知" : "系统通知"} sub={
+        isAndroid
+          ? "任务完成、出错或等待权限确认时发送 Android 原生通知"
+          : "任务需要关注时通过 macOS 通知中心 / Windows 通知横幅提醒"
+      } right={
+        <RadioGroup value={notifySystem ? "on" : "off"} options={toggleOptions} onChange={(value) => void handleSystemChange(value)} />
       } />
+      {isAndroid ? (
+        <Row label="Android 通知权限" sub={permissionError || "首次使用需由你主动授权；应用启动时不会自动弹窗"} right={
+          <Button
+            type="button"
+            variant="outline"
+            loading={permissionState === "checking"}
+            onClick={() => void updateAndroidPermission(true).then((granted) => {
+              if (granted) setNotifySystem(true);
+            })}
+          >
+            {permissionState === "granted" ? "已授权" : `${permissionLabel[permissionState] ?? permissionState} · 申请`}
+          </Button>
+        } />
+      ) : null}
       <Row label="提示音" sub="提醒时播放声音；系统通知开启时使用系统原生提示音" right={
         <RadioGroup value={notifySound ? "on" : "off"} options={toggleOptions} onChange={(v) => setNotifySound(v === "on")} />
       } />
       <Row label="任务完成时通知" sub="回合结束（含任务出错）时提醒" right={
         <RadioGroup value={notifyOnComplete ? "on" : "off"} options={toggleOptions} onChange={(v) => setNotifyOnComplete(v === "on")} />
       } />
-      <Row label="需要权限确认时通知" sub="任务等待你批准命令时提醒，并请求任务栏 / Dock 注意" right={
+      <Row label="需要权限确认时通知" sub={isAndroid ? "任务等待你批准命令时发送高优先级提醒" : "任务等待你批准命令时提醒，并请求任务栏 / Dock 注意"} right={
         <RadioGroup value={notifyOnApproval ? "on" : "off"} options={toggleOptions} onChange={(v) => setNotifyOnApproval(v === "on")} />
       } />
-      <Row label="仅窗口在后台时通知" sub="窗口在前台时不打扰；关闭后前台也会提醒" right={
+      <Row label="仅应用在后台时通知" sub={isAndroid ? "切换到其他应用后提醒；关闭后前台也会提醒" : "窗口在前台时不打扰；关闭后前台也会提醒"} right={
         <RadioGroup value={notifyOnlyBackground ? "on" : "off"} options={toggleOptions} onChange={(v) => setNotifyOnlyBackground(v === "on")} />
       } />
       {allChannelsOff && (
@@ -1888,9 +1964,9 @@ function formatRuntimeUpdateResult(result: RuntimeUpdateCheckResult): string {
 
 /* ── Shared Components ───────────────────────────────────────────────── */
 
-function Row({ label, sub, right }: { label: string; sub?: string; right: React.ReactNode }) {
+function Row({ label, sub, right, className }: { label: string; sub?: string; right: React.ReactNode; className?: string }) {
   return (
-    <div className={s.row}>
+    <div className={`${s.row} ${className ?? ""}`}>
       <div className={s.rowLeft}>
         <div className={s.rowLabel}>{label}</div>
         {sub && <div className={s.rowSub}>{sub}</div>}
@@ -1911,26 +1987,38 @@ function RadioGroup({ value, options, onChange }: { value: string; options: { va
 }
 
 function ConfigFieldRow({ fieldKey, field, value, onSave, showCategory }: {
-  fieldKey: string; field: ConfigSchemaField; value: any; onSave: (val: any) => void; showCategory?: boolean;
+  fieldKey: string; field: ConfigSchemaField; value: unknown; onSave: (val: unknown) => void; showCategory?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  const [localVal, setLocalVal] = useState(String(value ?? ""));
+  const [localVal, setLocalVal] = useState(formatConfigFieldValue(field.type, value));
+  const [validationError, setValidationError] = useState("");
+  const isStructured = field.type === "list" || field.type === "object";
 
   const handleSave = () => {
-    let parsed: any = localVal;
-    if (field.type === "number") parsed = Number(localVal);
-    if (field.type === "boolean") parsed = localVal === "true";
-    onSave(parsed);
+    const parsed = parseConfigFieldValue(field.type, localVal);
+    if (!parsed.ok) {
+      setValidationError(parsed.error);
+      return;
+    }
+    onSave(parsed.value);
+    setValidationError("");
     setEditing(false);
   };
 
+  const startEditing = () => {
+    setValidationError("");
+    setLocalVal(formatConfigFieldValue(field.type, value));
+    setEditing(true);
+  };
   const label = translateConfigField(fieldKey, field.description || fieldKey);
+  const sub = showCategory ? `[${CATEGORY_CN[field.category] ?? field.category}] ${fieldKey}` : fieldKey;
 
   if (field.type === "select" && field.options) {
     return (
       <Row
+        className={s.configFieldRow}
         label={label}
-        sub={showCategory ? `[${CATEGORY_CN[field.category] ?? field.category}] ${fieldKey}` : fieldKey}
+        sub={sub}
         right={<Select value={String(value ?? "")} onChange={(e) => onSave(e.target.value)}>{field.options.map((o) => <option key={o} value={o}>{translateConfigOption(fieldKey, o)}</option>)}</Select>}
       />
     );
@@ -1939,8 +2027,9 @@ function ConfigFieldRow({ fieldKey, field, value, onSave, showCategory }: {
   if (field.type === "boolean") {
     return (
       <Row
+        className={s.configFieldRow}
         label={label}
-        sub={showCategory ? `[${CATEGORY_CN[field.category] ?? field.category}] ${fieldKey}` : fieldKey}
+        sub={sub}
         right={<button className={s.toggle} data-on={!!value} onClick={() => onSave(!value)}><span className={s.toggleThumb} /></button>}
       />
     );
@@ -1948,18 +2037,44 @@ function ConfigFieldRow({ fieldKey, field, value, onSave, showCategory }: {
 
   return (
     <Row
+      className={s.configFieldRow}
       label={label}
-      sub={showCategory ? `[${CATEGORY_CN[field.category] ?? field.category}] ${fieldKey}` : fieldKey}
+      sub={sub}
       right={editing ? (
-        <div style={{ display: "flex", gap: 8 }}>
-          <Input mono value={localVal} onChange={(e) => setLocalVal(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSave()} autoFocus style={{ width: 200 }} fullWidth={false} />
-          <Button variant="solid" tone="accent" onClick={handleSave}>保存</Button>
-          <Button variant="outline" onClick={() => setEditing(false)}>取消</Button>
+        <div className={s.configFieldEditor}>
+          {isStructured ? (
+            <textarea
+              className={s.configStructuredEditor}
+              value={localVal}
+              onChange={(event) => { setLocalVal(event.target.value); setValidationError(""); }}
+              rows={Math.min(12, Math.max(4, localVal.split("\n").length))}
+              autoFocus
+              spellCheck={false}
+            />
+          ) : (
+            <Input
+              mono
+              value={localVal}
+              onChange={(event) => { setLocalVal(event.target.value); setValidationError(""); }}
+              onKeyDown={(event) => event.key === "Enter" && handleSave()}
+              autoFocus
+              fullWidth
+            />
+          )}
+          {validationError ? <div className={s.configFieldError}>{validationError}</div> : null}
+          <div className={s.configFieldActions}>
+            <Button variant="solid" tone="accent" onClick={handleSave}>保存</Button>
+            <Button variant="outline" onClick={() => { setValidationError(""); setEditing(false); }}>取消</Button>
+          </div>
         </div>
       ) : (
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontFamily: "var(--h-font-mono)", fontSize: 12, color: "var(--h-text-2)" }}>{value != null ? String(value) : "—"}</span>
-          <Button variant="outline" onClick={() => { setLocalVal(String(value ?? "")); setEditing(true); }}>编辑</Button>
+        <div className={s.configFieldDisplay}>
+          {isStructured ? (
+            <pre className={s.configStructuredValue}>{value != null ? formatConfigFieldValue(field.type, value) : "—"}</pre>
+          ) : (
+            <span className={s.configScalarValue}>{value != null ? formatConfigFieldValue(field.type, value) : "—"}</span>
+          )}
+          <Button variant="outline" onClick={startEditing}>编辑</Button>
         </div>
       )}
     />

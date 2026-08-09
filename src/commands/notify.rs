@@ -1,9 +1,8 @@
-// Desktop notification command (issue #194).
+// Native notification command (desktop + Android).
 //
 // 用户切到别的应用后，任务完成或卡在权限确认弹窗时毫无感知。`desktop_notify`
-// 在一次 IPC 内原子完成「前台判定 → 系统通知（macOS 通知中心 / Windows
-// toast，可带系统原生提示音）→ 请求窗口注意力（macOS dock 弹跳 / Windows
-// 任务栏闪烁）」。
+// 在一次 IPC 内完成「前台判定 → 系统通知 → 桌面端请求窗口注意力」。Android
+// 通知权限由独立的 `notification_permission` 命令管理，后台事件绝不擅自弹权限框。
 //
 // 前台判定放在 Rust 侧：托盘隐藏 / 最小化时 webview 的 document.hasFocus()
 // 不可靠，而 window.is_focused() 是权威信号；同时避免「前端查焦点 → 发通知」
@@ -13,11 +12,14 @@
 // 结果的 `error` 字段，前端据此回退到 WebAudio 提示音，绝不打断聊天主流程。
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, UserAttentionType};
+#[cfg(all(feature = "desktop", not(target_os = "android")))]
+use tauri::UserAttentionType;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::error::AppError;
-use crate::tray::MAIN_WINDOW_LABEL;
+
+const MAIN_WINDOW_LABEL: &str = "main";
 
 const MAX_TITLE_CHARS: usize = 120;
 const MAX_BODY_CHARS: usize = 300;
@@ -51,6 +53,20 @@ pub struct DesktopNotifyResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationPermissionInput {
+    /// false 只检查；true 才由用户操作触发 Android 系统权限请求。
+    pub request: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationPermissionResult {
+    pub state: String,
+    pub granted: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NotifyKind {
     Approval,
@@ -71,6 +87,7 @@ fn parse_kind(kind: &str) -> Option<NotifyKind> {
 
 /// 权限确认会阻塞任务，用 Critical（macOS dock 持续弹跳 / Windows 任务栏持续
 /// 闪烁直到用户回来）；其余场景 Informational 提醒一次即可。
+#[cfg(all(feature = "desktop", not(target_os = "android")))]
 fn attention_type(kind: NotifyKind) -> UserAttentionType {
     match kind {
         NotifyKind::Approval => UserAttentionType::Critical,
@@ -112,6 +129,68 @@ fn system_sound_name() -> &'static str {
     }
 }
 
+fn permission_result(
+    state: tauri_plugin_notification::PermissionState,
+) -> NotificationPermissionResult {
+    NotificationPermissionResult {
+        state: state.to_string(),
+        granted: matches!(state, tauri_plugin_notification::PermissionState::Granted),
+    }
+}
+
+#[tauri::command]
+pub async fn notification_permission(
+    app: AppHandle,
+    input: NotificationPermissionInput,
+) -> Result<NotificationPermissionResult, AppError> {
+    #[cfg(target_os = "android")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            let mut state = app.notification().permission_state().map_err(|err| {
+                AppError::Internal(format!(
+                    "failed to check Android notification permission: {err}"
+                ))
+            })?;
+            if input.request
+                && !matches!(state, tauri_plugin_notification::PermissionState::Granted)
+            {
+                state = app.notification().request_permission().map_err(|err| {
+                    AppError::Internal(format!(
+                        "failed to request Android notification permission: {err}"
+                    ))
+                })?;
+            }
+            Ok(permission_result(state))
+        })
+        .await
+        .map_err(|err| {
+            AppError::Internal(format!("notification_permission task failed: {err}"))
+        })?;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, input);
+        Ok(permission_result(
+            tauri_plugin_notification::PermissionState::Granted,
+        ))
+    }
+}
+
+#[cfg(target_os = "android")]
+fn notification_permission_error(app: &AppHandle) -> Option<String> {
+    match app.notification().permission_state() {
+        Ok(tauri_plugin_notification::PermissionState::Granted) => None,
+        Ok(state) => Some(format!("Android 通知权限未授予（当前状态：{state}）")),
+        Err(err) => Some(format!("无法检查 Android 通知权限：{err}")),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn notification_permission_error(_app: &AppHandle) -> Option<String> {
+    None
+}
+
 // async + spawn_blocking：同步 command 在主线程上执行，而 `builder.show()`
 // 是阻塞的系统调用（Linux 上经 zbus 走同步 D-Bus 往返），通知系统卡顿时会
 // 冻结整个 UI；挪到阻塞线程池后主线程和 async runtime 都不受影响。
@@ -150,11 +229,19 @@ fn notify_blocking(
             // foreground" so an uncertain window state still delivers the
             // notification: missing an approval prompt is the failure this
             // feature exists to prevent, a redundant toast is harmless.
-            is_foreground(
-                w.is_focused().unwrap_or(false),
-                w.is_minimized().unwrap_or(true),
-                w.is_visible().unwrap_or(false),
-            )
+            let focused = w.is_focused().unwrap_or(false);
+            let visible = w.is_visible().unwrap_or(false);
+            #[cfg(target_os = "android")]
+            {
+                // Android activities do not have a desktop-style minimized
+                // state; querying it can fail and incorrectly mark every
+                // foreground activity as background.
+                is_foreground(focused, false, visible)
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                is_foreground(focused, w.is_minimized().unwrap_or(true), visible)
+            }
         })
         .unwrap_or(false);
 
@@ -170,20 +257,47 @@ fn notify_blocking(
     let mut delivered = false;
     let mut error = None;
     if input.show_system_notification {
-        let mut builder = app.notification().builder().title(title).body(body);
-        if input.with_sound {
-            builder = builder.sound(system_sound_name());
-        }
-        match builder.show() {
-            Ok(()) => delivered = true,
-            Err(err) => {
-                log::warn!("System notification failed: {}", err);
-                error = Some(err.to_string());
+        if let Some(permission_error) = notification_permission_error(app) {
+            error = Some(permission_error);
+        } else {
+            let mut builder = app.notification().builder().title(title).body(body);
+            #[cfg(target_os = "android")]
+            {
+                if input.with_sound {
+                    builder = builder.sound(system_sound_name());
+                } else {
+                    const SILENT_CHANNEL_ID: &str = "hermes-agent-silent";
+                    let channel = tauri_plugin_notification::Channel::builder(
+                        SILENT_CHANNEL_ID,
+                        "Hermes Agent 静音通知",
+                    )
+                    .description("不播放声音的 Hermes Agent 后台提醒")
+                    .importance(tauri_plugin_notification::Importance::Low)
+                    .vibration(false)
+                    .build();
+                    match app.notification().create_channel(channel) {
+                        Ok(()) => builder = builder.channel_id(SILENT_CHANNEL_ID),
+                        Err(err) => log::warn!("Failed to prepare silent Android channel: {}", err),
+                    }
+                }
+            }
+            #[cfg(not(target_os = "android"))]
+            if input.with_sound {
+                builder = builder.sound(system_sound_name());
+            }
+            match builder.show() {
+                Ok(()) => delivered = true,
+                Err(err) => {
+                    log::warn!("System notification failed: {}", err);
+                    error = Some(err.to_string());
+                }
             }
         }
     }
 
+    #[cfg(all(feature = "desktop", not(target_os = "android")))]
     let mut attention_requested = false;
+    #[cfg(all(feature = "desktop", not(target_os = "android")))]
     if input.request_attention && !foreground {
         if let Some(window) = window.as_ref() {
             match window.request_user_attention(Some(attention_type(kind))) {
@@ -192,6 +306,11 @@ fn notify_blocking(
             }
         }
     }
+    #[cfg(not(all(feature = "desktop", not(target_os = "android"))))]
+    let attention_requested = {
+        let _ = kind;
+        false
+    };
 
     DesktopNotifyResult {
         delivered,
@@ -222,6 +341,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "desktop", not(target_os = "android")))]
     fn approval_uses_critical_attention_others_informational() {
         assert!(matches!(
             attention_type(NotifyKind::Approval),

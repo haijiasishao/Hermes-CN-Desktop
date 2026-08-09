@@ -15,6 +15,16 @@ describe("Android Remote route policy", () => {
     expect(getAndroidRemoteRouteRedirect("/advanced/env", true)).toBe("/health");
   });
 
+  it("redirects /about and /advanced/about to /health on Android Remote", () => {
+    expect(getAndroidRemoteRouteRedirect("/about", true)).toBe("/health");
+    expect(getAndroidRemoteRouteRedirect("/advanced/about", true)).toBe("/health");
+  });
+
+  it("does not redirect /about on desktop shells", () => {
+    expect(getAndroidRemoteRouteRedirect("/about", false)).toBeNull();
+    expect(getAndroidRemoteRouteRedirect("/advanced/about", false)).toBeNull();
+  });
+
   it("does not redirect supported routes or desktop shells", () => {
     expect(getAndroidRemoteRouteRedirect("/memory", false)).toBeNull();
     expect(getAndroidRemoteRouteRedirect("/openviking", false)).toBeNull();

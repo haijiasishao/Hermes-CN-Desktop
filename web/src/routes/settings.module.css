@@ -795,6 +795,114 @@
   justify-content: flex-end;
 }
 
+.configFieldRow {
+  align-items: flex-start;
+}
+
+.configFieldRow .rowRight {
+  box-sizing: border-box;
+  flex: 0 1 520px;
+  min-width: 200px;
+  max-width: 520px;
+}
+
+.configFieldDisplay {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.configScalarValue,
+.configStructuredValue {
+  min-width: 0;
+  color: var(--h-text-2);
+  font-family: var(--h-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.configStructuredValue {
+  flex: 1;
+  margin: 0;
+  white-space: pre-wrap;
+  text-align: left;
+}
+
+.configFieldEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+.configStructuredEditor {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  resize: vertical;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-input);
+  color: var(--h-text);
+  font-family: var(--h-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+
+.configStructuredEditor:focus {
+  border-color: var(--h-accent);
+}
+
+.configFieldActions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.configFieldError {
+  color: var(--h-err);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .configFieldRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .configFieldRow .rowRight {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex-basis: auto;
+    justify-content: flex-start;
+  }
+
+  .configFieldDisplay {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .configStructuredValue {
+    flex-basis: 100%;
+  }
+}
+
 .select {
   box-sizing: border-box;
   width: 100%;

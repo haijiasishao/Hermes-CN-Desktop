@@ -205,6 +205,22 @@ export interface DesktopNotifyResult {
   error?: string;
 }
 
+export type NotificationPermissionState =
+  | "granted"
+  | "denied"
+  | "prompt"
+  | "prompt-with-rationale";
+
+export interface NotificationPermissionInput {
+  /** false 只检查；true 才由用户操作触发系统权限请求。 */
+  request: boolean;
+}
+
+export interface NotificationPermissionResult {
+  state: NotificationPermissionState;
+  granted: boolean;
+}
+
 export interface TerminalStartInput {
   purpose?: "shell" | "gatewaySetup" | "gatewayStatus";
   cwd?: string;
@@ -527,6 +543,7 @@ declare global {
       uiStoreGetTurnStatsWindow?(input: { sinceMs?: number; limit?: number }): Promise<UiTurnStats[]>;
       uiStoreRecordEvent?(input: UiEventInput): Promise<boolean>;
       desktopNotify?(input: DesktopNotifyInput): Promise<DesktopNotifyResult>;
+      notificationPermission?(input: NotificationPermissionInput): Promise<NotificationPermissionResult>;
       terminalStart?(input: TerminalStartInput): Promise<TerminalStartResult>;
       terminalOpenExternal?(input: TerminalOpenExternalInput): Promise<ExternalTerminalResult>;
       terminalWrite?(input: { terminalId: string; data: string }): Promise<boolean>;

@@ -1,4 +1,4 @@
-// Hermes Agent Mobile — binary entry point.
+// Hermes Agent — binary entry point.
 //
 // Desktop builds call into the library's run(); Android builds ignore this
 // binary entirely and load libhermes_agent_cn.so via the JNI entry point

@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">"Hermes Agent CN Mobile"</string>
-    <string name="main_activity_title">"Hermes Agent CN Mobile"</string>
+    <string name="app_name">Hermes Agent</string>
+    <string name="main_activity_title">Hermes Agent</string>
 </resources>
