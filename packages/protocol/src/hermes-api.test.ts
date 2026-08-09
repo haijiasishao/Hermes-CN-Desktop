@@ -515,27 +515,59 @@ describe("AnalyticsResponse", () => {
     });
 
     expect(parsed.top_sessions[0]?.session_id).toBe("s1");
-    expect(parsed.comparison.previous_totals.total_tokens).toBe(5);
+    expect(parsed.comparison?.previous_totals?.total_tokens).toBe(5);
   });
 
-  it("rejects the old analytics contract without top_sessions and comparison", () => {
-    expect(() =>
-      AnalyticsResponse.parse({
-        daily: [],
-        by_model: [],
-        totals: {},
-        period_days: 7,
-        skills: {
-          summary: {
-            total_skill_loads: 0,
-            total_skill_edits: 0,
-            total_skill_actions: 0,
-            distinct_skills_used: 0,
-          },
-          top_skills: [],
+  it("parses the deployed compact analytics contract", () => {
+    const parsed = AnalyticsResponse.parse({
+      daily: [
+        {
+          day: "2026-08-09",
+          input_tokens: 12,
+          output_tokens: 8,
+          cache_read_tokens: 3,
+          reasoning_tokens: 1,
+          sessions: 2,
+          api_calls: 4,
+          estimated_cost: 0.01,
+          actual_cost: 0.01,
         },
-      }),
-    ).toThrow();
+      ],
+      by_model: [{
+        model: "model-a",
+        input_tokens: 12,
+        output_tokens: 8,
+        estimated_cost: 0.01,
+        sessions: 2,
+        api_calls: 4,
+      }],
+      by_task: [],
+      totals: {
+        total_input: 12,
+        total_output: 8,
+        total_cache_read: 3,
+        total_reasoning: 1,
+        total_sessions: 2,
+        total_api_calls: 4,
+        total_estimated_cost: 0.01,
+        total_actual_cost: 0.01,
+      },
+      period_days: 1,
+      skills: {
+        summary: {
+          total_skill_loads: 0,
+          total_skill_edits: 0,
+          total_skill_actions: 0,
+          distinct_skills_used: 0,
+        },
+        top_skills: [],
+      },
+      tools: [],
+    });
+
+    expect(parsed.top_sessions).toEqual([]);
+    expect(parsed.comparison).toBeUndefined();
+    expect(parsed.by_model[0]?.provider).toBeUndefined();
   });
 });
 

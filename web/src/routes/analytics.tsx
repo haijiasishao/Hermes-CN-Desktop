@@ -690,8 +690,10 @@ export function AnalyticsRoute() {
   const navigate = useNavigate();
   const vm = useMemo(() => query.data ? buildAnalyticsViewModel(query.data) : null, [query.data]);
   const perf = useMemo(() => vm ? buildAnalyticsPerformanceViewModel(vm, turnStats) : null, [vm, turnStats]);
+  const tokenCount = vm?.kpis.find((kpi) => kpi.key === "tokens")?.value ?? 0;
+  const apiCallCount = vm?.kpis.find((kpi) => kpi.key === "apiCalls")?.value ?? 0;
   const subtitle = vm
-    ? `${vm.periodDays} 天 · ${formatTokens(vm.totals.total_tokens)} tokens · ${formatInteger(vm.totals.total_api_calls)} 次 API 调用`
+    ? `${vm.periodDays} 天 · ${formatTokens(tokenCount)} tokens · ${formatInteger(apiCallCount)} 次 API 调用`
     : "查看 Token、会话、API 调用、缓存与模型性能。";
 
   useEffect(() => {

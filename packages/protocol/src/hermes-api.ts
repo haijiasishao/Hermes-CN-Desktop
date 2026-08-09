@@ -942,40 +942,40 @@ export type McpCatalogInstallResponse = z.infer<typeof McpCatalogInstallResponse
 // ── Analytics (/api/analytics/usage) ──────────────────────────────────
 
 export const AnalyticsTotals = z.object({
-  total_input: z.number(),
-  total_output: z.number(),
-  total_tokens: z.number(),
-  total_cache_read: z.number(),
-  total_cache_write: z.number(),
-  total_reasoning: z.number(),
-  total_sessions: z.number(),
-  total_api_calls: z.number(),
-  avg_tokens_per_session: z.number(),
+  total_input: z.number().nullish(),
+  total_output: z.number().nullish(),
+  total_tokens: z.number().nullish(),
+  total_cache_read: z.number().nullish(),
+  total_cache_write: z.number().nullish(),
+  total_reasoning: z.number().nullish(),
+  total_sessions: z.number().nullish(),
+  total_api_calls: z.number().nullish(),
+  avg_tokens_per_session: z.number().nullish(),
 }).passthrough();
 export type AnalyticsTotals = z.infer<typeof AnalyticsTotals>;
 
 export const AnalyticsDay = z.object({
   day: z.string(),
-  input_tokens: z.number(),
-  output_tokens: z.number(),
-  cache_read_tokens: z.number(),
-  cache_write_tokens: z.number(),
-  reasoning_tokens: z.number(),
-  sessions: z.number(),
-  api_calls: z.number(),
+  input_tokens: z.number().nullish(),
+  output_tokens: z.number().nullish(),
+  cache_read_tokens: z.number().nullish(),
+  cache_write_tokens: z.number().nullish(),
+  reasoning_tokens: z.number().nullish(),
+  sessions: z.number().nullish(),
+  api_calls: z.number().nullish(),
 }).passthrough();
 export type AnalyticsDay = z.infer<typeof AnalyticsDay>;
 
 export const AnalyticsModelBreakdown = z.object({
   model: z.string(),
-  provider: z.string(),
-  input_tokens: z.number(),
-  output_tokens: z.number(),
-  cache_read_tokens: z.number(),
-  cache_write_tokens: z.number(),
-  reasoning_tokens: z.number(),
-  sessions: z.number(),
-  api_calls: z.number(),
+  provider: z.string().optional(),
+  input_tokens: z.number().nullish(),
+  output_tokens: z.number().nullish(),
+  cache_read_tokens: z.number().nullish(),
+  cache_write_tokens: z.number().nullish(),
+  reasoning_tokens: z.number().nullish(),
+  sessions: z.number().nullish(),
+  api_calls: z.number().nullish(),
 }).passthrough();
 export type AnalyticsModelBreakdown = z.infer<typeof AnalyticsModelBreakdown>;
 
@@ -998,11 +998,11 @@ export type AnalyticsTopSession = z.infer<typeof AnalyticsTopSession>;
 export const AnalyticsResponse = z.object({
   daily: z.array(AnalyticsDay),
   by_model: z.array(AnalyticsModelBreakdown),
-  top_sessions: z.array(AnalyticsTopSession),
+  top_sessions: z.array(AnalyticsTopSession).optional().default([]),
   totals: AnalyticsTotals,
   comparison: z.object({
     previous_totals: AnalyticsTotals,
-  }).passthrough(),
+  }).passthrough().optional(),
   period_days: z.number(),
   skills: z.object({
     summary: z.object({

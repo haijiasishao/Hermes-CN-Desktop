@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AnalyticsResponse } from "@hermes/protocol";
+import { AnalyticsResponse } from "@hermes/protocol";
+import type { AnalyticsResponse as AnalyticsResponseType } from "@hermes/protocol";
 import { analyticsContractErrorMessage, buildAnalyticsViewModel } from "./analytics";
 
-function totals(overrides: Partial<AnalyticsResponse["totals"]> = {}): AnalyticsResponse["totals"] {
+function totals(overrides: Partial<AnalyticsResponseType["totals"]> = {}): AnalyticsResponseType["totals"] {
   return {
     total_input: 0,
     total_output: 0,
@@ -17,7 +18,7 @@ function totals(overrides: Partial<AnalyticsResponse["totals"]> = {}): Analytics
   };
 }
 
-function response(overrides: Partial<AnalyticsResponse> = {}): AnalyticsResponse {
+function response(overrides: Partial<AnalyticsResponseType> = {}): AnalyticsResponseType {
   return {
     daily: [],
     by_model: [],
@@ -37,6 +38,53 @@ function response(overrides: Partial<AnalyticsResponse> = {}): AnalyticsResponse
     ...overrides,
   };
 }
+
+it("normalizes the deployed compact analytics payload", () => {
+  const data = AnalyticsResponse.parse({
+    daily: [{
+      day: "2026-08-09",
+      input_tokens: 12,
+      output_tokens: 8,
+      cache_read_tokens: 3,
+      reasoning_tokens: 1,
+      sessions: 2,
+      api_calls: 4,
+    }],
+    by_model: [{
+      model: "model-a",
+      input_tokens: 12,
+      output_tokens: 8,
+      sessions: 2,
+      api_calls: 4,
+    }],
+    by_task: [],
+    totals: {
+      total_input: 12,
+      total_output: 8,
+      total_cache_read: 3,
+      total_reasoning: 1,
+      total_sessions: 2,
+      total_api_calls: 4,
+    },
+    period_days: 1,
+    skills: {
+      summary: {
+        total_skill_loads: 0,
+        total_skill_edits: 0,
+        total_skill_actions: 0,
+        distinct_skills_used: 0,
+      },
+      top_skills: [],
+    },
+    tools: [],
+  });
+  const vm = buildAnalyticsViewModel(data, new Date("2026-08-09T12:00:00Z"));
+
+  expect(vm.models[0]).toMatchObject({ model: "model-a", provider: "unknown", totalTokens: 20 });
+  expect(vm.topSessions).toEqual([]);
+  expect(vm.daily[0]).toMatchObject({ inputTokens: 12, outputTokens: 8, cacheWriteTokens: 0 });
+  expect(vm.kpis.find((kpi) => kpi.key === "tokens")).toMatchObject({ value: 20, previous: null, changePercent: null });
+});
 
 describe("buildAnalyticsViewModel", () => {
   it("fills daily points and computes KPI deltas", () => {

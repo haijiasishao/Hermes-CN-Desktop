@@ -56,7 +56,7 @@ export interface AnalyticsKpiView {
   key: "tokens" | "apiCalls" | "sessions" | "avgTokens";
   label: string;
   value: number;
-  previous: number;
+  previous: number | null;
   changePercent: number | null;
 }
 
@@ -114,7 +114,7 @@ export interface AnalyticsPerformanceViewModel {
 export interface AnalyticsViewModel {
   periodDays: number;
   totals: AnalyticsTotals;
-  previousTotals: AnalyticsTotals;
+  previousTotals: AnalyticsTotals | null;
   daily: AnalyticsDailyPoint[];
   models: AnalyticsModelView[];
   topSessions: AnalyticsTopSessionView[];
@@ -126,14 +126,24 @@ function finite(value: number | null | undefined): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function totalTokens(row: { input_tokens: number; output_tokens: number }): number {
+function totalTokens(row: {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+}): number {
   return finite(row.input_tokens) + finite(row.output_tokens);
+}
+
+function totalTokensFromTotals(totals: AnalyticsTotals): number {
+  if (typeof totals.total_tokens === "number" && Number.isFinite(totals.total_tokens)) {
+    return totals.total_tokens;
+  }
+  return finite(totals.total_input) + finite(totals.total_output);
 }
 
 function avgTokensPerSession(totals: AnalyticsTotals): number {
   const sessions = finite(totals.total_sessions);
   if (sessions <= 0) return 0;
-  return finite(totals.total_tokens) / sessions;
+  return totalTokensFromTotals(totals) / sessions;
 }
 
 function changePercent(current: number, previous: number): number | null {
@@ -349,58 +359,65 @@ export function buildAnalyticsPerformanceViewModel(
   };
 }
 
-function buildKpis(totals: AnalyticsTotals, previous: AnalyticsTotals): AnalyticsKpiView[] {
+function buildKpis(totals: AnalyticsTotals, previous: AnalyticsTotals | null): AnalyticsKpiView[] {
+  const currentTokens = totalTokensFromTotals(totals);
+  const previousTokens = previous ? totalTokensFromTotals(previous) : null;
+  const currentApiCalls = finite(totals.total_api_calls);
+  const previousApiCalls = previous ? finite(previous.total_api_calls) : null;
+  const currentSessions = finite(totals.total_sessions);
+  const previousSessions = previous ? finite(previous.total_sessions) : null;
   const currentAvgTokens = avgTokensPerSession(totals);
-  const previousAvgTokens = avgTokensPerSession(previous);
+  const previousAvgTokens = previous ? avgTokensPerSession(previous) : null;
   return [
     {
       key: "tokens",
       label: "总 Tokens",
-      value: finite(totals.total_tokens),
-      previous: finite(previous.total_tokens),
-      changePercent: changePercent(finite(totals.total_tokens), finite(previous.total_tokens)),
+      value: currentTokens,
+      previous: previousTokens,
+      changePercent: previousTokens == null ? null : changePercent(currentTokens, previousTokens),
     },
     {
       key: "apiCalls",
       label: "API 调用",
-      value: finite(totals.total_api_calls),
-      previous: finite(previous.total_api_calls),
-      changePercent: changePercent(finite(totals.total_api_calls), finite(previous.total_api_calls)),
+      value: currentApiCalls,
+      previous: previousApiCalls,
+      changePercent: previousApiCalls == null ? null : changePercent(currentApiCalls, previousApiCalls),
     },
     {
       key: "sessions",
       label: "会话数",
-      value: finite(totals.total_sessions),
-      previous: finite(previous.total_sessions),
-      changePercent: changePercent(finite(totals.total_sessions), finite(previous.total_sessions)),
+      value: currentSessions,
+      previous: previousSessions,
+      changePercent: previousSessions == null ? null : changePercent(currentSessions, previousSessions),
     },
     {
       key: "avgTokens",
       label: "平均 Token / 会话",
       value: currentAvgTokens,
       previous: previousAvgTokens,
-      changePercent: changePercent(currentAvgTokens, previousAvgTokens),
+      changePercent: previousAvgTokens == null ? null : changePercent(currentAvgTokens, previousAvgTokens),
     },
   ];
 }
 
 export function buildAnalyticsViewModel(data: AnalyticsResponse, now = new Date()): AnalyticsViewModel {
-  const totalTokenCount = finite(data.totals.total_tokens);
+  const totalTokenCount = totalTokensFromTotals(data.totals);
   const models = data.by_model
     .map((item) => modelView(item, totalTokenCount))
     .sort((a, b) => b.totalTokens - a.totalTokens || b.apiCalls - a.apiCalls || a.label.localeCompare(b.label));
   const topSessions = data.top_sessions
     .map(topSessionView)
     .sort((a, b) => b.totalTokens - a.totalTokens || b.apiCalls - a.apiCalls || b.startedAt - a.startedAt);
+  const previousTotals = data.comparison?.previous_totals ?? null;
   const daily = fillDaily(data.daily, data.period_days, now);
   return {
     periodDays: data.period_days,
     totals: data.totals,
-    previousTotals: data.comparison.previous_totals,
+    previousTotals,
     daily,
     models,
     topSessions,
-    kpis: buildKpis(data.totals, data.comparison.previous_totals),
+    kpis: buildKpis(data.totals, previousTotals),
     isEmpty: totalTokenCount === 0 && finite(data.totals.total_sessions) === 0 && models.length === 0,
   };
 }
