@@ -16,13 +16,13 @@ use std::path::{Path, PathBuf};
 
 use tauri::Emitter;
 
+use crate::android_compat::{self as compat};
 use crate::connection::{ConnectionMode, LocalBackend, RemoteBackend};
 #[cfg(feature = "desktop")]
 use crate::environment;
 use crate::error::AppError;
 #[cfg(feature = "desktop")]
 use crate::process::{dashboard, runtime};
-use crate::android_compat::{self as compat};
 use crate::state::{AppState, DashboardHandle};
 
 /// Emit a "runtime-status" event for the frontend overlay to consume.

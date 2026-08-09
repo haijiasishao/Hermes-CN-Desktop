@@ -93,13 +93,16 @@ pub fn handle_archive_request(
 /// Filter or annotate archived sessions in a /api/sessions or
 /// /api/sessions/search response.
 ///
-/// Default (no `include_archived=true`): archived sessions are removed from the
-/// list (and `total` adjusted), hiding them from the active view.
+/// Default (no query flag): archived sessions are removed from the list
+/// (and `total` adjusted), hiding them from the active view.
 ///
-/// With `include_archived=true`: archived sessions are kept and each is
-/// annotated with `"archived": true` so the desktop UI can present a dedicated
-/// "archived" scope. Non-archived items are left untouched (an absent field
-/// means "not archived" on the frontend).
+/// With `?include_archived=true` or `?archived=include`: archived sessions are
+/// kept and each is annotated with `"archived": true` so the UI can present a
+/// dedicated "archived" scope. Non-archived items are left untouched (an absent
+/// field means "not archived" on the frontend).
+///
+/// Supports both old `{sessions:[...]}` and official `{data:[...]}` response
+/// envelopes. The `data` array is processed identically when present.
 pub fn filter_archived_from_response(
     path: &str,
     method: &str,
@@ -112,9 +115,9 @@ pub fn filter_archived_from_response(
 
     let (url_path, include_archived) =
         if let Ok(url) = url::Url::parse(&format!("http://x{}", path)) {
-            let include_archived = url
-                .query_pairs()
-                .any(|(k, v)| k == "include_archived" && v == "true");
+            let include_archived = url.query_pairs().any(|(k, v)| {
+                (k == "include_archived" && v == "true") || (k == "archived" && v == "include")
+            });
             (url.path().to_string(), include_archived)
         } else {
             return body.to_string();
@@ -138,6 +141,7 @@ pub fn filter_archived_from_response(
     };
 
     if is_sessions {
+        // Old-protocol envelope: {sessions:[...]}
         if let Some(sessions) = data.get_mut("sessions").and_then(|s| s.as_array_mut()) {
             if include_archived {
                 annotate_archived(sessions, "id", &archived);
@@ -153,6 +157,36 @@ pub fn filter_archived_from_response(
                 if removed > 0 {
                     if let Some(total) = data.get_mut("total").and_then(|t| t.as_i64()) {
                         data["total"] = serde_json::json!(std::cmp::max(0, total - removed as i64));
+                    }
+                }
+            }
+        }
+        // Official hermes-agent envelope: {data:[...], has_more, ...}
+        // When both `sessions` and `data` are present they are the same list
+        // (the TS protocol normalizer maps `data` → `sessions`), so we always
+        // process `data` too to keep the raw JSON consistent for any consumer
+        // that reads `data` directly.
+        if let Some(data_arr) = data.get_mut("data").and_then(|d| d.as_array_mut()) {
+            if include_archived {
+                annotate_archived(data_arr, "id", &archived);
+            } else {
+                let before = data_arr.len();
+                data_arr.retain(|s| {
+                    s.get("id")
+                        .and_then(|id| id.as_str())
+                        .map(|id| !archived.contains(id))
+                        .unwrap_or(true)
+                });
+                let removed = before - data_arr.len();
+                if removed > 0 {
+                    // Adjust pagination.total if present.
+                    if let Some(pag) = data.get_mut("pagination").and_then(|p| p.as_object_mut()) {
+                        if let Some(total) = pag.get("total").and_then(|t| t.as_i64()) {
+                            pag.insert(
+                                "total".to_string(),
+                                serde_json::json!(std::cmp::max(0, total - removed as i64)),
+                            );
+                        }
                     }
                 }
             }
@@ -522,6 +556,128 @@ mod tests {
         archive(home_str(&dir), &["s1"]);
         let body = "{}";
         let out = filter_archived_from_response("/api/other", "GET", home_str(&dir), body);
+        assert_eq!(out, body);
+    }
+
+    // -------- archived=include (alias for include_archived=true) --------
+
+    #[test]
+    fn filter_annotates_archived_when_archived_include_set() {
+        let dir = TempDir::new().unwrap();
+        archive(home_str(&dir), &["s2"]);
+        let out = filter_archived_from_response(
+            "/api/sessions?archived=include",
+            "GET",
+            home_str(&dir),
+            &sessions_body(),
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let sessions = v["sessions"].as_array().unwrap();
+        let ids: Vec<&str> = sessions.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["s1", "s2", "s3"]);
+        assert_eq!(v["total"], 3);
+        assert_eq!(sessions[0].get("archived"), None);
+        assert_eq!(sessions[1]["archived"], serde_json::json!(true));
+        assert_eq!(sessions[2].get("archived"), None);
+    }
+
+    // -------- official {data:[...]} envelope --------
+
+    fn official_sessions_body() -> String {
+        serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "s1", "title": "A"},
+                {"id": "s2", "title": "B"},
+                {"id": "s3", "title": "C"}
+            ],
+            "limit": 50,
+            "offset": 0,
+            "has_more": false
+        })
+        .to_string()
+    }
+
+    fn official_sessions_body_with_pagination() -> String {
+        serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "s1", "title": "A"},
+                {"id": "s2", "title": "B"},
+                {"id": "s3", "title": "C"}
+            ],
+            "limit": 50,
+            "offset": 0,
+            "has_more": false,
+            "pagination": {"limit": 50, "offset": 0, "total": 3, "has_more": false}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn filter_removes_archived_from_official_data_envelope() {
+        let dir = TempDir::new().unwrap();
+        archive(home_str(&dir), &["s2"]);
+        let out = filter_archived_from_response(
+            "/api/sessions",
+            "GET",
+            home_str(&dir),
+            &official_sessions_body(),
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let data = v["data"].as_array().unwrap();
+        let ids: Vec<&str> = data.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["s1", "s3"]);
+        // has_more preserved
+        assert_eq!(v["has_more"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn filter_annotates_archived_in_official_data_envelope() {
+        let dir = TempDir::new().unwrap();
+        archive(home_str(&dir), &["s2"]);
+        let out = filter_archived_from_response(
+            "/api/sessions?archived=include",
+            "GET",
+            home_str(&dir),
+            &official_sessions_body(),
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let data = v["data"].as_array().unwrap();
+        let ids: Vec<&str> = data.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["s1", "s2", "s3"]);
+        assert_eq!(data[0].get("archived"), None);
+        assert_eq!(data[1]["archived"], serde_json::json!(true));
+        assert_eq!(data[2].get("archived"), None);
+    }
+
+    #[test]
+    fn filter_removes_archived_and_adjusts_pagination_total() {
+        let dir = TempDir::new().unwrap();
+        archive(home_str(&dir), &["s2"]);
+        let out = filter_archived_from_response(
+            "/api/sessions",
+            "GET",
+            home_str(&dir),
+            &official_sessions_body_with_pagination(),
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let data = v["data"].as_array().unwrap();
+        let ids: Vec<&str> = data.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["s1", "s3"]);
+        assert_eq!(v["pagination"]["total"], 2);
+    }
+
+    #[test]
+    fn filter_include_archived_with_official_data_empty_archive_set() {
+        let dir = TempDir::new().unwrap();
+        let body = official_sessions_body();
+        let out = filter_archived_from_response(
+            "/api/sessions?archived=include",
+            "GET",
+            home_str(&dir),
+            &body,
+        );
         assert_eq!(out, body);
     }
 }

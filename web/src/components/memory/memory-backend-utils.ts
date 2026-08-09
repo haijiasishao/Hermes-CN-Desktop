@@ -1,6 +1,7 @@
 import type {
   MemoryProviderRuntimeStatusResponse,
   MemoryProviderConfigField,
+  MemoryProviderConfigResponse,
 } from "@hermes/protocol";
 import type { VisibleMemoryProvider } from "@/hooks/use-memory";
 
@@ -79,36 +80,64 @@ export function isMemoryFieldVisible(
   return Object.entries(field.when).every(([key, expected]) => String(values[key] ?? "") === String(expected));
 }
 
+export function hasAnyFieldSet(config?: MemoryProviderConfigResponse): boolean {
+  return (config?.fields ?? []).some(f => f.is_set);
+}
+
 export function memoryBackendState(
   status?: MemoryProviderRuntimeStatusResponse,
   authRequired = false,
-  opts?: { statusUnavailable?: boolean; statusError?: boolean; providerActive?: boolean; providerConfigured?: boolean },
+  opts?: {
+    statusUnavailable?: boolean;    // 404
+    statusError?: boolean;          // 500/network
+    providerActive?: boolean;       // from providersQuery.data?.active
+    providerConfigured?: boolean;   // from provider list metadata
+    configFieldsSet?: boolean;      // true if config loaded AND at least one field has is_set=true
+    configLoadFailed?: boolean;     // true if config request failed
+  },
 ): {
-  label: "未配置" | "需登录" | "已保存但离线" | "在线可用" | "当前启用" | "运行异常" | "当前启用（状态接口不可用）" | "已配置（状态接口不可用）" | "状态未知（状态接口不可用）" | "当前启用（状态读取失败）" | "已配置（状态读取失败）" | "状态读取失败";
+  label: "未配置" | "需登录" | "已保存但离线" | "在线可用" | "当前启用" | "运行异常" | "服务端记录的当前选择（待核验）" | "未配置（状态接口不可用）" | "配置已保存（状态接口不可用）" | "待核验（状态接口不可用）" | "配置待核验（状态接口不可用）" | "当前选择（状态读取失败）" | "未配置（状态读取失败）" | "配置已保存（状态读取失败）" | "状态读取失败（待核验）" | "配置待核验（状态读取失败）" | "已保存但待验证" | "配置待核验";
   tone: "muted" | "warn" | "ok" | "active" | "error";
 } {
+  // 1. authRequired
   if (authRequired) return { label: "需登录", tone: "warn" };
-  // 404 (statusUnavailable) takes precedence: the endpoint genuinely does not
-  // exist, so the provider metadata is simply unavailable — not a runtime error.
-  if (!status?.configured) {
-    if (opts?.statusUnavailable) {
-      if (opts.providerActive) return { label: "当前启用（状态接口不可用）", tone: "active" };
-      if (opts.providerConfigured) return { label: "已配置（状态接口不可用）", tone: "ok" };
-      return { label: "状态未知（状态接口不可用）", tone: "warn" };
+
+  // 2-4. Status exists and configured: healthy path
+  if (status?.configured) {
+    if (status.reachable && status.healthy) {
+      // 2a. active → 当前启用
+      if (status.active) return { label: "当前启用", tone: "active" };
+      // 2b. !active → 在线可用
+      return { label: "在线可用", tone: "ok" };
     }
-    // Non-404 status error (500, network, etc.) — surface the failure rather
-    // than silently falling through to the misleading "未配置" label.
-    if (opts?.statusError) {
-      if (opts.providerActive) return { label: "当前启用（状态读取失败）", tone: "error" };
-      if (opts.providerConfigured) return { label: "已配置（状态读取失败）", tone: "error" };
-      return { label: "状态读取失败", tone: "error" };
-    }
-    return { label: "未配置", tone: "muted" };
+    // 3. configured + reachable + !healthy → 运行异常
+    if (status.reachable && !status.healthy) return { label: "运行异常", tone: "error" };
+    // 4. configured + !reachable → 已保存但离线
+    if (!status.reachable) return { label: "已保存但离线", tone: "warn" };
   }
-  if (!status.reachable) return { label: "已保存但离线", tone: "warn" };
-  if (!status.healthy) return { label: "运行异常", tone: "error" };
-  if (status.active) return { label: "当前启用", tone: "active" };
-  return { label: "在线可用", tone: "ok" };
+
+  // 5. statusUnavailable (404)
+  if (opts?.statusUnavailable) {
+    if (opts.providerActive) return { label: "服务端记录的当前选择（待核验）", tone: "warn" };
+    if (opts.configFieldsSet === true) return { label: "配置已保存（状态接口不可用）", tone: "warn" };
+    if (opts.configFieldsSet === false) return { label: "未配置（状态接口不可用）", tone: "muted" };
+    if (opts.configLoadFailed) return { label: "配置待核验（状态接口不可用）", tone: "warn" };
+    return { label: "待核验（状态接口不可用）", tone: "warn" };
+  }
+
+  // 6. statusError (500/network)
+  if (opts?.statusError) {
+    if (opts.providerActive) return { label: "当前选择（状态读取失败）", tone: "error" };
+    if (opts.configFieldsSet === true) return { label: "配置已保存（状态读取失败）", tone: "error" };
+    if (opts.configFieldsSet === false) return { label: "未配置（状态读取失败）", tone: "muted" };
+    if (opts.configLoadFailed) return { label: "配置待核验（状态读取失败）", tone: "error" };
+    return { label: "状态读取失败（待核验）", tone: "error" };
+  }
+
+  // 7. !status?.configured (no status or status says not configured)
+  if (opts?.configFieldsSet) return { label: "已保存但待验证", tone: "warn" };
+  if (opts?.configLoadFailed) return { label: "配置待核验", tone: "warn" };
+  return { label: "未配置", tone: "muted" };
 }
 
 export function asRecord(value: unknown): Record<string, unknown> {

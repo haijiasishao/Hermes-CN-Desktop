@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 use zip::write::SimpleFileOptions;
 
-use crate::error::{AppError, AppResult};
 use crate::android_compat as runtime;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 const MAX_TEXT_FILE_BYTES: u64 = 25 * 1024 * 1024;

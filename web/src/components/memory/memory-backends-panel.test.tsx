@@ -11,6 +11,8 @@ const query = {
   refetch: vi.fn().mockResolvedValue({ data: undefined }),
 };
 
+const configCalls: string[] = [];
+
 vi.mock("@/hooks/use-memory", () => ({
   VISIBLE_MEMORY_PROVIDERS: ["openviking", "hindsight"],
   useMemoryProviders: () => ({
@@ -24,15 +26,18 @@ vi.mock("@/hooks/use-memory", () => ({
     },
   }),
   useMemoryProviderStatus: () => query,
-  useMemoryProviderConfig: () => ({
-    ...query,
-    data: {
-      name: "openviking",
-      label: "OpenViking",
-      fields: [],
-      setup: { dependencies_installed: true },
-    },
-  }),
+  useMemoryProviderConfig: (provider: string) => {
+    configCalls.push(provider);
+    return {
+      ...query,
+      data: {
+        name: provider,
+        label: provider === "openviking" ? "OpenViking" : "Hindsight",
+        fields: [],
+        setup: { dependencies_installed: true },
+      },
+    };
+  },
   useSaveMemoryProviderConfig: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useSetupMemoryProvider: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useSetMemoryProvider: () => ({ isPending: false, mutateAsync: vi.fn() }),
@@ -42,6 +47,7 @@ import { MemoryBackendsPanel } from "./memory-backends-panel";
 
 describe("MemoryBackendsPanel", () => {
   it("renders the two supported backends as links on the config page", () => {
+    configCalls.length = 0;
     const html = ReactDOMServer.renderToStaticMarkup(
       <MemoryRouter><MemoryBackendsPanel view="config" /></MemoryRouter>,
     );
@@ -55,6 +61,17 @@ describe("MemoryBackendsPanel", () => {
     expect(html).not.toContain("Supermemory");
   });
 
+  it("reads both provider configs on config view", () => {
+    configCalls.length = 0;
+    ReactDOMServer.renderToStaticMarkup(
+      <MemoryRouter><MemoryBackendsPanel view="config" /></MemoryRouter>,
+    );
+
+    // Config view should trigger config queries for both providers
+    expect(configCalls).toContain("openviking");
+    expect(configCalls).toContain("hindsight");
+  });
+
   it("renders provider controls only on the provider page", () => {
     const html = ReactDOMServer.renderToStaticMarkup(
       <MemoryRouter><MemoryBackendsPanel view="openviking" /></MemoryRouter>,
@@ -63,5 +80,14 @@ describe("MemoryBackendsPanel", () => {
     expect(html).toContain("OpenViking 控制台");
     expect(html).toContain("设为当前");
     expect(html).not.toContain("深度控制台");
+  });
+
+  it("shows 设为当前 button on provider detail page", () => {
+    const html = ReactDOMServer.renderToStaticMarkup(
+      <MemoryRouter><MemoryBackendsPanel view="openviking" /></MemoryRouter>,
+    );
+
+    // Provider detail should show "设为当前" since status is not active
+    expect(html).toContain("设为当前");
   });
 });

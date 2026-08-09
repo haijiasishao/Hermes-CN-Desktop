@@ -3,17 +3,19 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { LoadingState, Popover, StatusDot } from "@hermes/shared-ui";
+import { CopyButton } from "@/components/ui/copy-button";
 import {
   Archive,
   ArchiveRestore,
   ChevronDown,
+  ExternalLink,
   MoreHorizontal,
   Pin,
   PinOff,
   Search,
   Trash2,
 } from "lucide-react";
-import type { SessionSummary } from "@hermes/protocol";
+import type { SessionMessage, SessionSummary } from "@hermes/protocol";
 import { chatRuntimeBySessionAtom } from "@/stores/chat";
 import { activeSessionIdAtom } from "@/stores/ui";
 import { useActiveProfileName } from "@/hooks/use-profiles";
@@ -22,20 +24,18 @@ import {
   sessionListErrorMessage,
   useArchiveSession,
   useDeleteSessions,
+  useSessionMessages,
   useSessions,
   useUnarchiveSession,
 } from "@/hooks/use-sessions";
 import { useGateway } from "@/hooks/use-gateway";
 import { useSessionBranch } from "@/hooks/use-session-branch";
+import { useIsMobile } from "@/hooks/use-media-query";
 import { isSessionRunning } from "@/lib/session-activity";
 import { sessionDisplayTitle } from "@/lib/session-title";
 import {
-  dayKey,
-  dayLabel,
   formatTokens,
-  isToday,
   relativeTime,
-  timeOfDay,
 } from "@/lib/format";
 import {
   readPinnedSessionIds,
@@ -71,6 +71,9 @@ import s from "./history.module.css";
 const PAGE_SIZE = 200;
 const INLINE_SOURCE_LIMIT = 4;
 
+const MSG_PREVIEW_MAX = 20;
+const MSG_PREVIEW_CHAR_LIMIT = 500;
+
 type StatusFilter = "all" | "running" | "done" | "failed";
 
 const STATUS_LABELS: Record<StatusFilter, string> = {
@@ -80,34 +83,49 @@ const STATUS_LABELS: Record<StatusFilter, string> = {
   failed: "失败",
 };
 
-// Archive scope partitions the list orthogonally to status: "active" is the
-// default (archived sessions hidden, matching the rest of the app); "archived"
-// shows only the sessions the user has tucked away, with restore actions.
 type ArchiveScope = "active" | "archived";
 
 function shortId(id: string): string {
-  return id.slice(-6);
-}
-
-function lastActivitySec(session: SessionSummary): number {
-  return session.ended_at ?? session.started_at;
-}
-
-interface SessionStatus {
-  kind: "running" | "done" | "failed";
-  label: string;
+  return id.slice(-8);
 }
 
 function classifySession(
   session: SessionSummary,
   liveRunning: boolean,
-): SessionStatus {
+): { kind: "running" | "done" | "failed"; label: string } {
   if (liveRunning) return { kind: "running", label: "运行中" };
   if (session.end_reason === "error" || session.end_reason === "interrupted") {
     return { kind: "failed", label: session.end_reason === "interrupted" ? "已中止" : "失败" };
   }
   return { kind: "done", label: "已完成" };
 }
+
+function lastActivitySec(session: SessionSummary): number {
+  return session.ended_at ?? session.started_at;
+}
+
+function truncateText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return text.slice(0, limit) + "…";
+}
+
+function stringifyMessageContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object" && "text" in part) return String((part as { text: unknown }).text ?? "");
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  return String(content);
+}
+
+// ── Source filter popover ──
 
 interface SourcePopoverProps {
   selected: string | null;
@@ -172,37 +190,34 @@ function SourcePopover({
           ) : (
             filteredGroups.map((group) => (
               <div key={group.group} className={s.popGroup}>
-                <div className={s.popGroupLabel}>
-                  {group.label} · {group.items.length}
-                </div>
+                <div className={s.popGroupLabel}>{group.label}</div>
                 {group.items.map((item) => {
-                  const isSelected = selected === item.key;
-                  const pinnedHere = pinned.has(item.key);
+                  const active = selected === item.key;
                   return (
                     <div
                       key={item.key}
                       className={s.popRow}
-                      data-checked={isSelected ? "true" : undefined}
+                      data-checked={active}
                       role="option"
-                      aria-selected={isSelected}
+                      aria-selected={active}
                       onClick={() => {
-                        onSelect(item.key);
+                        onSelect(active ? null : item.key);
                         onClose();
                       }}
                     >
+                      <span className={s.popCheck}>{active ? "✓" : ""}</span>
                       <span className={s.popName}>{item.label}</span>
                       <button
                         type="button"
                         className={s.popPin}
-                        data-pinned={pinnedHere ? "true" : undefined}
+                        data-pinned={pinned.has(item.key)}
                         onClick={(event) => {
                           event.stopPropagation();
                           onTogglePin(item.key);
                         }}
-                        aria-label={pinnedHere ? "取消置顶" : "置顶"}
-                        title={pinnedHere ? "取消置顶" : "置顶"}
+                        aria-label={pinned.has(item.key) ? "取消置顶" : "置顶"}
                       >
-                        {pinnedHere ? <Pin size={12} /> : <PinOff size={12} />}
+                        {pinned.has(item.key) ? <Pin size={12} /> : <PinOff size={12} />}
                       </button>
                       <span className={s.popCount}>{counts.get(item.key) ?? 0}</span>
                     </div>
@@ -212,277 +227,318 @@ function SourcePopover({
             ))
           )}
         </div>
-        <div className={s.popFoot}>
-          <button
-            type="button"
-            className={s.popLink}
-            onClick={() => {
-              onSelect(null);
-              onClose();
-            }}
-          >
-            全部来源
-          </button>
-          <span className={s.popFootMeta}>
-            {selected ? getSourceMeta(selected).label : "未选择"}
-          </span>
-        </div>
       </Popover.Content>
     </Popover.Portal>
   );
 }
 
-export function HistoryRoute() {
-  const navigate = useNavigate();
-  const runtimeBySession = useAtomValue(chatRuntimeBySessionAtom);
-  // Always fetch with archived sessions included (annotated `archived: true` by
-  // the Rust proxy) so both scopes share one query and their counts are always
-  // known; we split client-side by `archived`. The sidebar keeps the default
-  // active-only query, so archived sessions never leak there.
-  const { data, isLoading, isError, error, refetch } = useSessions(PAGE_SIZE, 0, { includeArchived: true });
-  const archiveSession = useArchiveSession();
-  const unarchiveSession = useUnarchiveSession();
-  const deleteSessions = useDeleteSessions();
-  const { setSessionTitle, resumeSession } = useGateway();
-  const sessionBranch = useSessionBranch();
+// ── Message preview section ──
 
-  const [archiveScope, setArchiveScope] = useState<ArchiveScope>("active");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [selectedSource, setSelectedSource] = useState<string | null>(null);
+function MessagePreview({ sessionId }: { sessionId: string }) {
+  const { data, isLoading, error, refetch } = useSessionMessages(sessionId);
+
+  if (isLoading) {
+    return (
+      <div className={s.messagePreviewLoading}>
+        <LoadingState label="" />
+        加载对话中…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={s.messagePreviewError}>
+        <span>加载失败: {String((error as Error).message ?? error)}</span>
+        <button type="button" onClick={() => void refetch()}>重试</button>
+      </div>
+    );
+  }
+
+  const messages: SessionMessage[] = data?.messages ?? [];
+  if (messages.length === 0) {
+    return <div className={s.messagePreviewEmpty}>暂无对话记录</div>;
+  }
+
+  const preview = messages.slice(0, MSG_PREVIEW_MAX);
+
+  return (
+    <>
+      {preview.map((msg, i) => (
+        <div key={msg.id ?? i} className={s.msgItem}>
+          <span className={s.msgRole}>{msg.role}</span>
+          <span className={s.msgContent}>
+            {truncateText(stringifyMessageContent(msg.content), MSG_PREVIEW_CHAR_LIMIT)}
+          </span>
+        </div>
+      ))}
+      {messages.length > MSG_PREVIEW_MAX && (
+        <div className={s.messagePreviewEmpty}>
+          还有 {messages.length - MSG_PREVIEW_MAX} 条消息，请打开会话查看全部
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Source badge ──
+
+function SourceBadge({ meta }: { meta: SourceMeta }) {
+  return (
+    <span className={s.sourceChip} data-tone={meta.tone}>
+      {meta.label}
+    </span>
+  );
+}
+
+// ── Main component ──
+
+export function HistoryRoute() {
+  const queryClient = useQueryClient();
+  const activeProfile = useActiveProfileName();
+  const navigate = useNavigate();
+  const gateway = useGateway();
+  const liveRunning = useAtomValue(chatRuntimeBySessionAtom);
+  const setActiveSessionId = useSetAtom(activeSessionIdAtom);
+  const isMobile = useIsMobile();
+
   const [searchQuery, setSearchQuery] = useState("");
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [archiveScope, setArchiveScope] = useState<ArchiveScope>("active");
+  const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  const [bulkDeleteMode, setBulkDeleteMode] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  const [deleteTargets, setDeleteTargets] = useState<SessionSummary[] | null>(null);
   const [renamingSession, setRenamingSession] = useState<SessionSummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [renameError, setRenameError] = useState("");
   const [renameSaving, setRenameSaving] = useState(false);
-  const [bulkDeleteMode, setBulkDeleteMode] = useState(false);
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
-  const [deleteTargets, setDeleteTargets] = useState<SessionSummary[] | null>(null);
-  const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null);
-  const [exportError, setExportError] = useState("");
-
-  const [titleOverrides, setTitleOverrides] = useState(readSessionTitleOverrides);
-  const [workspaceMap, setWorkspaceMap] = useState(readSessionWorkspaceMap);
+  const [renameError, setRenameError] = useState("");
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => readPinnedSessionIds());
+  const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(readSessionTitleOverrides);
+  const [workspaceMap, setWorkspaceMap] = useState<Record<string, string>>(readSessionWorkspaceMap);
   const [pinnedSources, setPinnedSources] = useState<Set<string>>(readPinnedSources);
-  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(readPinnedSessionIds);
+  const [sourcePopoverOpen, setSourcePopoverOpen] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [exportError, setExportError] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"list" | "detail">("list");
 
-  useEffect(
-    () =>
-      subscribeSessionUiStateChanges(() => {
-        setTitleOverrides(readSessionTitleOverrides());
-        setPinnedSessionIds(readPinnedSessionIds());
-      }),
-    [],
-  );
-  useEffect(
-    () => subscribeWorkspaceChanges(() => setWorkspaceMap(readSessionWorkspaceMap())),
-    [],
-  );
-  useEffect(
-    () => subscribePinnedSourcesChange(() => setPinnedSources(readPinnedSources())),
-    [],
-  );
+  useEffect(() => {
+    const unsub = subscribeSessionUiStateChanges(() => {
+      setPinnedIds(readPinnedSessionIds());
+      setTitleOverrides(readSessionTitleOverrides);
+    });
+    return unsub;
+  }, []);
 
-  const sessions = useMemo(
-    () =>
-      (data?.sessions ?? []).map((session) => {
-        const overridden = titleOverrides[session.id];
-        return overridden ? { ...session, title: overridden } : session;
-      }),
+  useEffect(() => {
+    const unsub = subscribeWorkspaceChanges(() => {
+      setWorkspaceMap(readSessionWorkspaceMap());
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = subscribePinnedSourcesChange(() => {
+      setPinnedSources(readPinnedSources);
+    });
+    return unsub;
+  }, []);
+
+  const {
+    data,
+    isLoading,
+    error,
+    refetch,
+  } = useSessions(PAGE_SIZE, 0, {
+    includeArchived: archiveScope === "archived",
+  });
+
+  const sessions = useMemo<SessionSummary[]>(
+    () => (data?.sessions ?? []).map((session) => {
+      const overriddenTitle = titleOverrides[session.id];
+      return overriddenTitle ? { ...session, title: overriddenTitle } : session;
+    }),
     [data?.sessions, titleOverrides],
   );
 
-  // Counts for the scope toggle, derived from the single archived-inclusive set.
-  const activeCount = useMemo(() => sessions.filter((x) => !x.archived).length, [sessions]);
-  const archivedCount = useMemo(() => sessions.filter((x) => x.archived).length, [sessions]);
-
-  // Everything below (status/source counts, filtering, grouping) operates on the
-  // sessions in the current scope only.
-  const scopedSessions = useMemo(
-    () =>
-      sessions.filter((session) =>
-        archiveScope === "archived" ? !!session.archived : !session.archived,
-      ),
-    [archiveScope, sessions],
-  );
-
-  useEffect(() => {
-    if (!data || data.total > sessions.length || pinnedSessionIds.size === 0) return;
-    const liveIds = new Set(sessions.map((session) => session.id));
-    const staleIds = Array.from(pinnedSessionIds).filter((id) => !liveIds.has(id));
-    if (staleIds.length > 0) setPinnedSessionIds(unpinSessions(staleIds));
-  }, [data, pinnedSessionIds, sessions]);
-
-  // status counts (across all sessions, ignoring source/search filters)
-  const statusCounts = useMemo(() => {
-    const counts: Record<StatusFilter, number> = { all: 0, running: 0, done: 0, failed: 0 };
-    for (const session of scopedSessions) {
-      counts.all += 1;
-      const live = isSessionRunning(session, runtimeBySession);
-      const status = classifySession(session, live).kind;
-      counts[status] += 1;
-    }
-    return counts;
-  }, [runtimeBySession, scopedSessions]);
-
-  // source counts (across sessions matching status + search, ignoring source filter)
   const sourceCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    const q = searchQuery.trim().toLowerCase();
-    for (const session of scopedSessions) {
-      const live = isSessionRunning(session, runtimeBySession);
-      const status = classifySession(session, live).kind;
-      if (statusFilter !== "all" && status !== statusFilter) continue;
-      if (q) {
-        const haystack =
-          `${session.title ?? ""} ${session.preview ?? ""} ${session.id}`.toLowerCase();
-        if (!haystack.includes(q)) continue;
-      }
-      const key = getSourceMeta(session.source).key;
+    for (const session of sessions) {
+      const key = session.source || "unknown";
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     return counts;
-  }, [runtimeBySession, searchQuery, scopedSessions, statusFilter]);
+  }, [sessions]);
 
-  // inline sources: pinned first (sorted by count), then top remaining by count, capped to INLINE_SOURCE_LIMIT
-  const inlineSourceKeys = useMemo(() => {
-    const entries = Array.from(sourceCounts.entries());
-    const pinnedEntries = entries
-      .filter(([key]) => pinnedSources.has(key))
-      .sort((a, b) => b[1] - a[1]);
-    const otherEntries = entries
-      .filter(([key]) => !pinnedSources.has(key))
-      .sort((a, b) => b[1] - a[1]);
-    const ordered = [...pinnedEntries, ...otherEntries];
-    return ordered.slice(0, INLINE_SOURCE_LIMIT).map(([key]) => key);
-  }, [pinnedSources, sourceCounts]);
+  const deleteSessions = useDeleteSessions();
+  const archiveSession = useArchiveSession();
+  const unarchiveSession = useUnarchiveSession();
+  const sessionBranch = useSessionBranch();
 
-  const overflowCount = Math.max(0, sourceCounts.size - inlineSourceKeys.length);
+  // ── Derived data ──
 
-  // visible sessions after all filters, with day grouping
   const filtered = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    const matches: SessionSummary[] = [];
-    for (const session of scopedSessions) {
-      const live = isSessionRunning(session, runtimeBySession);
-      const status = classifySession(session, live).kind;
-      if (statusFilter !== "all" && status !== statusFilter) continue;
-      if (selectedSource) {
-        const sourceKey = getSourceMeta(session.source).key;
-        if (sourceKey !== selectedSource) continue;
-      }
-      if (q) {
-        const haystack =
-          `${session.title ?? ""} ${session.preview ?? ""} ${session.id}`.toLowerCase();
-        if (!haystack.includes(q)) continue;
-      }
-      matches.push(session);
-    }
-    matches.sort((a, b) => lastActivitySec(b) - lastActivitySec(a));
-    return matches;
-  }, [runtimeBySession, searchQuery, selectedSource, scopedSessions, statusFilter]);
+    let result = sessions;
 
-  const dayGroups = useMemo(() => {
-    const groups = new Map<string, { label: string; sessions: SessionSummary[]; sortKey: number }>();
-    for (const session of filtered) {
-      const ts = lastActivitySec(session);
-      const key = dayKey(ts);
-      const existing = groups.get(key);
-      if (existing) {
-        existing.sessions.push(session);
-      } else {
-        groups.set(key, { label: dayLabel(ts), sessions: [session], sortKey: ts });
-      }
+    if (statusFilter !== "all") {
+      result = result.filter((session) => {
+        const status = classifySession(session, isSessionRunning(session, liveRunning));
+        if (statusFilter === "running") return status.kind === "running";
+        if (statusFilter === "done") return status.kind === "done";
+        if (statusFilter === "failed") return status.kind === "failed";
+        return true;
+      });
     }
-    return Array.from(groups.values()).sort((a, b) => b.sortKey - a.sortKey);
-  }, [filtered]);
 
-  const visibleSessionIds = useMemo(() => filtered.map((session) => session.id), [filtered]);
-  const visibleSessionIdSet = useMemo(() => new Set(visibleSessionIds), [visibleSessionIds]);
-  const selectedSessions = useMemo(
-    () => filtered.filter((session) => selectedSessionIds.has(session.id)),
-    [filtered, selectedSessionIds],
+    const query = searchQuery.trim().toLowerCase();
+    if (query) {
+      result = result.filter((session) => {
+        const haystack = [
+          sessionDisplayTitle(session),
+          session.preview ?? "",
+          session.model,
+          session.source ?? "",
+          session.id,
+        ].join(" ").toLowerCase();
+        return haystack.includes(query);
+      });
+    }
+
+    if (selectedSource) {
+      result = result.filter((session) => (session.source || "unknown") === selectedSource);
+    }
+
+    return result;
+  }, [sessions, statusFilter, searchQuery, selectedSource, liveRunning]);
+
+  const totalTokens = useMemo(
+    () => filtered.reduce((sum, s) => sum + (s.input_tokens ?? 0) + (s.output_tokens ?? 0), 0),
+    [filtered],
   );
+
+  const visibleSessionIds = useMemo(() => filtered.map((s) => s.id), [filtered]);
   const allVisibleSelected = visibleSessionIds.length > 0 && visibleSessionIds.every((id) => selectedSessionIds.has(id));
 
-  useEffect(() => {
-    if (!bulkDeleteMode) return;
-    setSelectedSessionIds((prev) => {
-      const next = new Set(Array.from(prev).filter((id) => visibleSessionIdSet.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [bulkDeleteMode, visibleSessionIdSet]);
+  const selectedSession = useMemo(
+    () => filtered.find((s) => s.id === selectedId) ?? null,
+    [filtered, selectedId],
+  );
 
-  const onTogglePinSource = useCallback((key: string) => {
-    setPinnedSources(togglePinnedSource(key));
+  // ── Session card handlers ──
+
+  const handleCardClick = useCallback(
+    (session: SessionSummary) => {
+      if (bulkDeleteMode) {
+        toggleSelectedSession(session.id, !selectedSessionIds.has(session.id));
+        return;
+      }
+      setSelectedId(session.id);
+      if (isMobile) {
+        setViewMode("detail");
+      }
+      void prefetchSessionMessages(queryClient, activeProfile, session.id);
+    },
+    [bulkDeleteMode, selectedSessionIds, isMobile, queryClient, activeProfile],
+  );
+
+  const handleMobileBack = useCallback(() => {
+    setViewMode("list");
   }, []);
 
-  const onTogglePinSession = useCallback((sessionId: string) => {
-    setPinnedSessionIds(togglePinnedSession(sessionId));
+  const handleOpenSession = useCallback(
+    (session: SessionSummary) => {
+      setActiveSessionId(session.id);
+      navigate(`/tasks/${session.id}`);
+    },
+    [navigate, setActiveSessionId],
+  );
+
+  // ── Bulk delete ──
+
+  const startBulkDeleteMode = useCallback(() => {
+    setBulkDeleteMode(true);
+    setSelectedSessionIds(new Set());
   }, []);
 
-  const toggleSelectedSession = useCallback((sessionId: string, checked: boolean) => {
+  const stopBulkDeleteMode = useCallback(() => {
+    setBulkDeleteMode(false);
+    setSelectedSessionIds(new Set());
+  }, []);
+
+  const toggleSelectedSession = useCallback((id: string, checked: boolean) => {
     setSelectedSessionIds((prev) => {
       const next = new Set(prev);
-      if (checked) next.add(sessionId);
-      else next.delete(sessionId);
+      if (checked) next.add(id);
+      else next.delete(id);
       return next;
     });
-  }, []);
-
-  const clearSelectedSessions = useCallback(() => {
-    setSelectedSessionIds(new Set());
   }, []);
 
   const selectVisibleSessions = useCallback(() => {
     setSelectedSessionIds(new Set(visibleSessionIds));
   }, [visibleSessionIds]);
 
-  const startBulkDeleteMode = useCallback(() => {
-    setOpenMenuId(null);
-    setDeleteFeedback(null);
+  const clearSelectedSessions = useCallback(() => {
     setSelectedSessionIds(new Set());
-    setBulkDeleteMode(true);
   }, []);
 
-  const stopBulkDeleteMode = useCallback(() => {
-    if (deleteSessions.isPending) return;
-    setBulkDeleteMode(false);
-    setSelectedSessionIds(new Set());
-    setDeleteFeedback(null);
-  }, [deleteSessions.isPending]);
+  // ── Delete ──
 
-  const activeSessionId = useAtomValue(activeSessionIdAtom);
-  const setActiveSessionId = useSetAtom(activeSessionIdAtom);
-  const queryClient = useQueryClient();
-  const activeProfile = useActiveProfileName();
-  const hoverSession = useCallback(
-    (session: SessionSummary) => {
-      prefetchSessionMessages(queryClient, activeProfile, session.id);
-    },
-    [activeProfile, queryClient],
-  );
-  const goSession = useCallback(
-    (session: SessionSummary) => {
-      if (bulkDeleteMode) {
-        toggleSelectedSession(session.id, !selectedSessionIds.has(session.id));
-        return;
-      }
-      // Atom is the source of truth (#53). Set synchronously *before*
-      // navigate so any async work that mounts as part of the detail
-      // route reads the post-click value, not the previous one.
-      setActiveSessionId(session.id);
-      navigate(`/tasks/${session.id}`);
-    },
-    [bulkDeleteMode, navigate, selectedSessionIds, setActiveSessionId, toggleSelectedSession],
-  );
+  const openDeleteDialog = useCallback((targets: SessionSummary[]) => {
+    setDeleteTargets(targets);
+    setOpenMenuId(null);
+  }, []);
+
+  const closeDeleteDialog = useCallback(() => {
+    setDeleteTargets(null);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteTargets || deleteTargets.length === 0) return;
+    const ids = deleteTargets.map((s) => s.id);
+    await deleteSessions.mutateAsync(ids);
+    const deletedSet = new Set(ids);
+    setSelectedSessionIds((prev) => {
+      const next = new Set(prev);
+      for (const id of deletedSet) next.delete(id);
+      return next;
+    });
+    if (selectedId && deletedSet.has(selectedId)) {
+      setSelectedId(null);
+      if (isMobile) setViewMode("list");
+    }
+    setDeleteTargets(null);
+    setBulkDeleteMode(false);
+    unpinSessions(ids);
+  }, [deleteTargets, deleteSessions, selectedId, isMobile]);
+
+  // ── Pin ──
+
+  const onTogglePinSession = useCallback((id: string) => {
+    togglePinnedSession(id);
+    setOpenMenuId(null);
+  }, []);
+
+  // ── Archive ──
+
+  const handleArchive = useCallback((session: SessionSummary) => {
+    archiveSession.mutate(session.id);
+    setOpenMenuId(null);
+  }, [archiveSession]);
+
+  const handleUnarchive = useCallback((session: SessionSummary) => {
+    unarchiveSession.mutate(session.id);
+    setOpenMenuId(null);
+  }, [unarchiveSession]);
+
+  // ── Rename ──
 
   const startRename = useCallback((session: SessionSummary) => {
-    setOpenMenuId(null);
     setRenamingSession(session);
-    setRenameValue((session.title || session.preview || session.id).replace(/\s+/g, " ").trim());
+    setRenameValue(sessionDisplayTitle(session));
     setRenameError("");
+    setOpenMenuId(null);
   }, []);
 
   const closeRename = useCallback(() => {
@@ -492,430 +548,456 @@ export function HistoryRoute() {
   }, []);
 
   const submitRename = useCallback(async () => {
-    const session = renamingSession;
-    if (!session) return;
-    const title = renameValue.trim();
-    if (!title) {
-      setRenameError("请输入会话名称");
+    if (!renamingSession) return;
+    const trimmed = renameValue.trim();
+    if (!trimmed) {
+      setRenameError("名称不能为空");
       return;
     }
     setRenameSaving(true);
-    setRenameError("");
     try {
-      await renameSession(session.id, title, { setSessionTitle, resumeSession });
+      await renameSession(renamingSession.id, trimmed, {
+        setSessionTitle: gateway.setSessionTitle,
+        resumeSession: gateway.resumeSession,
+      });
       closeRename();
-    } catch (error) {
-      setRenameError(error instanceof Error ? error.message : "重命名失败");
+    } catch (err) {
+      setRenameError(String((err as Error).message ?? err));
     } finally {
       setRenameSaving(false);
     }
-  }, [closeRename, renameValue, renamingSession, resumeSession, setSessionTitle]);
+  }, [renamingSession, renameValue, closeRename, gateway]);
 
-  const handleArchive = useCallback(
-    (session: SessionSummary) => {
-      setOpenMenuId(null);
-      archiveSession.mutate(session.id);
-    },
-    [archiveSession],
-  );
+  // ── Export ──
 
-  const handleExport = useCallback(
-    async (session: SessionSummary) => {
-      setOpenMenuId(null);
-      setExportError("");
-      try {
-        await exportSessionJson(session.id, activeProfile);
-      } catch (error) {
-        setExportError(error instanceof Error ? error.message : "导出会话失败");
-      }
-    },
-    [activeProfile],
-  );
-
-  const handleUnarchive = useCallback(
-    (session: SessionSummary) => {
-      setOpenMenuId(null);
-      unarchiveSession.mutate(session.id);
-    },
-    [unarchiveSession],
-  );
-
-  const openDeleteDialog = useCallback((targets: SessionSummary[]) => {
-    const uniqueTargets = Array.from(new Map(targets.map((session) => [session.id, session])).values());
-    if (uniqueTargets.length === 0) return;
+  const handleExport = useCallback(async (session: SessionSummary) => {
+    try {
+      await exportSessionJson(session.id, activeProfile);
+    } catch (err) {
+      setExportError(String((err as Error).message ?? err));
+    }
     setOpenMenuId(null);
-    setDeleteFeedback(null);
-    setDeleteTargets(uniqueTargets);
-  }, []);
+  }, [activeProfile]);
 
-  const closeDeleteDialog = useCallback(() => {
-    if (!deleteSessions.isPending) setDeleteTargets(null);
-  }, [deleteSessions.isPending]);
+  // ── Hover prefetch ──
 
-  const confirmDelete = useCallback(async () => {
-    if (!deleteTargets?.length) return;
-    const targetIds = deleteTargets.map((session) => session.id);
-    const result = await deleteSessions.mutateAsync(targetIds);
-    if (result.succeededIds.length > 0) {
-      unpinSessions(result.succeededIds);
-      setPinnedSessionIds(readPinnedSessionIds());
-      setSelectedSessionIds((prev) => {
-        const next = new Set(prev);
-        for (const id of result.succeededIds) next.delete(id);
-        return next;
-      });
-      if (activeSessionId && result.succeededIds.includes(activeSessionId)) {
-        setActiveSessionId(null);
-      }
-    }
-    if (result.failureCount > 0) {
-      const sample = result.failed[0]?.error ? `：${result.failed[0].error}` : "";
-      setDeleteFeedback(`已删除 ${result.successCount} 个会话，${result.failureCount} 个删除失败${sample}`);
-    } else {
-      setDeleteFeedback(null);
-      setBulkDeleteMode(false);
-      setSelectedSessionIds(new Set());
-    }
-    setDeleteTargets(null);
-  }, [activeSessionId, deleteSessions, deleteTargets, setActiveSessionId]);
-
-  const totalTokens = useMemo(
-    () =>
-      filtered.reduce(
-        (sum, session) => sum + (session.input_tokens ?? 0) + (session.output_tokens ?? 0),
-        0,
-      ),
-    [filtered],
+  const hoverSession = useCallback(
+    (session: SessionSummary) => {
+      void prefetchSessionMessages(queryClient, activeProfile, session.id);
+    },
+    [queryClient, activeProfile],
   );
 
-  const todayTokens = useMemo(() => {
-    let tokens = 0;
+  // ── Status counts ──
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<StatusFilter, number> = { all: sessions.length, running: 0, done: 0, failed: 0 };
     for (const session of sessions) {
-      if (!isToday(lastActivitySec(session))) continue;
-      tokens += (session.input_tokens ?? 0) + (session.output_tokens ?? 0);
+      const status = classifySession(session, isSessionRunning(session, liveRunning));
+      if (status.kind === "running") counts.running++;
+      else if (status.kind === "failed") counts.failed++;
+      else counts.done++;
     }
-    return tokens;
-  }, [sessions]);
+    return counts;
+  }, [sessions, liveRunning]);
+
+  // ── Sync selectedId when filtered list changes ──
+
+  useEffect(() => {
+    if (selectedId && !filtered.some((s) => s.id === selectedId)) {
+      setSelectedId(null);
+      if (isMobile && viewMode === "detail") setViewMode("list");
+    }
+  }, [filtered, selectedId, isMobile, viewMode]);
+
+  // ── Render ──
+
+  const listPanelVisible = !isMobile || viewMode === "list";
+  const detailPanelVisible = !isMobile || viewMode === "detail";
 
   return (
-    <main className={s.page}>
+    <main className={s.page} data-testid="history-page">
+      {/* ── Top bar ── */}
       <TopBar
-        title="对话历史"
-        sub={isLoading ? "加载中…" : `${filtered.length} / ${scopedSessions.length} 个会话`}
+        title="历史会话"
+        sub={`${sessions.length} 个会话`}
         right={
           <>
-            <span className={s.headerStat}>
-              今日 <span className={s.headerStatValue}>{formatTokens(todayTokens)} tokens</span>
-            </span>
+            <Popover.Root>
+              <Popover.Trigger asChild>
+                <TopBarActionButton aria-label="切换归档范围">
+                  {archiveScope === "archived" ? <ArchiveRestore size={16} /> : <Archive size={16} />}
+                  <span>{archiveScope === "archived" ? "归档" : "活跃"}</span>
+                </TopBarActionButton>
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Content className={s.popover} align="start" side="bottom">
+                  <div className={s.popRow}
+                    data-checked={archiveScope === "active"}
+                    onClick={() => setArchiveScope("active")}
+                  >
+                    <span className={s.popCheck}>{archiveScope === "active" ? "✓" : ""}</span>
+                    <span className={s.popName}>活跃会话</span>
+                  </div>
+                  <div className={s.popRow}
+                    data-checked={archiveScope === "archived"}
+                    onClick={() => setArchiveScope("archived")}
+                  >
+                    <span className={s.popCheck}>{archiveScope === "archived" ? "✓" : ""}</span>
+                    <span className={s.popName}>已归档</span>
+                  </div>
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
             <TopBarActionButton
-              onClick={startBulkDeleteMode}
-              disabled={bulkDeleteMode || deleteSessions.isPending || filtered.length === 0}
+              onClick={bulkDeleteMode ? stopBulkDeleteMode : startBulkDeleteMode}
+              aria-label={bulkDeleteMode ? "取消批量删除" : "批量删除"}
             >
-              <Trash2 size={12} />
-              批量删除
+              <Trash2 size={16} />
+              <span>{bulkDeleteMode ? "取消批量" : "批量删除"}</span>
             </TopBarActionButton>
           </>
         }
       />
 
-      <div className={s.filters}>
-        <div className={s.filtersRow}>
-        <div className={s.seg} role="tablist" aria-label="状态筛选">
-          {(Object.keys(STATUS_LABELS) as StatusFilter[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={statusFilter === key}
-              className={s.segItem}
-              data-active={statusFilter === key ? "true" : undefined}
-              onClick={() => setStatusFilter(key)}
-            >
-              {STATUS_LABELS[key]}
-              <span className={s.segCount}>{statusCounts[key]}</span>
-            </button>
-          ))}
-        </div>
+      {/* ── Two-panel layout ── */}
+      <div className={s.layout} data-mobile={isMobile}>
 
-        <div className={s.segAnchor}>
-          <div className={s.seg} role="radiogroup" aria-label="来源筛选">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={selectedSource === null}
-              className={s.segItem}
-              data-active={selectedSource === null ? "true" : undefined}
-              onClick={() => setSelectedSource(null)}
-            >
-              全部
-            </button>
-            {inlineSourceKeys.map((key) => {
-              const meta = getSourceMeta(key);
-              const active = selectedSource === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  className={s.segItem}
-                  data-active={active ? "true" : undefined}
-                  onClick={() => setSelectedSource(active ? null : key)}
-                >
-                  {meta.label}
-                  <span className={s.segCount}>{sourceCounts.get(key) ?? 0}</span>
-                </button>
-              );
-            })}
-            {overflowCount > 0 ? (
-              <Popover.Root open={popoverOpen} onOpenChange={setPopoverOpen}>
-                <Popover.Trigger asChild>
-                  <button
-                    type="button"
-                    className={s.segItem}
-                    data-active={popoverOpen ? "true" : undefined}
-                  >
-                    更多
-                    <span className={s.segBadge}>+{overflowCount}</span>
-                    <ChevronDown size={12} className={popoverOpen ? s.chevOpen : undefined} />
-                  </button>
-                </Popover.Trigger>
-                <SourcePopover
-                  selected={selectedSource}
-                  pinned={pinnedSources}
-                  counts={sourceCounts}
-                  onSelect={setSelectedSource}
-                  onTogglePin={onTogglePinSource}
-                  onClose={() => setPopoverOpen(false)}
-                />
-              </Popover.Root>
-            ) : null}
-          </div>
-        </div>
-
-        <div className={s.searchBox}>
-          <Search size={12} />
-          <input
-            type="search"
-            placeholder="搜索标题与会话 ID…"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-          />
-        </div>
-        </div>
-
-        {/* 第二行：活跃/归档范围切换（用户反馈：与状态筛选分行，别挤在搜索框旁）。 */}
-        <div className={s.filtersRow}>
-        <div className={s.seg} role="tablist" aria-label="归档筛选">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={archiveScope === "active"}
-            className={s.segItem}
-            data-active={archiveScope === "active" ? "true" : undefined}
-            onClick={() => setArchiveScope("active")}
-          >
-            活跃中
-            <span className={s.segCount}>{activeCount}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={archiveScope === "archived"}
-            className={s.segItem}
-            data-active={archiveScope === "archived" ? "true" : undefined}
-            onClick={() => setArchiveScope("archived")}
-          >
-            <Archive size={12} />
-            已归档
-            <span className={s.segCount}>{archivedCount}</span>
-          </button>
-        </div>
-        </div>
-      </div>
-
-      {bulkDeleteMode ? (
-        <div className={s.bulkBar} data-active={selectedSessionIds.size > 0 ? "true" : undefined}>
-          {deleteFeedback ? <span className={s.bulkFeedback}>{deleteFeedback}</span> : null}
-          <span>
-            已选择 {selectedSessionIds.size} 个会话
-            {filtered.length > 0 ? ` · 当前筛选 ${filtered.length} 个` : ""}
-          </span>
-          <button type="button" onClick={selectVisibleSessions} disabled={visibleSessionIds.length === 0 || allVisibleSelected || deleteSessions.isPending}>
-            选择当前筛选结果
-          </button>
-          <button type="button" onClick={clearSelectedSessions} disabled={selectedSessionIds.size === 0 || deleteSessions.isPending}>
-            清空选择
-          </button>
-          <button
-            type="button"
-            className={s.bulkDanger}
-            onClick={() => openDeleteDialog(selectedSessions)}
-            disabled={selectedSessions.length === 0 || deleteSessions.isPending}
-          >
-            <Trash2 size={12} />
-            删除所选
-          </button>
-          <button type="button" onClick={stopBulkDeleteMode} disabled={deleteSessions.isPending}>
-            退出批量删除
-          </button>
-        </div>
-      ) : null}
-
-      <div className={s.scroll}>
-        {isError ? (
-          <div className={s.errorState} role="alert">
-            <p>{sessionListErrorMessage(error)}</p>
-            <div className={s.errorActions}>
-              <button type="button" onClick={() => void refetch()}>重试</button>
-              <button type="button" onClick={() => navigate("/connection")}>打开连接设置</button>
-            </div>
-          </div>
-        ) : isLoading ? (
-          <LoadingState variant="page" label="正在加载会话…" />
-        ) : dayGroups.length === 0 ? (
-          <div className={s.emptyState}>
-            {scopedSessions.length === 0
-              ? archiveScope === "archived"
-                ? "暂无已归档会话"
-                : "暂无会话"
-              : "没有匹配当前筛选的会话"}
-          </div>
-        ) : (
-          dayGroups.map((group, groupIdx) => {
-            const dayTokens = group.sessions.reduce(
-              (sum, session) =>
-                sum + (session.input_tokens ?? 0) + (session.output_tokens ?? 0),
-              0,
-            );
-            return (
-              <section key={group.label + group.sortKey} className={s.dayGroup}>
-                <div className={s.dayHead}>
-                  <span className={s.dayLabel}>{group.label}</span>
-                  <span className={s.dayCount}>{group.sessions.length} 个会话</span>
-                  <span className={s.dayTotals}>
-                    {formatTokens(dayTokens)} tokens
-                  </span>
+        {/* ── List Panel ── */}
+        {listPanelVisible && (
+          <div className={s.listPanel}>
+            {/* Filters */}
+            <div className={s.filters}>
+              <div className={s.filtersRow}>
+                <div className={s.seg} role="radiogroup" aria-label="状态筛选">
+                  {(Object.keys(STATUS_LABELS) as StatusFilter[]).map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={s.segItem}
+                      data-active={statusFilter === key}
+                      role="radio"
+                      aria-checked={statusFilter === key}
+                      onClick={() => setStatusFilter(key)}
+                    >
+                      {STATUS_LABELS[key]}
+                      {statusCounts[key] > 0 && (
+                        <span className={s.segCount}>{statusCounts[key]}</span>
+                      )}
+                    </button>
+                  ))}
                 </div>
 
-                {groupIdx === 0 ? (
-                  <div className={s.colHead} data-bulk={bulkDeleteMode ? "true" : undefined} aria-hidden="true">
-                    {bulkDeleteMode ? <span /> : null}
-                    <span>ID</span>
-                    <span>标题</span>
-                    <span>来源</span>
-                    <span>模型</span>
-                    <span>工作区</span>
-                    <span>更新</span>
-                    <span />
-                  </div>
-                ) : null}
+                {/* Source filter popover */}
+                <Popover.Root open={sourcePopoverOpen} onOpenChange={setSourcePopoverOpen}>
+                  <Popover.Trigger asChild>
+                    <button type="button" className={s.segItem}>
+                      {selectedSource ? (
+                        <>
+                          <span className={s.segBadge}>
+                            {getSourceMeta(selectedSource).label}
+                          </span>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedSource(null);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.stopPropagation();
+                                setSelectedSource(null);
+                              }
+                            }}
+                            aria-label="清除来源筛选"
+                          >
+                            ×
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          来源
+                          <ChevronDown size={12} className={s.chevOpen} />
+                        </>
+                      )}
+                    </button>
+                  </Popover.Trigger>
+                  <SourcePopover
+                    selected={selectedSource}
+                    pinned={pinnedSources}
+                    counts={sourceCounts}
+                    onSelect={setSelectedSource}
+                    onTogglePin={togglePinnedSource}
+                    onClose={() => setSourcePopoverOpen(false)}
+                  />
+                </Popover.Root>
 
-                {group.sessions.map((session) => {
-                  const live = isSessionRunning(session, runtimeBySession);
-                  const status = classifySession(session, live);
+                <label className={s.searchBox}>
+                  <Search size={16} />
+                  <input
+                    placeholder="搜索会话…"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Bulk bar */}
+            <div className={s.bulkBar} data-active={bulkDeleteMode}>
+              {bulkDeleteMode ? (
+                <>
+                  <button type="button" onClick={selectVisibleSessions} disabled={visibleSessionIds.length === 0 || allVisibleSelected || deleteSessions.isPending}>
+                    全选
+                  </button>
+                  <button type="button" onClick={clearSelectedSessions} disabled={selectedSessionIds.size === 0 || deleteSessions.isPending}>
+                    取消
+                  </button>
+                  <span className={s.bulkFeedback}>{selectedSessionIds.size} 项已选</span>
+                  <button
+                    type="button"
+                    className={s.bulkDanger}
+                    disabled={selectedSessionIds.size === 0 || deleteSessions.isPending}
+                    onClick={() => openDeleteDialog(sessions.filter((session) => selectedSessionIds.has(session.id)))}
+                  >
+                    <Trash2 size={12} />
+                    删除
+                  </button>
+                  <button type="button" onClick={stopBulkDeleteMode} disabled={deleteSessions.isPending}>
+                    完成
+                  </button>
+                </>
+              ) : (
+                <span>{filtered.length} 个会话</span>
+              )}
+            </div>
+
+            {/* Card list */}
+            <div className={s.cardList}>
+              {isLoading ? (
+                <LoadingState label="加载会话列表…" />
+              ) : error ? (
+                <div style={{ padding: "24px 16px" }}>
+                  <p style={{ color: "var(--h-err)", marginBottom: 12 }}>
+                    {sessionListErrorMessage(error)}
+                  </p>
+                  <button type="button" onClick={() => void refetch()}>重试</button>
+                  <button type="button" onClick={() => navigate("/connection")}>打开连接设置</button>
+                </div>
+              ) : filtered.length === 0 ? (
+                <div style={{ padding: "24px 16px", color: "var(--h-text-3)", textAlign: "center" }}>
+                  {searchQuery || selectedSource
+                    ? "没有匹配的会话"
+                    : archiveScope === "archived"
+                      ? "暂无已归档会话"
+                      : "暂无会话"}
+                </div>
+              ) : (
+                filtered.map((session) => {
+                  const status = classifySession(session, isSessionRunning(session, liveRunning));
+                  const pinned = pinnedIds.has(session.id);
                   const meta = getSourceMeta(session.source);
-                  const selected = selectedSessionIds.has(session.id);
-                  const pinned = pinnedSessionIds.has(session.id);
-                  const menuDisabled = live || deleteSessions.isPending;
-                  const workspacePath = normalizeWorkspacePath(workspaceMap[session.id]);
-                  const workspaceName = workspacePath
-                    ? workspaceNameFromPath(workspacePath)
-                    : "";
-                  const ts = lastActivitySec(session);
-                  const updatedDisplay =
-                    isToday(ts) && status.kind === "running"
-                      ? `${timeOfDay(ts)} 启动`
-                      : isToday(ts)
-                        ? timeOfDay(ts)
-                        : relativeTime(ts);
+                  const updated = lastActivitySec(session);
+                  const selected = selectedId === session.id;
+
                   return (
                     <div
                       key={session.id}
-                      className={s.convRow}
+                      className={s.sessionCard}
+                      data-selected={selected}
                       data-status={status.kind}
-                      data-selected={selected ? "true" : undefined}
-                      data-bulk={bulkDeleteMode ? "true" : undefined}
-                      onClick={() => goSession(session)}
                       onMouseEnter={() => hoverSession(session)}
+                      onClick={() => handleCardClick(session)}
                     >
-                      {bulkDeleteMode ? (
-                        <span className={s.cellSelect}>
+                      {bulkDeleteMode && (
+                        <span className={s.cardBulkCheck}>
                           <input
                             type="checkbox"
-                            checked={selected}
+                            checked={selectedSessionIds.has(session.id)}
                             disabled={deleteSessions.isPending}
                             aria-label={`选择会话 ${sessionDisplayTitle(session)}`}
                             onChange={(event) => toggleSelectedSession(session.id, event.currentTarget.checked)}
                             onClick={(event) => event.stopPropagation()}
                           />
                         </span>
-                      ) : null}
-                      <span className={s.cellId}>{shortId(session.id)}</span>
-                      <span className={s.cellTitle}>
+                      )}
+                      <span className={s.cardStatusDot}>
                         {status.kind === "running" ? (
                           <StatusDot tone="success" aria-hidden />
                         ) : status.kind === "failed" ? (
                           <StatusDot tone="danger" aria-hidden />
-                        ) : null}
-                        {pinned ? <Pin size={12} className={s.titlePin} aria-hidden /> : null}
-                        <span className={s.titleText}>{sessionDisplayTitle(session)}</span>
+                        ) : (
+                          <StatusDot tone="neutral" aria-hidden />
+                        )}
                       </span>
-                      <SourceBadge meta={meta} />
-                      <span className={s.cellMono}>{session.model || "—"}</span>
-                      <span className={s.cellMono} title={workspacePath || undefined}>
-                        {workspaceName || "—"}
-                      </span>
-                      <span className={s.cellTimestamp}>{updatedDisplay}</span>
-                      <Popover.Root
-                        open={!menuDisabled && openMenuId === session.id}
-                        onOpenChange={(open) => {
-                          setOpenMenuId(open && !menuDisabled ? session.id : null);
-                        }}
-                      >
-                        <Popover.Trigger asChild>
-                          <button
-                            type="button"
-                            className={s.cellMore}
-                            aria-label="会话操作"
-                            title={live ? "运行中任务暂不可操作" : "会话操作"}
-                            disabled={menuDisabled}
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <MoreHorizontal size={16} />
-                          </button>
-                        </Popover.Trigger>
-                        <SessionRowMenu
-                          pinned={pinned}
-                          disabled={menuDisabled || sessionBranch.branchingSessionId === session.id}
-                          archived={archiveScope === "archived"}
-                          onTogglePin={() => onTogglePinSession(session.id)}
-                          onRename={() => startRename(session)}
-                          onBranch={() => void sessionBranch.branchSession(session)}
-                          onExport={() => void handleExport(session)}
-                          onArchive={() => handleArchive(session)}
-                          onUnarchive={() => handleUnarchive(session)}
-                          onDelete={() => openDeleteDialog([session])}
-                        />
-                      </Popover.Root>
+                      <div className={s.cardBody}>
+                        <div className={s.cardTitleRow}>
+                          {pinned && <Pin size={12} className={s.cardTitlePin} aria-hidden />}
+                          <span className={s.cardTitle}>{sessionDisplayTitle(session)}</span>
+                        </div>
+                        <div className={s.cardMeta}>
+                          <SourceBadge meta={meta} />
+                          <span className={s.cardMetaModel}>{session.model || "—"}</span>
+                          <span className={s.cardMetaTime}>{relativeTime(updated)}</span>
+                        </div>
+                      </div>
                     </div>
                   );
-                })}
-              </section>
-            );
-          })
+                })
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className={s.foot}>
+              <span>
+                共 {filtered.length} 个会话 · {formatTokens(totalTokens)} tokens
+              </span>
+              {data && data.has_more && (
+                <span className={s.footNote}>展示前 {sessions.length} 条</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Detail Panel ── */}
+        {detailPanelVisible && (
+          <div className={s.detailPanel}>
+            {isMobile && (
+              <button type="button" className={s.mobileBack} onClick={handleMobileBack}>
+                ← 返回列表
+              </button>
+            )}
+
+            {!selectedSession ? (
+              <div className={s.detailPanelEmpty}>
+                <ExternalLink size={48} className={s.detailPanelEmptyIcon} />
+                <span className={s.detailPanelEmptyText}>选择一个会话查看详情</span>
+              </div>
+            ) : (
+              (() => {
+                const session = selectedSession;
+                const status = classifySession(session, isSessionRunning(session, liveRunning));
+                const pinned = pinnedIds.has(session.id);
+                const meta = getSourceMeta(session.source);
+                const workspacePath = normalizeWorkspacePath(workspaceMap[session.id] ?? session.cwd);
+                const workspaceName = workspacePath ? workspaceNameFromPath(workspacePath) : "";
+                const startedAt = session.started_at ? relativeTime(session.started_at) : "—";
+                const endedAt = session.ended_at ? relativeTime(session.ended_at) : "—";
+                const cost = session.actual_cost_usd ?? session.estimated_cost_usd;
+                const menuDisabled = status.kind === "running" || sessionBranch.branchingSessionId === session.id;
+
+                return (
+                  <>
+                    {/* Detail header */}
+                    <div className={s.detailHeader}>
+                      <div className={s.detailTitleRow}>
+                        <span className={s.detailTitle}>{sessionDisplayTitle(session)}</span>
+                        <div className={s.detailBadges}>
+                          <span className={s.detailStatusBadge} data-kind={status.kind}>
+                            {status.label}
+                          </span>
+                        </div>
+                      </div>
+                      <div className={s.detailIdRow}>
+                        <span>#{shortId(session.id)}</span>
+                        <CopyButton text={session.id} size="sm">复制 ID</CopyButton>
+                      </div>
+                      <div className={s.detailActions}>
+                        <button
+                          type="button"
+                          className={s.detailOpenBtn}
+                          onClick={() => handleOpenSession(session)}
+                        >
+                          <ExternalLink size={16} />
+                          打开会话
+                        </button>
+                        <Popover.Root
+                          open={!menuDisabled && openMenuId === session.id}
+                          onOpenChange={(open) => {
+                            setOpenMenuId(open && !menuDisabled ? session.id : null);
+                          }}
+                        >
+                          <Popover.Trigger asChild>
+                            <button
+                              type="button"
+                              className={s.detailMoreBtn}
+                              aria-label="会话操作"
+                              disabled={menuDisabled}
+                            >
+                              <MoreHorizontal size={16} />
+                            </button>
+                          </Popover.Trigger>
+                          <SessionRowMenu
+                            pinned={pinned}
+                            disabled={menuDisabled || sessionBranch.branchingSessionId === session.id}
+                            archived={archiveScope === "archived"}
+                            onTogglePin={() => onTogglePinSession(session.id)}
+                            onRename={() => startRename(session)}
+                            onBranch={() => void sessionBranch.branchSession(session)}
+                            onExport={() => void handleExport(session)}
+                            onArchive={() => handleArchive(session)}
+                            onUnarchive={() => handleUnarchive(session)}
+                            onDelete={() => openDeleteDialog([session])}
+                          />
+                        </Popover.Root>
+                      </div>
+                    </div>
+
+                    {/* Metadata grid */}
+                    <div className={s.metaGrid}>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>模型</span>
+                        <span className={s.metaValue}>{session.model || "—"}</span>
+                      </div>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>工作区</span>
+                        <span className={s.metaValue}>{workspaceName || "—"}</span>
+                      </div>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>来源</span>
+                        <span className={s.metaValue}>{meta.label}</span>
+                      </div>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>开始时间</span>
+                        <span className={s.metaValue}>{startedAt}</span>
+                      </div>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>结束时间</span>
+                        <span className={s.metaValue}>{endedAt}</span>
+                      </div>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>Token</span>
+                        <span className={s.metaValue}>
+                          {formatTokens(session.input_tokens)} in / {formatTokens(session.output_tokens)} out
+                        </span>
+                      </div>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>费用</span>
+                        <span className={s.metaValue}>
+                          {cost != null ? `$${cost.toFixed(4)}` : "—"}
+                        </span>
+                      </div>
+                      <div className={s.metaItem}>
+                        <span className={s.metaLabel}>消息数</span>
+                        <span className={s.metaValue}>{session.message_count}</span>
+                      </div>
+                    </div>
+
+                    {/* Message preview */}
+                    <div className={s.messagePreview}>
+                      <div className={s.messagePreviewTitle}>对话预览</div>
+                      <MessagePreview sessionId={session.id} />
+                    </div>
+                  </>
+                );
+              })()
+            )}
+          </div>
         )}
       </div>
 
-      <div className={s.foot}>
-        <span>
-          共 {filtered.length} 个会话 · {formatTokens(totalTokens)} tokens
-        </span>
-        {data && data.total > sessions.length ? (
-          <span className={s.footNote}>展示前 {sessions.length} 条 / 共 {data.total} 条</span>
-        ) : null}
-      </div>
-
+      {/* ── Modals ── */}
       {renamingSession ? (
         <SessionRenameModal
           value={renameValue}
@@ -950,13 +1032,5 @@ export function HistoryRoute() {
         />
       ) : null}
     </main>
-  );
-}
-
-function SourceBadge({ meta }: { meta: SourceMeta }) {
-  return (
-    <span className={s.sourceChip} data-tone={meta.tone}>
-      {meta.label}
-    </span>
   );
 }

@@ -15,13 +15,13 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri::State;
 
-use crate::connection::{self, ConnectionConfig, ConnectionMode, SanitizedConnectionConfig};
-use crate::error::{AppError, AppResult};
 use crate::android_compat as dashboard;
 #[cfg(feature = "desktop")]
 use crate::android_compat as runtime;
 #[cfg(feature = "desktop")]
 use crate::android_compat::desktop_ctrl;
+use crate::connection::{self, ConnectionConfig, ConnectionMode, SanitizedConnectionConfig};
+use crate::error::{AppError, AppResult};
 use crate::state::{AppState, DashboardHandle};
 #[cfg(not(feature = "desktop"))]
 mod restart_compat {
@@ -42,9 +42,9 @@ mod restart_compat {
 use restart_compat as restart;
 
 #[cfg(feature = "desktop")]
-use crate::commands::restart;
-#[cfg(feature = "desktop")]
 use crate::bootstrap;
+#[cfg(feature = "desktop")]
+use crate::commands::restart;
 
 static CONNECTION_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -927,121 +927,121 @@ pub(crate) async fn apply_managed(
 
     #[cfg(feature = "desktop")]
     {
-    let (already_managed, api_base_url, gateway_url, session_token) = {
-        let inner = state.inner.lock()?;
-        (
-            inner.connection_mode == ConnectionMode::Managed && inner.dashboard_handle.is_some(),
-            inner.api_base_url.clone(),
-            inner.gateway_url.clone(),
-            inner.session_token.clone(),
-        )
-    };
-    if already_managed {
+        let (already_managed, api_base_url, gateway_url, session_token) = {
+            let inner = state.inner.lock()?;
+            (
+                inner.connection_mode == ConnectionMode::Managed
+                    && inner.dashboard_handle.is_some(),
+                inner.api_base_url.clone(),
+                inner.gateway_url.clone(),
+                inner.session_token.clone(),
+            )
+        };
+        if already_managed {
+            desktop_ctrl::set_managed_runtime_desired_state(
+                desktop_ctrl::ManagedRuntimeDesiredState::Running,
+            )?;
+            return Ok(ApplyConnectionResult {
+                ok: true,
+                mode: "managed".to_string(),
+                api_base_url: Some(api_base_url),
+                gateway_url: Some(gateway_url),
+                session_token,
+                error: None,
+            });
+        }
+
+        let hermes_home_base = runtime::hermes_home_dir().to_string_lossy().to_string();
+        let mut current_profile =
+            crate::commands::profiles::read_active_profile_sticky(&hermes_home_base);
+        let mut hermes_home = if current_profile == "default" {
+            runtime::hermes_home_dir()
+        } else {
+            runtime::hermes_home_dir()
+                .join("profiles")
+                .join(&current_profile)
+        };
+        if current_profile != "default" && !hermes_home.exists() {
+            log::warn!(
+                "saved managed profile {} points to missing {}; falling back to default",
+                current_profile,
+                hermes_home.display()
+            );
+            current_profile = "default".to_string();
+            hermes_home = runtime::hermes_home_dir();
+            let _ = std::fs::remove_file(runtime::hermes_home_dir().join("active_profile"));
+        }
+        let hermes_home = hermes_home.to_string_lossy().to_string();
+
+        // Drop the attachment (stop_with_token is a no-op for it).
+        detach_current_backend(state)?;
+
+        let (host, port) = restart::host_and_port();
+        let options = dashboard::EnsureDashboardOptions {
+            host,
+            port,
+            hermes_home: hermes_home.clone(),
+            allow_external_agent: dashboard::external_agent_allowed(),
+            allow_port_fallback: true,
+            connection_mode: crate::connection::ConnectionMode::Managed,
+            remote_base_url: None,
+        };
+        let resource_dir = app.path().resource_dir().ok();
+
+        let handle =
+            match bootstrap::acquire_managed_dashboard(app, options, resource_dir, true).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    return Ok(ApplyConnectionResult {
+                        ok: false,
+                        mode: "managed".to_string(),
+                        error: Some(format!("本地内核启动失败：{}", err)),
+                        ..Default::default()
+                    })
+                }
+            };
+
+        let token = match handle.session_token.clone() {
+            Some(token) => Some(token),
+            None => match std::env::var("HERMES_DESKTOP_SESSION_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("HERMES_DASHBOARD_SESSION_TOKEN").ok())
+            {
+                Some(token) => Some(token),
+                None => dashboard::fetch_session_token(&handle.api_base_url).await,
+            },
+        };
+        let gateway_url = dashboard::build_gateway_url(&handle.api_base_url, token.as_deref());
+        let api_base_url = handle.api_base_url.clone();
+
+        {
+            let mut inner = state.inner.lock()?;
+            inner.api_base_url = api_base_url.clone();
+            inner.gateway_url = gateway_url.clone();
+            inner.session_token = token.clone();
+            inner.hermes_home = hermes_home.clone();
+            inner.hermes_home_base = hermes_home_base;
+            inner.current_profile = current_profile;
+            inner.connection_mode = ConnectionMode::Managed;
+            inner.yolo_mode = dashboard::yolo_mode_effective(&hermes_home);
+            inner.last_runtime_error = None;
+            inner.dashboard_handle = Some(handle);
+        }
+
+        log::info!("Connection switched back to desktop managed runtime");
         desktop_ctrl::set_managed_runtime_desired_state(
             desktop_ctrl::ManagedRuntimeDesiredState::Running,
         )?;
-        return Ok(ApplyConnectionResult {
+        Ok(ApplyConnectionResult {
             ok: true,
             mode: "managed".to_string(),
             api_base_url: Some(api_base_url),
             gateway_url: Some(gateway_url),
-            session_token,
+            session_token: token,
             error: None,
-        });
-    }
-
-    let hermes_home_base = runtime::hermes_home_dir().to_string_lossy().to_string();
-    let mut current_profile =
-        crate::commands::profiles::read_active_profile_sticky(&hermes_home_base);
-    let mut hermes_home = if current_profile == "default" {
-        runtime::hermes_home_dir()
-    } else {
-        runtime::hermes_home_dir()
-            .join("profiles")
-            .join(&current_profile)
-    };
-    if current_profile != "default" && !hermes_home.exists() {
-        log::warn!(
-            "saved managed profile {} points to missing {}; falling back to default",
-            current_profile,
-            hermes_home.display()
-        );
-        current_profile = "default".to_string();
-        hermes_home = runtime::hermes_home_dir();
-        let _ = std::fs::remove_file(runtime::hermes_home_dir().join("active_profile"));
-    }
-    let hermes_home = hermes_home.to_string_lossy().to_string();
-
-    // Drop the attachment (stop_with_token is a no-op for it).
-    detach_current_backend(state)?;
-
-    let (host, port) = restart::host_and_port();
-    let options = dashboard::EnsureDashboardOptions {
-        host,
-        port,
-        hermes_home: hermes_home.clone(),
-        allow_external_agent: dashboard::external_agent_allowed(),
-        allow_port_fallback: true,
-        connection_mode: crate::connection::ConnectionMode::Managed,
-        remote_base_url: None,
-    };
-    let resource_dir = app.path().resource_dir().ok();
-
-    let handle =
-        match bootstrap::acquire_managed_dashboard(app, options, resource_dir, true).await {
-            Ok(handle) => handle,
-            Err(err) => {
-                return Ok(ApplyConnectionResult {
-                    ok: false,
-                    mode: "managed".to_string(),
-                    error: Some(format!("本地内核启动失败：{}", err)),
-                    ..Default::default()
-                })
-            }
-        };
-
-    let token = match handle.session_token.clone() {
-        Some(token) => Some(token),
-        None => match std::env::var("HERMES_DESKTOP_SESSION_TOKEN")
-            .ok()
-            .or_else(|| std::env::var("HERMES_DASHBOARD_SESSION_TOKEN").ok())
-        {
-            Some(token) => Some(token),
-            None => dashboard::fetch_session_token(&handle.api_base_url).await,
-        },
-    };
-    let gateway_url = dashboard::build_gateway_url(&handle.api_base_url, token.as_deref());
-    let api_base_url = handle.api_base_url.clone();
-
-    {
-        let mut inner = state.inner.lock()?;
-        inner.api_base_url = api_base_url.clone();
-        inner.gateway_url = gateway_url.clone();
-        inner.session_token = token.clone();
-        inner.hermes_home = hermes_home.clone();
-        inner.hermes_home_base = hermes_home_base;
-        inner.current_profile = current_profile;
-        inner.connection_mode = ConnectionMode::Managed;
-        inner.yolo_mode = dashboard::yolo_mode_effective(&hermes_home);
-        inner.last_runtime_error = None;
-        inner.dashboard_handle = Some(handle);
-    }
-
-    log::info!("Connection switched back to desktop managed runtime");
-    desktop_ctrl::set_managed_runtime_desired_state(
-        desktop_ctrl::ManagedRuntimeDesiredState::Running,
-    )?;
-    Ok(ApplyConnectionResult {
-        ok: true,
-        mode: "managed".to_string(),
-        api_base_url: Some(api_base_url),
-        gateway_url: Some(gateway_url),
-        session_token: token,
-        error: None,
-    })
+        })
     } // cfg desktop
 }
-
 
 #[cfg(test)]
 mod tests {

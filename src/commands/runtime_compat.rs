@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "desktop")]
 pub use crate::commands::runtime_manager::{
-    get_desktop_control_state, runtime_info, set_guide_state, RuntimeControlResult,
-    SetGuideStateInput, __cmd__get_desktop_control_state, __cmd__runtime_info,
-    __cmd__set_guide_state, __tauri_command_name_get_desktop_control_state,
-    __tauri_command_name_runtime_info, __tauri_command_name_set_guide_state,
+    __cmd__get_desktop_control_state, __cmd__runtime_info, __cmd__set_guide_state,
+    __tauri_command_name_get_desktop_control_state, __tauri_command_name_runtime_info,
+    __tauri_command_name_set_guide_state, get_desktop_control_state, runtime_info, set_guide_state,
+    RuntimeControlResult, SetGuideStateInput,
 };
 
 #[cfg(not(feature = "desktop"))]

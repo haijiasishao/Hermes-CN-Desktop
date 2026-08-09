@@ -179,9 +179,7 @@ impl DashboardHandle {
         self.job_handle = None;
         self.attached_pid = None;
         self.owns_process = false;
-        crate::android_compat::remove_ownership_marker_path(
-            self.ownership_marker_path.as_deref(),
-        );
+        crate::android_compat::remove_ownership_marker_path(self.ownership_marker_path.as_deref());
         // Explicitly release port locks so another Hermes instance can claim
         // the ports immediately instead of waiting for the handle to drop.
         if let Some(locks) = self.port_locks.take() {

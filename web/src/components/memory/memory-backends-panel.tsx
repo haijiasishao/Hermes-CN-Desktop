@@ -16,6 +16,7 @@ import { MemoryProviderConfig } from "./memory-provider-config";
 import { MemoryProviderStatus } from "./memory-provider-status";
 import {
   formatCheckedAt,
+  hasAnyFieldSet,
   MEMORY_BACKEND_META,
   memoryBackendState,
 } from "./memory-backend-utils";
@@ -44,6 +45,9 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
   const hindsightStatus = useMemoryProviderStatus("hindsight", isConfigView || selected === "hindsight");
   const [actionError, setActionError] = useState("");
   const configQuery = useMemoryProviderConfig(selected, !isConfigView);
+  // Config view: read both providers' config to compute configFieldsSet
+  const openVikingConfigQuery = useMemoryProviderConfig("openviking", isConfigView);
+  const hindsightConfigQuery = useMemoryProviderConfig("hindsight", isConfigView);
   const saveConfig = useSaveMemoryProviderConfig();
   const setupProvider = useSetupMemoryProvider();
   const setProvider = useSetMemoryProvider();
@@ -52,6 +56,10 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
     openviking: openVikingStatus,
     hindsight: hindsightStatus,
   }), [openVikingStatus, hindsightStatus]);
+  const configQueries = useMemo(() => ({
+    openviking: openVikingConfigQuery,
+    hindsight: hindsightConfigQuery,
+  }), [openVikingConfigQuery, hindsightConfigQuery]);
   const selectedStatusQuery = statusQueries[selected];
   const selectedStatus = selectedStatusQuery.data;
   const active = providersQuery.data?.active ?? "";
@@ -67,6 +75,7 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
     openVikingStatus.error,
     hindsightStatus.error,
     configQuery.error,
+    ...(isConfigView ? [openVikingConfigQuery.error, hindsightConfigQuery.error] : []),
   ].some(isDashboardAuthError);
   const activeProviderOption = providersQuery.data?.options?.find((o) => o.name === active);
   const activeStatusUnavailable = Boolean(
@@ -80,24 +89,38 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
     && !activeStatusUnavailable
     && !isDashboardAuthError(statusQueries[active as VisibleMemoryProvider]?.error),
   );
+  const activeConfigQuery = isConfigView && VISIBLE_MEMORY_PROVIDERS.includes(active as VisibleMemoryProvider)
+    ? configQueries[active as VisibleMemoryProvider]
+    : undefined;
+  const activeConfigFieldsSet = isConfigView && activeConfigQuery?.data !== undefined
+    ? hasAnyFieldSet(activeConfigQuery.data)
+    : undefined;
+  const activeConfigLoadFailed = isConfigView ? Boolean(activeConfigQuery?.isError) : undefined;
   const overallState = memoryBackendState(activeStatus, dashboardAuthRequired, {
     statusUnavailable: activeStatusUnavailable,
     statusError: activeStatusError,
     providerActive: active === providersQuery.data?.active,
     providerConfigured: activeProviderOption?.configured,
+    configFieldsSet: activeConfigFieldsSet,
+    configLoadFailed: activeConfigLoadFailed,
   });
 
   const refreshAll = () => {
     void providersQuery.refetch();
     void openVikingStatus.refetch();
     void hindsightStatus.refetch();
+    if (isConfigView) {
+      void openVikingConfigQuery.refetch();
+      void hindsightConfigQuery.refetch();
+    }
   };
 
   const handleSave = async (values: Record<string, unknown>) => {
     setActionError("");
     try {
       await saveConfig.mutateAsync({ provider: selected, values });
-      await Promise.all([configQuery.refetch(), selectedStatusQuery.refetch(), providersQuery.refetch()]);
+      const selectedConfigQuery = isConfigView ? configQueries[selected] : configQuery;
+      await Promise.all([selectedConfigQuery.refetch(), selectedStatusQuery.refetch(), providersQuery.refetch()]);
     } catch (error) {
       setActionError(message(error));
       throw error;
@@ -108,7 +131,8 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
     setActionError("");
     try {
       await setupProvider.mutateAsync(selected);
-      await Promise.all([configQuery.refetch(), selectedStatusQuery.refetch(), providersQuery.refetch()]);
+      const selectedConfigQuery = isConfigView ? configQueries[selected] : configQuery;
+      await Promise.all([selectedConfigQuery.refetch(), selectedStatusQuery.refetch(), providersQuery.refetch()]);
     } catch (error) {
       setActionError(message(error));
     }
@@ -127,28 +151,21 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
 
   if (isConfigView) {
     return (
-      <section className={s.backendPanel}>
+      <section className={s.backendPanel} data-view="config">
         <header className={s.backendSummary}>
-          <div className={s.summaryIcon}><Database size={20} /></div>
+          <span className={s.summaryIcon}><Database size={16} /></span>
           <div>
-            <small>当前启用后端</small>
-            <strong>{dashboardAuthRequired ? "登录后读取外置记忆" : activeMeta?.label ?? "未启用外置后端"}</strong>
-            <span>{dashboardAuthRequired ? "远程 Dashboard 尚未完成 Cookie 登录" : activeMeta ? overallState.label : "内置记忆继续可用"}</span>
+            <small>当前后端</small>
+            <strong>{activeMeta?.label ?? "未选择"}</strong>
+            <span>{overallState.label}</span>
           </div>
           <div className={s.summaryCheck}>
-            <small>总体状态</small>
-            <span className={s.stateBadge} data-tone={dashboardAuthRequired || activeMeta ? overallState.tone : "muted"}>
-              {dashboardAuthRequired ? "需登录" : activeMeta ? overallState.label : "未配置"}
-            </span>
-            <em>{dashboardAuthRequired ? "登录后重新检查" : `最后检查 ${formatCheckedAt(activeStatus?.checked_at)}`}</em>
+            <em className={s.stateBadge} data-tone={overallState.tone}>{overallState.label}</em>
+            <small>
+              {activeStatus?.checked_at ? `最后检查 ${formatCheckedAt(activeStatus.checked_at)}` : "尚未检查"}
+            </small>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={openVikingStatus.isFetching || hindsightStatus.isFetching}
-            onClick={refreshAll}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={refreshAll}>
             <RefreshCw size={12} /> 刷新全部
           </Button>
         </header>
@@ -159,7 +176,7 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
 
         {dashboardAuthRequired && (
           <div className={s.inlineError} role="alert">
-            {dashboardAuthErrorMessage("远程 Dashboard")} OpenViking 当前状态和配置不会被误判为“未配置”。{" "}
+            {dashboardAuthErrorMessage("远程 Dashboard")} OpenViking 当前状态和配置不会被误判为"未配置"。{" "}
             <Link to="/connection">打开连接设置</Link>
           </div>
         )}
@@ -179,18 +196,29 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
               && !isDashboardAuthError(statusQueries[provider].error),
             );
             const providerOption = providersQuery.data?.options?.find((o) => o.name === provider);
+            const providerCfgQuery = isConfigView
+              ? configQueries[provider]
+              : provider === selected
+                ? configQuery
+                : undefined;
+            const providerConfigFieldsSet = providerCfgQuery?.data !== undefined
+              ? hasAnyFieldSet(providerCfgQuery.data)
+              : undefined;
+            const providerConfigLoadFailed = Boolean(providerCfgQuery?.isError);
             const state = memoryBackendState(status, dashboardAuthRequired, {
               statusUnavailable: providerStatusUnavailable,
               statusError: providerStatusError,
               providerActive: provider === providersQuery.data?.active,
               providerConfigured: providerOption?.configured,
+              configFieldsSet: providerConfigFieldsSet,
+              configLoadFailed: providerConfigLoadFailed,
             });
             return (
               <Link
                 key={provider}
                 to={`/${provider}`}
                 className={s.backendLink}
-                data-active={status?.active ? "true" : undefined}
+                data-active={status?.active && status?.healthy ? "true" : undefined}
               >
                 <span className={s.backendCardHead}>
                   <strong>{meta.label}</strong>
@@ -199,7 +227,8 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
                 <span>{meta.description}</span>
                 <small>
                   {status?.version ? `v${status.version}` : statusQueries[provider].isFetching ? "检测中…" : "尚未返回版本"}
-                  {status?.active && <b><Check size={12} /> 当前</b>}
+                  {status?.active && status?.healthy && <b><Check size={12} /> 当前</b>}
+                  {status?.active && !status?.healthy && <b className={s.activeWarning}>当前选择（异常）</b>}
                 </small>
               </Link>
             );
@@ -208,6 +237,18 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
       </section>
     );
   }
+
+  const isActiveAndHealthy = Boolean(selectedStatus?.active && selectedStatus?.healthy);
+  const isActiveButUnhealthy = Boolean(selectedStatus?.active && !selectedStatus?.healthy);
+  const selectedStatusUnavailable = Boolean(
+    isDashboardStatusNotFound(selectedStatusQuery.error) && !selectedStatus,
+  );
+  const selectedStatusError = Boolean(
+    selectedStatusQuery.isError
+    && !selectedStatus
+    && !selectedStatusUnavailable
+    && !isDashboardAuthError(selectedStatusQuery.error),
+  );
 
   return (
     <section className={s.backendPanel} data-view="provider">
@@ -224,16 +265,30 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
             <small>正在配置</small>
             <strong>{MEMORY_BACKEND_META[selected].label}</strong>
           </div>
-          <Button
-            type="button"
-            variant={selectedStatus?.active ? "outline" : "solid"}
-            tone={selectedStatus?.active ? "neutral" : "accent"}
-            size="sm"
-            disabled={Boolean(selectedStatus?.active) || !selectedStatus?.healthy || setProvider.isPending}
-            onClick={() => void handleActivate()}
-          >
-            {selectedStatus?.active ? <><Check size={12} /> 当前启用</> : "设为当前"}
-          </Button>
+          {isActiveAndHealthy ? (
+            <span className={s.stateBadge} data-tone="active"><Check size={12} /> 当前启用</span>
+          ) : isActiveButUnhealthy ? (
+            <Button
+              type="button"
+              variant="solid"
+              tone="neutral"
+              size="sm"
+              disabled
+            >
+              当前选择（异常）
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="solid"
+              tone="accent"
+              size="sm"
+              disabled={!selectedStatus?.healthy || setProvider.isPending}
+              onClick={() => void handleActivate()}
+            >
+              设为当前
+            </Button>
+          )}
         </div>
 
         {!selectedStatus?.reachable && selectedStatus?.configured && (
@@ -246,6 +301,8 @@ export function MemoryBackendsPanel({ view }: MemoryBackendsPanelProps) {
           loading={selectedStatusQuery.isLoading}
           refreshing={selectedStatusQuery.isFetching}
           authRequired={dashboardAuthRequired}
+          statusUnavailable={selectedStatusUnavailable}
+          statusError={selectedStatusError}
           onRefresh={() => void selectedStatusQuery.refetch()}
         />
 

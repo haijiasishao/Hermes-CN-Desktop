@@ -2,34 +2,62 @@ import { describe, expect, it } from "vitest";
 import { memoryBackendState } from "./memory-backend-utils";
 
 describe("memoryBackendState: status endpoint branches", () => {
-  it("returns 当前启用（状态接口不可用） when status 404 and provider is active", () => {
+  it("returns 服务端记录的当前选择（待核验） when status 404 and provider is active", () => {
     const result = memoryBackendState(undefined, false, {
       statusUnavailable: true,
       providerActive: true,
       providerConfigured: true,
     });
-    expect(result.label).toBe("当前启用（状态接口不可用）");
-    expect(result.tone).toBe("active");
+    expect(result.label).toBe("服务端记录的当前选择（待核验）");
+    expect(result.tone).toBe("warn");
   });
 
-  it("returns 已配置（状态接口不可用） when status 404 and provider is configured but not active", () => {
+  it("returns 已配置（待核验） when status 404 and provider is configured but not active", () => {
     const result = memoryBackendState(undefined, false, {
       statusUnavailable: true,
       providerActive: false,
       providerConfigured: true,
     });
-    expect(result.label).toBe("已配置（状态接口不可用）");
-    expect(result.tone).toBe("ok");
+    expect(result.label).toBe("待核验（状态接口不可用）");
+    expect(result.tone).toBe("warn");
   });
 
-  it("returns 状态未知（状态接口不可用） when status 404 and provider not configured", () => {
+  it("returns explicit runtime caveat when status 404 and config evidence is unavailable", () => {
     const result = memoryBackendState(undefined, false, {
       statusUnavailable: true,
       providerActive: false,
       providerConfigured: false,
     });
-    expect(result.label).toBe("状态未知（状态接口不可用）");
+    expect(result.label).toBe("待核验（状态接口不可用）");
+    expect(result.tone).toBe("warn");
     expect(result.label).not.toBe("未配置");
+  });
+
+  it("returns 已配置（待核验） when status 404 and configFieldsSet is true", () => {
+    const result = memoryBackendState(undefined, false, {
+      statusUnavailable: true,
+      providerActive: false,
+      providerConfigured: false,
+      configFieldsSet: true,
+    });
+    expect(result.label).toBe("配置已保存（状态接口不可用）");
+    expect(result.tone).toBe("warn");
+  });
+
+  it("returns 已保存但待验证 when configFieldsSet and !status.configured", () => {
+    const result = memoryBackendState(undefined, false, {
+      configFieldsSet: true,
+    });
+    expect(result.label).toBe("已保存但待验证");
+    expect(result.tone).toBe("warn");
+  });
+
+  it("returns 配置待核验 when configLoadFailed and !status.configured", () => {
+    const result = memoryBackendState(undefined, false, {
+      configLoadFailed: true,
+    });
+    expect(result.label).toBe("配置待核验");
+    expect(result.tone).toBe("warn");
   });
 
   it("returns 未配置 when no status and statusUnavailable is not set", () => {
@@ -112,17 +140,17 @@ describe("memoryBackendState: status endpoint branches", () => {
       providerActive: false,
       providerConfigured: false,
     });
-    expect(result.label).toBe('状态读取失败');
+    expect(result.label).toBe('状态读取失败（待核验）');
     expect(result.tone).toBe('error');
   });
 
-  it('returns 当前启用（状态读取失败） when statusError and provider is active', () => {
+  it('returns 当前选择（状态读取失败） when statusError and provider is active', () => {
     const result = memoryBackendState(undefined, false, {
       statusError: true,
       providerActive: true,
       providerConfigured: true,
     });
-    expect(result.label).toBe('当前启用（状态读取失败）');
+    expect(result.label).toBe('当前选择（状态读取失败）');
     expect(result.tone).toBe('error');
   });
 
@@ -132,7 +160,7 @@ describe("memoryBackendState: status endpoint branches", () => {
       providerActive: false,
       providerConfigured: true,
     });
-    expect(result.label).toBe('已配置（状态读取失败）');
+    expect(result.label).toBe('状态读取失败（待核验）');
     expect(result.tone).toBe('error');
   });
 
@@ -143,8 +171,8 @@ describe("memoryBackendState: status endpoint branches", () => {
       providerActive: true,
       providerConfigured: true,
     });
-    expect(result.label).toBe('当前启用（状态接口不可用）');
-    expect(result.tone).toBe('active');
+    expect(result.label).toBe('服务端记录的当前选择（待核验）');
+    expect(result.tone).toBe('warn');
   });
 
   it('authRequired takes precedence over statusError', () => {

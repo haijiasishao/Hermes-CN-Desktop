@@ -178,6 +178,14 @@
   background: color-mix(in srgb, var(--h-err) 8%, var(--h-bg-pane));
 }
 
+.activeWarning {
+  color: var(--h-warn);
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .backendDetail {
   margin: 0 16px 16px;
   border: 1px solid var(--h-line);

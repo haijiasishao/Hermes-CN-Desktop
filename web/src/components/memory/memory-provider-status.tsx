@@ -20,6 +20,8 @@ interface Props {
   loading: boolean;
   refreshing: boolean;
   authRequired?: boolean;
+  statusUnavailable?: boolean;
+  statusError?: boolean;
   onRefresh(): void;
 }
 
@@ -119,7 +121,7 @@ function OpenVikingStatus({ status }: { status: MemoryProviderRuntimeStatusRespo
           <div className={s.tableWrap}>
             <table><thead><tr><th>类型</th><th>模型</th><th>Provider</th><th>调用</th><th>Token</th></tr></thead>
               <tbody>{details.model_usage.map((item, index) => (
-                <tr key={`${item.kind}-${item.model}-${index}`}><td>{item.kind}</td><td>{item.model}</td><td>{item.provider}</td><td>{item.calls}</td><td>{item.total_tokens.toLocaleString()}</td></tr>
+                <tr key={`${item.kind}-${item.model}-${index}`}><td>{item.kind}</td><td>{item.model}</td><td>{item.provider}</td><td>{item.calls}</td><td>{item.total_tokens}</td></tr>
               ))}</tbody></table>
           </div>
         </section>
@@ -127,7 +129,7 @@ function OpenVikingStatus({ status }: { status: MemoryProviderRuntimeStatusRespo
 
       {details.queue_usage.length > 0 && (
         <section className={s.monitorCard}>
-          <h4><Activity size={16} /> 队列</h4>
+          <h4><Database size={16} /> 队列</h4>
           <div className={s.tableWrap}>
             <table><thead><tr><th>队列</th><th>等待</th><th>处理中</th><th>已处理</th><th>错误</th></tr></thead>
               <tbody>{details.queue_usage.map((item) => (
@@ -194,15 +196,35 @@ function HindsightStatus({ status }: { status: MemoryProviderRuntimeStatusRespon
   );
 }
 
-export function MemoryProviderStatus({ provider, status, loading, refreshing, authRequired = false, onRefresh }: Props) {
-  const state = memoryBackendState(status, authRequired);
+export function MemoryProviderStatus({
+  provider,
+  status,
+  loading,
+  refreshing,
+  authRequired = false,
+  statusUnavailable = false,
+  statusError = false,
+  onRefresh,
+}: Props) {
+  const state = memoryBackendState(status, authRequired, { statusUnavailable, statusError });
   if (loading && !status) return <LoadingState variant="block" label="正在检测运行状态…" />;
+
+  const showStatusUnavailable = statusUnavailable && !status && !loading && !authRequired;
+  // Stricter "当前启用": only when active AND healthy
+  const isActiveAndHealthy = Boolean(status?.active && status?.healthy);
+  const isActiveButUnhealthy = Boolean(status?.active && !status?.healthy);
 
   return (
     <section className={s.statusSection}>
       <div className={s.statusToolbar}>
         <div>
-          <span className={s.stateBadge} data-tone={state.tone}>{state.label}</span>
+          {showStatusUnavailable ? (
+            <span className={s.stateBadge} data-tone="warn">状态接口不可用（待核验）</span>
+          ) : isActiveButUnhealthy ? (
+            <span className={s.stateBadge} data-tone="error">当前选择（运行异常）</span>
+          ) : (
+            <span className={s.stateBadge} data-tone={state.tone}>{state.label}</span>
+          )}
           {status?.error && status.healthy && <span className={s.partialBadge}>部分数据不可用</span>}
           <small>最后检查 {formatCheckedAt(status?.checked_at)}</small>
         </div>

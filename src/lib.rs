@@ -17,12 +17,10 @@ pub mod state;
 pub mod ui_store;
 pub mod util;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use crate::bootstrap::{
-    connect_remote_backend, finalize_bootstrap, record_bootstrap_error,
-};
+use crate::bootstrap::{connect_remote_backend, finalize_bootstrap, record_bootstrap_error};
 use crate::connection::{ConnectionBackend, ConnectionMode};
 use crate::state::AppState;
 
@@ -31,10 +29,7 @@ fn shutdown_remote_connection(app: &tauri::AppHandle) {
 
     let state = app.state::<AppState>();
     let (gateway_ws, dashboard_handle) = match state.inner.lock() {
-        Ok(mut inner) => (
-            inner.gateway_ws.take(),
-            inner.dashboard_handle.take(),
-        ),
+        Ok(mut inner) => (inner.gateway_ws.take(), inner.dashboard_handle.take()),
         Err(err) => {
             log::warn!("Failed to lock app state during Android shutdown: {}", err);
             return;

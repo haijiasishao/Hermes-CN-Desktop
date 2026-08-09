@@ -8,15 +8,15 @@
 
 #[cfg(feature = "desktop")]
 pub use crate::commands::file_dialogs::{
-    open_external_url, __cmd__open_external_url, __tauri_command_name_open_external_url,
-    open_workspace_path, pick_directory, pick_files, __cmd__open_workspace_path,
-    __cmd__pick_directory, __cmd__pick_files, __tauri_command_name_open_workspace_path,
-    __tauri_command_name_pick_directory, __tauri_command_name_pick_files,
+    __cmd__open_external_url, __cmd__open_workspace_path, __cmd__pick_directory, __cmd__pick_files,
+    __tauri_command_name_open_external_url, __tauri_command_name_open_workspace_path,
+    __tauri_command_name_pick_directory, __tauri_command_name_pick_files, open_external_url,
+    open_workspace_path, pick_directory, pick_files,
 };
 
 #[cfg(feature = "desktop")]
 pub use crate::commands::yolo::{
-    set_yolo_mode, __cmd__set_yolo_mode, __tauri_command_name_set_yolo_mode,
+    __cmd__set_yolo_mode, __tauri_command_name_set_yolo_mode, set_yolo_mode,
 };
 
 #[cfg(not(feature = "desktop"))]

@@ -44,17 +44,17 @@ vi.mock("@/hooks/use-memory", () => ({
 
 import { MemoryBackendsPanel } from "./memory-backends-panel";
 
-describe("RED: older Dashboard without provider runtime-status endpoint", () => {
-  it("does not mislabel an active configured OpenViking provider as unconfigured on 404", () => {
+describe("older Dashboard without provider runtime-status endpoint", () => {
+  it("does not claim runtime health for the server-recorded active provider on 404", () => {
     const html = ReactDOMServer.renderToStaticMarkup(
       <MemoryRouter><MemoryBackendsPanel view="config" /></MemoryRouter>,
     );
-    expect(html).not.toContain("未配置");
+    expect(html).toContain("服务端记录的当前选择（待核验）");
     expect(html).toContain("状态接口不可用");
   });
 });
 
-describe('RED: status endpoint error classification', () => {
+describe('status endpoint error classification', () => {
   it('401 on status triggers auth-required, not statusUnavailable', async () => {
     // Re-mock with 401 error
     const { useMemoryProviderStatus: origMock } = await import('@/hooks/use-memory');

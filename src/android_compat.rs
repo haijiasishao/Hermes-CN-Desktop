@@ -8,11 +8,10 @@
 #[cfg(feature = "desktop")]
 pub use crate::process::dashboard::{
     build_gateway_url, build_gateway_ws_url_with_ticket, dashboard_supports_ws,
-    dashboard_supports_ws_ticket,
-    ensure_hermes_dashboard, external_agent_allowed, fetch_attached_dashboard_hermes_home,
-    fetch_session_token, probe_attached_dashboard, probe_dashboard, remove_ownership_marker_path,
-    terminate_owned_dashboard_tree, yolo_mode_effective, DashboardOwnershipMarker,
-    EnsureDashboardOptions,
+    dashboard_supports_ws_ticket, ensure_hermes_dashboard, external_agent_allowed,
+    fetch_attached_dashboard_hermes_home, fetch_session_token, probe_attached_dashboard,
+    probe_dashboard, remove_ownership_marker_path, terminate_owned_dashboard_tree,
+    yolo_mode_effective, DashboardOwnershipMarker, EnsureDashboardOptions,
 };
 
 #[cfg(not(feature = "desktop"))]
@@ -70,9 +69,7 @@ mod dashboard_stubs {
             return None;
         }
         let html = res.text().await.ok()?;
-        SESSION_TOKEN_RE
-            .captures(&html)
-            .map(|c| c[1].to_string())
+        SESSION_TOKEN_RE.captures(&html).map(|c| c[1].to_string())
     }
 
     pub fn build_gateway_url(api_base_url: &str, token: Option<&str>) -> String {
@@ -519,7 +516,6 @@ pub struct SetYoloModeResult {
     pub error: Option<String>,
 }
 
-
 #[cfg(not(feature = "desktop"))]
 #[cfg(test)]
 mod tests {
@@ -614,10 +610,7 @@ mod tests {
     fn desktop_ctrl_read_returns_completed_and_stopped() {
         let state = desktop_ctrl::read();
         assert_eq!(state.guide_state.as_str(), "completed");
-        assert_eq!(
-            state.managed_runtime_desired_state.as_str(),
-            "stopped"
-        );
+        assert_eq!(state.managed_runtime_desired_state.as_str(), "stopped");
     }
 
     #[test]

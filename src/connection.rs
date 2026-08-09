@@ -23,8 +23,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{AppError, AppResult};
 use crate::android_compat as runtime;
+use crate::error::{AppError, AppResult};
 
 pub const ENV_REMOTE_URL: &str = "HERMES_DESKTOP_REMOTE_URL";
 pub const ENV_REMOTE_TOKEN: &str = "HERMES_DESKTOP_REMOTE_TOKEN";

@@ -194,7 +194,6 @@ pub async fn switch_profile(
     Ok(result)
 }
 
-
 #[cfg(not(feature = "desktop"))]
 #[tauri::command]
 pub async fn switch_profile(

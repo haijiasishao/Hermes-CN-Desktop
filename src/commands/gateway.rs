@@ -1,8 +1,8 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::error::AppError;
 use crate::android_compat::{build_gateway_url, fetch_session_token};
+use crate::error::AppError;
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -37,8 +37,10 @@ pub fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeConfig, A
             .dashboard_handle
             .as_ref()
             .is_some_and(|handle| handle.owns_process);
-    let lifecycle =
-        crate::android_compat::desktop_ctrl::managed_runtime_lifecycle_state(installed, managed_running);
+    let lifecycle = crate::android_compat::desktop_ctrl::managed_runtime_lifecycle_state(
+        installed,
+        managed_running,
+    );
     Ok(RuntimeConfig {
         api_base_url: inner.api_base_url.clone(),
         gateway_url: inner.gateway_url.clone(),

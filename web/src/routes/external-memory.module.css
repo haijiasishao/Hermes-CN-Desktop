@@ -2,3 +2,16 @@
   width: 100%;
   min-width: 0;
 }
+
+.providerSummaryCards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px 0;
+}
+
+@media (max-width: 720px) {
+  .providerSummaryCards {
+    grid-template-columns: 1fr;
+  }
+}

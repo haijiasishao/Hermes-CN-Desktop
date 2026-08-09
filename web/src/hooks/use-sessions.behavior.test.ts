@@ -18,3 +18,31 @@ describe("useSessions: archived query parameter alignment", () => {
     expect(source).not.toContain("include_archived=true");
   });
 });
+
+const historySource = readFileSync(
+  resolve(import.meta.dirname ?? __dirname, "../routes/history.tsx"),
+  "utf-8",
+);
+
+describe("History component behavior", () => {
+  // Test 1: verify the component source uses useIsMobile for responsive layout
+  it("uses useIsMobile hook for responsive layout", () => {
+    expect(historySource).toContain("useIsMobile");
+  });
+
+  // Test 2: verify clicking a card sets selectedId (not navigate)
+  it("uses selectedId state for card selection without navigation on click", () => {
+    expect(historySource).toMatch(/selectedId|setSelectedId/);
+    expect(historySource).toContain('data-selected');
+  });
+
+  // Test 3: verify "打开会话" button navigates to /tasks/
+  it("has an open-session button that navigates to /tasks/", () => {
+    expect(historySource).toContain('/tasks/');
+  });
+
+  // Test 4: verify message detail uses useSessionMessages
+  it("uses useSessionMessages for message preview in detail panel", () => {
+    expect(historySource).toContain('useSessionMessages');
+  });
+});

@@ -224,17 +224,55 @@ export type HermesImageSource = z.infer<typeof HermesImageSource>;
 
 const MessageContent = z.unknown().transform(stringifyMessageContent);
 
-export const SessionDetail = SessionSummary.extend({
-  last_active: z.number().optional(),
-}).passthrough();
+// Normalize both old-protocol and official hermes-agent API response shapes:
+//   Old:       { id, title, ... }  (direct session fields)
+//   Official:  { object: "hermes.session", session: { id, title, ... } }
+// Output is always the flat session object with `last_active`.
+export const SessionDetail = z.preprocess(
+  (raw) => {
+    if (raw == null || typeof raw !== "object") return raw;
+    const obj = raw as Record<string, unknown>;
+    if (obj.session && typeof obj.session === "object" && !Array.isArray(obj.session)) {
+      return { ...(obj.session as Record<string, unknown>), ...obj, session: undefined };
+    }
+    return obj;
+  },
+  SessionSummary.extend({
+    last_active: z.number().optional(),
+  }).passthrough(),
+);
 export type SessionDetail = z.infer<typeof SessionDetail>;
 
-export const SessionsResponse = z.object({
-  sessions: z.array(SessionSummary),
-  total: z.number(),
-  limit: z.number(),
-  offset: z.number(),
-});
+// Normalize both old-protocol and official hermes-agent API response shapes:
+//   Old:       { sessions: [...], total, limit, offset }
+//   Official:  { object: "list", data: [...], limit, offset, has_more }
+// Output always carries `sessions`, `total`, `limit`, `offset`, `has_more`.
+export const SessionsResponse = z.preprocess(
+  (raw) => {
+    if (raw == null || typeof raw !== "object") return raw;
+    const obj = raw as Record<string, unknown>;
+    const hasDataArray = Array.isArray(obj.data);
+    const sessions = hasDataArray
+      ? obj.data
+      : (obj.sessions ?? []);
+    const pagination = (obj.pagination ?? {}) as Record<string, unknown>;
+    return {
+      ...obj,
+      sessions,
+      total: obj.total ?? pagination.total ?? (Array.isArray(sessions) ? sessions.length : 0),
+      limit: obj.limit ?? pagination.limit ?? 50,
+      offset: obj.offset ?? pagination.offset ?? 0,
+      has_more: obj.has_more ?? pagination.has_more,
+    };
+  },
+  z.object({
+    sessions: z.array(SessionSummary),
+    total: z.number(),
+    limit: z.number(),
+    offset: z.number(),
+    has_more: z.boolean().optional(),
+  }),
+);
 export type SessionsResponse = z.infer<typeof SessionsResponse>;
 
 export const SessionMessage = z.object({
@@ -405,11 +443,35 @@ export const HermesUIMessage = z
   .passthrough();
 export type HermesUIMessage = z.infer<typeof HermesUIMessage>;
 
-export const MessagesResponse = z.object({
-  session_id: z.string(),
-  messages: z.array(SessionMessage).default([]),
-  ui_messages: z.array(HermesUIMessage).optional(),
-});
+// Normalize both old-protocol and official hermes-agent API response shapes:
+//   Old:       { session_id, messages: [...] }
+//   Official:  { object: "list", session_id, data: [...], pagination: { limit, offset, total, has_more } }
+// Output always carries `session_id`, `messages`, optional `ui_messages`, and optional `pagination`.
+export const MessagesResponse = z.preprocess(
+  (raw) => {
+    if (raw == null || typeof raw !== "object") return raw;
+    const obj = raw as Record<string, unknown>;
+    const hasDataArray = Array.isArray(obj.data);
+    const messages = hasDataArray
+      ? obj.data
+      : (obj.messages ?? []);
+    return {
+      ...obj,
+      messages,
+    };
+  },
+  z.object({
+    session_id: z.string().optional(),
+    messages: z.array(SessionMessage).default([]),
+    ui_messages: z.array(HermesUIMessage).optional(),
+    pagination: z.object({
+      limit: z.number().optional(),
+      offset: z.number().optional(),
+      total: z.number().optional(),
+      has_more: z.boolean().optional(),
+    }).optional(),
+  }),
+);
 export type MessagesResponse = z.infer<typeof MessagesResponse>;
 
 export const SearchResult = z.object({

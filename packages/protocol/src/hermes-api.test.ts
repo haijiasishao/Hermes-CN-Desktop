@@ -24,7 +24,9 @@ import {
   SkillsHubSearchResponse,
   SessionCompressResult,
   SessionCreateResult,
+  SessionDetail,
   SessionSummary,
+  MessagesResponse,
   StatusResponse,
 } from "./hermes-api";
 
@@ -846,5 +848,149 @@ describe("MoaConfigResponse schema", () => {
   it("parses the PUT echo carrying an ok flag", () => {
     const parsed = MoaConfigResponse.parse({ ok: true, ...normalized });
     expect(parsed.presets.default.max_tokens).toBe(4096);
+  });
+});
+
+describe("SessionsResponse dual-envelope", () => {
+  const baseSession = {
+    id: "s1",
+    model: "gpt-4",
+    title: "Test",
+    started_at: 1000,
+    ended_at: null,
+    message_count: 5,
+    input_tokens: 100,
+    output_tokens: 50,
+    estimated_cost_usd: null,
+  };
+
+  it("parses old-protocol envelope { sessions, total, limit, offset }", () => {
+    const parsed = SessionsResponse.parse({
+      sessions: [baseSession],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    expect(parsed.sessions).toHaveLength(1);
+    expect(parsed.sessions[0]!.id).toBe("s1");
+    expect(parsed.total).toBe(1);
+    expect(parsed.limit).toBe(50);
+    expect(parsed.offset).toBe(0);
+    expect(parsed.has_more).toBeUndefined();
+  });
+
+  it("parses official hermes-agent envelope { object, data, limit, offset, has_more }", () => {
+    const parsed = SessionsResponse.parse({
+      object: "list",
+      data: [baseSession],
+      limit: 25,
+      offset: 0,
+      has_more: true,
+    });
+    expect(parsed.sessions).toHaveLength(1);
+    expect(parsed.sessions[0]!.id).toBe("s1");
+    expect(parsed.total).toBe(1);
+    expect(parsed.limit).toBe(25);
+    expect(parsed.offset).toBe(0);
+    expect(parsed.has_more).toBe(true);
+  });
+
+  it("official envelope without has_more defaults has_more to undefined", () => {
+    const parsed = SessionsResponse.parse({
+      object: "list",
+      data: [baseSession],
+      limit: 50,
+      offset: 0,
+    });
+    expect(parsed.sessions).toHaveLength(1);
+    expect(parsed.has_more).toBeUndefined();
+  });
+});
+
+describe("SessionDetail dual-envelope", () => {
+  const baseSession = {
+    id: "s1",
+    model: "gpt-4",
+    title: "Test",
+    started_at: 1000,
+    ended_at: null,
+    message_count: 5,
+    input_tokens: 100,
+    output_tokens: 50,
+    estimated_cost_usd: null,
+  };
+
+  it("parses old-protocol direct session object", () => {
+    const parsed = SessionDetail.parse({ ...baseSession, last_active: 2000 });
+    expect(parsed.id).toBe("s1");
+    expect(parsed.last_active).toBe(2000);
+  });
+
+  it("parses official { object, session: {...} } envelope", () => {
+    const parsed = SessionDetail.parse({
+      object: "hermes.session",
+      session: { ...baseSession, last_active: 2000 },
+    });
+    expect(parsed.id).toBe("s1");
+    expect(parsed.title).toBe("Test");
+    expect(parsed.last_active).toBe(2000);
+  });
+
+  it("passes through extra top-level fields in official envelope", () => {
+    const parsed = SessionDetail.parse({
+      object: "hermes.session",
+      session: baseSession,
+      extra_meta: "keep-me",
+    });
+    expect(parsed.id).toBe("s1");
+  });
+});
+
+describe("MessagesResponse dual-envelope", () => {
+  function sessionMessage(id: number): Record<string, unknown> {
+    return {
+      id,
+      session_id: "s1",
+      role: "user",
+      content: "hi",
+      timestamp: 100 + id,
+    };
+  }
+
+  it("parses old-protocol { session_id, messages } envelope", () => {
+    const parsed = MessagesResponse.parse({
+      session_id: "s1",
+      messages: [sessionMessage(1), sessionMessage(2)],
+    });
+    expect(parsed.session_id).toBe("s1");
+    expect(parsed.messages).toHaveLength(2);
+    expect(parsed.messages[0]!.id).toBe(1);
+    expect(parsed.pagination).toBeUndefined();
+  });
+
+  it("parses official { object, session_id, data, pagination } envelope", () => {
+    const parsed = MessagesResponse.parse({
+      object: "list",
+      session_id: "s1",
+      data: [sessionMessage(1)],
+      pagination: { limit: 50, offset: 0, total: 1, has_more: false },
+    });
+    expect(parsed.session_id).toBe("s1");
+    expect(parsed.messages).toHaveLength(1);
+    expect(parsed.messages[0]!.id).toBe(1);
+    expect(parsed.pagination?.total).toBe(1);
+    expect(parsed.pagination?.has_more).toBe(false);
+  });
+
+  it("official envelope with has_more=true preserves pagination", () => {
+    const parsed = MessagesResponse.parse({
+      object: "list",
+      session_id: "s1",
+      data: [sessionMessage(1)],
+      pagination: { limit: 20, offset: 0, total: 100, has_more: true },
+    });
+    expect(parsed.messages).toHaveLength(1);
+    expect(parsed.pagination?.has_more).toBe(true);
+    expect(parsed.pagination?.total).toBe(100);
   });
 });
