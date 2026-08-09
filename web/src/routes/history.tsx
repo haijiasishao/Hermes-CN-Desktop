@@ -18,6 +18,7 @@ import {
 import type { SessionMessage, SessionSummary } from "@hermes/protocol";
 import { chatRuntimeBySessionAtom } from "@/stores/chat";
 import { activeSessionIdAtom } from "@/stores/ui";
+import { runtime } from "@/lib/runtime";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
   prefetchSessionMessages,
@@ -31,7 +32,8 @@ import {
 import { useGateway } from "@/hooks/use-gateway";
 import { useSessionBranch } from "@/hooks/use-session-branch";
 import { useIsMobile } from "@/hooks/use-media-query";
-import { isSessionRunning } from "@/lib/session-activity";
+import { RecentTable } from "@/components/panel/recent-table";
+import { isSessionRunning, mergeLiveRuntimeSessions } from "@/lib/session-activity";
 import { sessionDisplayTitle } from "@/lib/session-title";
 import {
   formatTokens,
@@ -293,7 +295,59 @@ function SourceBadge({ meta }: { meta: SourceMeta }) {
 
 // ── Main component ──
 
-export function HistoryRoute() {
+// ── Android Remote-only History ──
+
+function AndroidHistoryRoute() {
+  const navigate = useNavigate();
+  const setActiveId = useSetAtom(activeSessionIdAtom);
+  const runtimeBySession = useAtomValue(chatRuntimeBySessionAtom);
+  const { data, isLoading, error, refetch } = useSessions();
+  const [sessionTitleOverrides, setSessionTitleOverrides] = useState(readSessionTitleOverrides);
+
+  useEffect(() => {
+    return subscribeSessionUiStateChanges(() => {
+      setSessionTitleOverrides(readSessionTitleOverrides());
+    });
+  }, []);
+
+  const sessions = useMemo(
+    () =>
+      mergeLiveRuntimeSessions(
+        (data?.sessions ?? []).flatMap((session) => {
+          const title = sessionTitleOverrides[session.id];
+          return title ? [{ ...session, title }] : [session];
+        }),
+        runtimeBySession,
+      ),
+    [data?.sessions, runtimeBySession, sessionTitleOverrides],
+  );
+
+  const goSession = (sess: SessionSummary) => {
+    setActiveId(sess.id);
+    navigate(`/tasks/${sess.id}`);
+  };
+
+  return (
+    <main className={s.androidPage}>
+      <TopBar title="历史会话" sub={isLoading ? undefined : `${sessions.length} 个会话`} />
+
+      {isLoading ? (
+        <LoadingState label="加载会话列表…" />
+      ) : error ? (
+        <div style={{ padding: "24px 16px" }}>
+          <p style={{ color: "var(--h-err)", marginBottom: 12 }}>{sessionListErrorMessage(error)}</p>
+          <button type="button" onClick={() => void refetch()}>重试</button>
+          {" "}
+          <button type="button" onClick={() => navigate("/connection")}>打开连接设置</button>
+        </div>
+      ) : (
+        <RecentTable sessions={sessions} onOpen={goSession} />
+      )}
+    </main>
+  );
+}
+
+function DesktopHistoryRoute() {
   const queryClient = useQueryClient();
   const activeProfile = useActiveProfileName();
   const navigate = useNavigate();
@@ -1033,4 +1087,9 @@ export function HistoryRoute() {
       ) : null}
     </main>
   );
+}
+
+export function HistoryRoute() {
+  if (runtime.androidRemoteOnly) return <AndroidHistoryRoute />;
+  return <DesktopHistoryRoute />;
 }

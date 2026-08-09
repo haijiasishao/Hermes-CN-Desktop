@@ -31,6 +31,7 @@ import { useSkills } from "@/hooks/use-skills";
 import {
   buildCommandPaletteItems,
   filterCommandPaletteGroups,
+  getVisibleCommandPaletteItems,
   shouldLoadCommandPaletteFiles,
   type CommandPaletteFileCandidate,
   type CommandPaletteIconKey,
@@ -44,6 +45,7 @@ import {
   type WorkspaceProject,
 } from "@/lib/workspaces";
 import { commandPaletteOpenAtom } from "@/stores/ui";
+import { runtime } from "@/lib/runtime";
 import s from "./command-palette.module.css";
 
 const FILE_PROJECT_LIMIT = 5;
@@ -166,13 +168,16 @@ export function CommandPalette() {
   }, [open]);
 
   const items = useMemo(
-    () => buildCommandPaletteItems({
-      sessions: sessionsQuery.data?.sessions,
-      projects,
-      skills: skillsQuery.data,
-      files,
-    }),
-    [files, projects, sessionsQuery.data?.sessions, skillsQuery.data],
+    () => getVisibleCommandPaletteItems(
+      buildCommandPaletteItems({
+        sessions: sessionsQuery.data?.sessions,
+        projects,
+        skills: skillsQuery.data,
+        files,
+      }),
+      runtime.androidRemoteOnly,
+    ),
+    [files, projects, runtime.androidRemoteOnly, sessionsQuery.data?.sessions, skillsQuery.data],
   );
 
   const groups = useMemo(

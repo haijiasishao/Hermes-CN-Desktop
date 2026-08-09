@@ -45,4 +45,28 @@ describe("History component behavior", () => {
   it("uses useSessionMessages for message preview in detail panel", () => {
     expect(historySource).toContain('useSessionMessages');
   });
+
+  // Regression: Android-only History baseline (PAGE_SIZE + conditional + RecentTable)
+  describe("Android Remote-only regression", () => {
+    it("retains PAGE_SIZE = 200 for the desktop path (no global change)", () => {
+      // Desktop implementation is unchanged; PAGE_SIZE stays at 200
+      expect(historySource).toContain("const PAGE_SIZE = 200");
+    });
+
+    it("branches on runtime.androidRemoteOnly for mobile-specific rendering", () => {
+      // The Android path must be gated by a clear runtime flag, not a blanket PAGE_SIZE change
+      expect(historySource).toMatch(/runtime\.androidRemoteOnly/);
+    });
+
+    it("imports and uses RecentTable for the Android compact list", () => {
+      // Android uses a dedicated compact component instead of the full desktop table
+      expect(historySource).toMatch(/import.*RecentTable/);
+      expect(historySource).toMatch(/<RecentTable[\s/>]/);
+    });
+
+    it("calls useSessions() without arguments on the Android path (reuses default limit=50)", () => {
+      // Android baseline reuses the workbench default limit=50 by calling useSessions() with no params
+      expect(historySource).toMatch(/useSessions\(\s*\)/);
+    });
+  });
 });

@@ -41,6 +41,7 @@ import { ImOnboardingRoute } from "@/routes/im-onboarding";
 import { GuideRoute } from "@/routes/guide";
 import { OfflineShell } from "@/routes/offline-shell";
 import { runtime } from "@/lib/runtime";
+import { getAndroidRemoteRouteRedirect } from "@/lib/android-remote-route-policy";
 
 function NewTaskRedirect() {
   const { search } = useLocation();
@@ -53,6 +54,11 @@ function NewTaskRedirect() {
 // naturally on navigation. (#37)
 function withBoundary(node: ReactNode) {
   return <ErrorBoundary>{node}</ErrorBoundary>;
+}
+
+function remoteSafeRoute(pathname: string, node: ReactNode) {
+  const redirect = getAndroidRemoteRouteRedirect(pathname, runtime.androidRemoteOnly);
+  return redirect ? <Navigate to={redirect} replace /> : withBoundary(node);
 }
 
 function BackendApp() {
@@ -76,12 +82,10 @@ function BackendApp() {
           <Route path="/mcp" element={withBoundary(<McpRoute />)} />
           <Route path="/profiles" element={withBoundary(<ProfilesRoute />)} />
           <Route path="/profiles/new" element={withBoundary(<ProfileBuilderRoute />)} />
-          <Route path="/memory" element={runtime.androidRemoteOnly
-            ? <Navigate to="/memconfig" replace />
-            : withBoundary(<MemoryRoute />)} />
-          <Route path="/memconfig" element={withBoundary(<ExternalMemoryRoute page="config" />)} />
-          <Route path="/openviking" element={withBoundary(<ExternalMemoryRoute page="openviking" />)} />
-          <Route path="/hindsight" element={withBoundary(<ExternalMemoryRoute page="hindsight" />)} />
+          <Route path="/memory" element={remoteSafeRoute("/memory", <MemoryRoute />)} />
+          <Route path="/memconfig" element={remoteSafeRoute("/memconfig", <ExternalMemoryRoute page="config" />)} />
+          <Route path="/openviking" element={remoteSafeRoute("/openviking", <ExternalMemoryRoute page="openviking" />)} />
+          <Route path="/hindsight" element={remoteSafeRoute("/hindsight", <ExternalMemoryRoute page="hindsight" />)} />
           <Route path="/soul" element={withBoundary(<SoulRoute />)} />
           <Route path="/cron" element={withBoundary(<CronRoute />)} />
           <Route

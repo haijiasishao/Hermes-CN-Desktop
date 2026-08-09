@@ -5,6 +5,7 @@ import {
   buildFileItems,
   COMMAND_PALETTE_COMMANDS,
   filterCommandPaletteGroups,
+  getVisibleCommandPaletteItems,
   shouldLoadCommandPaletteFiles,
 } from "./command-palette";
 import type { WorkspaceProject } from "./workspaces";
@@ -65,6 +66,18 @@ describe("command palette item building and filtering", () => {
     });
     expect(groupLabels("OpenViking")).toContain("外置记忆");
     expect(groupLabels("USER.md")).toContain("内置记忆");
+  });
+
+  it("hides memory commands only in Android Remote mode", () => {
+    const items = buildCommandPaletteItems({});
+    const androidItems = getVisibleCommandPaletteItems(items, true);
+    const desktopItems = getVisibleCommandPaletteItems(items, false);
+
+    expect(androidItems.map((item) => item.id)).not.toEqual(expect.arrayContaining([
+      "command-memory",
+      "command-external-memory",
+    ]));
+    expect(desktopItems).toEqual(items);
   });
 
   it("matches sessions by title, preview and id", () => {

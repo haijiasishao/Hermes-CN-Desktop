@@ -439,6 +439,19 @@ export function buildCommandPaletteItems({
   ];
 }
 
+const ANDROID_REMOTE_HIDDEN_COMMAND_IDS = new Set([
+  "command-memory",
+  "command-external-memory",
+]);
+
+export function getVisibleCommandPaletteItems(
+  items: readonly CommandPaletteItem[],
+  androidRemoteOnly: boolean,
+): CommandPaletteItem[] {
+  if (!androidRemoteOnly) return [...items];
+  return items.filter((item) => !ANDROID_REMOTE_HIDDEN_COMMAND_IDS.has(item.id));
+}
+
 export function filterCommandPaletteGroups(
   items: readonly CommandPaletteItem[],
   query: string,

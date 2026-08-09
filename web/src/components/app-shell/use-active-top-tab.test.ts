@@ -62,7 +62,7 @@ describe("TOP_TABS", () => {
     expect(CONFIG_ITEMS.some((item) => item.label === "人格" && item.path === "/soul")).toBe(true);
   });
 
-  it("keeps built-in and external memory together under 04 memory", () => {
+  it("keeps built-in and external memory together under 04 memory on desktop", () => {
     expect(tabFor("/memory")).toBe("externalMemory");
     expect(tabFor("/memconfig")).toBe("externalMemory");
     expect(tabFor("/openviking")).toBe("externalMemory");
@@ -89,10 +89,9 @@ describe("getVisibleTopTabs – Android Remote regression", () => {
     expect(visible.find((t) => t.label === "消息接入")).toBeUndefined();
   });
 
-  it("routes Android Remote memory navigation to remote memory config", () => {
-    expect(getVisibleTopTabs(true).find((tab) => tab.id === "externalMemory")?.href).toBe("/memconfig");
-    expect(getVisibleExternalMemoryItems(true).map((item) => item.path)).not.toContain("/memory");
-    expect(getVisibleExternalMemoryItems(true).length).toBe(EXTERNAL_MEMORY_ITEMS.length - 1);
+  it("removes the memory tab and all memory sidebar items on Android Remote", () => {
+    expect(getVisibleTopTabs(true).find((tab) => tab.id === "externalMemory")).toBeUndefined();
+    expect(getVisibleExternalMemoryItems(true)).toEqual([]);
   });
 
   it("retains the built-in memory editor on desktop and non-Android remote shells", () => {

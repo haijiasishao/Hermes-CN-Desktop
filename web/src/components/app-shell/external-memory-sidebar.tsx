@@ -41,12 +41,13 @@ export const EXTERNAL_MEMORY_ITEMS: readonly ExternalMemoryItem[] = [
 ];
 
 export function getVisibleExternalMemoryItems(androidRemoteOnly: boolean): readonly ExternalMemoryItem[] {
-  if (!androidRemoteOnly) return EXTERNAL_MEMORY_ITEMS;
-  return EXTERNAL_MEMORY_ITEMS.filter((item) => item.path !== "/memory");
+  return androidRemoteOnly ? [] : EXTERNAL_MEMORY_ITEMS;
 }
 
 export function ExternalMemorySidebar() {
   const location = useLocation();
+  if (runtime.androidRemoteOnly) return null;
+
   const isActive = (item: ExternalMemoryItem) => item.exact
     ? location.pathname === item.path
     : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);

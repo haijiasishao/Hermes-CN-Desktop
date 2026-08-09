@@ -1,5 +1,8 @@
 const ANDROID_REMOTE_ROUTE_REDIRECTS: Readonly<Record<string, string>> = {
-  "/memory": "/memconfig",
+  "/memory": "/health",
+  "/memconfig": "/health",
+  "/openviking": "/health",
+  "/hindsight": "/health",
   "/kernel": "/health",
   "/env": "/health",
   "/advanced/kernel": "/health",
