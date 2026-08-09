@@ -262,8 +262,7 @@
     height: calc(var(--h-topbar-h) + var(--h-window-control-safe-top, 0px) + var(--h-safe-top, 0px));
     padding: calc(var(--h-window-control-safe-top, 0px) + var(--h-safe-top, 0px)) 8px 0;
     gap: 8px;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow-x: clip;
     scrollbar-width: none;
     min-width: 0;
   }
@@ -296,7 +295,14 @@
 
   .nav {
     gap: 4px;
-    flex: 0 0 auto;
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
   }
 
   .navLink {
@@ -320,6 +326,11 @@
   .actions {
     gap: 4px;
     flex: 0 0 auto;
+    position: sticky;
+    right: 0;
+    padding-left: 8px;
+    border-left: 1px solid var(--h-line);
+    background: var(--h-bg-pane);
   }
 
   .actions [data-variant="topbar"] {

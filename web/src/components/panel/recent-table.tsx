@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { sessionDisplayTitle } from "@/lib/session-title";
 import { formatTokens, relativeTime } from "@/lib/format";
 import { Dot } from "@/components/ui/pill";
+import { getSourceMeta } from "@/lib/source-meta";
 import type { SessionSummary } from "@hermes/protocol";
 import s from "./recent-table.module.css";
 
@@ -36,19 +37,145 @@ function buildPageItems(current: number, total: number): Array<number | "..."> {
 interface RecentTableProps {
   sessions: SessionSummary[];
   onOpen: (session: SessionSummary) => void;
+  /** Compact card layout for mobile/Android. Omit for desktop table. */
+  compact?: boolean;
 }
 
-export function RecentTable({ sessions, onOpen }: RecentTableProps) {
+// ── Compact card list (Android / mobile) ──
+
+function CompactCardList({
+  sessions,
+  onOpen,
+}: {
+  sessions: SessionSummary[];
+  onOpen: (session: SessionSummary) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [page, setPage] = useState(1);
 
-  if (sessions.length === 0) {
-    return (
-      <div className={s.wrap}>
-        <div className={s.empty}>暂无会话</div>
+  const canCollapse = sessions.length > COLLAPSED_ROWS;
+  const showPager = expanded && canCollapse;
+
+  const totalPages = Math.max(1, Math.ceil(sessions.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const startIdx = expanded ? (safePage - 1) * PAGE_SIZE + 1 : 1;
+  const endIdx = expanded
+    ? Math.min(safePage * PAGE_SIZE, sessions.length)
+    : Math.min(COLLAPSED_ROWS, sessions.length);
+  const sliced = expanded
+    ? sessions.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+    : sessions.slice(0, COLLAPSED_ROWS);
+
+  return (
+    <>
+      <div className={s.compactWrap}>
+        {sliced.map((sess) => {
+          const isError = sess.end_reason === "error";
+          const isInterrupted = sess.end_reason === "interrupted";
+          const isActive = sess.is_active === true || sess.ended_at === null;
+          const statusLabel = isError
+            ? "失败"
+            : isInterrupted
+              ? "已中止"
+              : isActive
+                ? "进行中"
+                : "已完成";
+          const meta = getSourceMeta(sess.source);
+
+          return (
+            <div
+              key={sess.id}
+              className={s.compactCard}
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpen(sess)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onOpen(sess);
+                }
+              }}
+            >
+              <span className={s.compactTitle}>
+                {sessionDisplayTitle(sess)}
+                {(isError || isInterrupted) && " — " + statusLabel}
+              </span>
+              <span className={s.compactMeta}>
+                <span className={s.compactSource}>{meta.label}</span>
+                <span className={s.compactDot}>·</span>
+                <span className={s.compactStatus}>
+                  {(isError || isInterrupted) && (
+                    <Dot tone={isError ? "err" : "warn"} />
+                  )}
+                  {statusLabel}
+                </span>
+                <span className={s.compactDot}>·</span>
+                <span className={s.compactTime}>
+                  {isActive ? "进行中" : formatEndedAt(sess.ended_at)}
+                </span>
+              </span>
+            </div>
+          );
+        })}
       </div>
-    );
-  }
+      <div className={s.foot}>
+        <span>
+          显示 {startIdx}–{endIdx} / {sessions.length}
+        </span>
+        {showPager ? (
+          <span className={s.pager}>
+            {buildPageItems(safePage, totalPages).map((item, idx) =>
+              item === "..." ? (
+                <span key={`gap-${idx}`} className={s.pageGap}>…</span>
+              ) : (
+                <button
+                  key={item}
+                  className={s.pageBtn}
+                  data-active={item === safePage ? "true" : undefined}
+                  onClick={() => setPage(item)}
+                  aria-label={`第 ${item} 页`}
+                  aria-current={item === safePage ? "page" : undefined}
+                >
+                  {item}
+                </button>
+              ),
+            )}
+            <button
+              type="button"
+              className={s.expandLink}
+              onClick={() => {
+                setExpanded(false);
+                setPage(1);
+              }}
+            >
+              收起 ↑
+            </button>
+          </span>
+        ) : canCollapse ? (
+          <button
+            type="button"
+            className={s.expandLink}
+            onClick={() => setExpanded(true)}
+          >
+            查看全部 →
+          </button>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+// ── Desktop table ──
+
+function DesktopTable({
+  sessions,
+  onOpen,
+}: {
+  sessions: SessionSummary[];
+  onOpen: (session: SessionSummary) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [page, setPage] = useState(1);
 
   const canCollapse = sessions.length > COLLAPSED_ROWS;
   const showPager = expanded && canCollapse;
@@ -154,4 +281,22 @@ export function RecentTable({ sessions, onOpen }: RecentTableProps) {
       </div>
     </>
   );
+}
+
+// ── Exported entry point ──
+
+export function RecentTable({ sessions, onOpen, compact }: RecentTableProps) {
+  if (sessions.length === 0) {
+    return (
+      <div className={s.wrap}>
+        <div className={s.empty}>暂无会话</div>
+      </div>
+    );
+  }
+
+  if (compact) {
+    return <CompactCardList sessions={sessions} onOpen={onOpen} />;
+  }
+
+  return <DesktopTable sessions={sessions} onOpen={onOpen} />;
 }

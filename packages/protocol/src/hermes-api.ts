@@ -451,6 +451,22 @@ export const MessagesResponse = z.preprocess(
   (raw) => {
     if (raw == null || typeof raw !== "object") return raw;
     const obj = raw as Record<string, unknown>;
+
+    // Unwrap { session: { id, messages: [...] } } — same envelope shape that
+    // SessionDetail already handles for GET /api/sessions/{id}. Without this
+    // normalization the Dashboard's session-wrapped response silently falls
+    // through to `messages: []`, causing Android History→Detail to show
+    // "暂无对话记录" even though the session has real conversations.
+    const session = obj.session as Record<string, unknown> | undefined;
+    if (session && typeof session === "object" && !Array.isArray(session) && Array.isArray(session.messages)) {
+      return {
+        ...obj,
+        session_id: obj.session_id ?? session.id,
+        messages: session.messages,
+        session: undefined,
+      };
+    }
+
     const hasDataArray = Array.isArray(obj.data);
     const messages = hasDataArray
       ? obj.data

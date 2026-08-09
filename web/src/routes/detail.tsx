@@ -191,7 +191,7 @@ export function DetailRoute() {
   ]);
   const { data: session } = useSession(restSessionId);
   const messagesQuery = useSessionMessages(restSessionId);
-  const { data: messagesData, isLoading } = messagesQuery;
+  const { data: messagesData, isLoading, isError: messagesIsError, error: messagesError, refetch: refetchMessages } = messagesQuery;
   const { data: sessionsData } = useSessions();
   const sessionData = session;
   const sessionSummary = sessionsData?.sessions.find(
@@ -707,6 +707,20 @@ export function DetailRoute() {
           </>
         }
       />
+      {messagesIsError && !isLoading ? (
+        <div className={s.historyLoadError} role="alert">
+          <span className={s.historyLoadErrorText}>
+            {"历史记录加载失败："}
+            {messagesError instanceof Error ? messagesError.message : String(messagesError ?? "")}
+          </span>
+          <button
+            className={s.historyLoadRetryBtn}
+            onClick={() => void refetchMessages()}
+          >
+            重试
+          </button>
+        </div>
+      ) : null}
       <div className={s.workArea}>
         <div className={s.chatColumn}>
           {/* key={taskId}：切会话强制重挂载时间线。layout effect 在首帧绘制前就

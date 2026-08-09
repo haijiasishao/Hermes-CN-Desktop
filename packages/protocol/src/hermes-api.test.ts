@@ -994,3 +994,73 @@ describe("MessagesResponse dual-envelope", () => {
     expect(parsed.pagination?.total).toBe(100);
   });
 });
+
+// Both SessionDetail and MessagesResponse normalize the { session: { ... } }
+// wrapper returned by some Dashboard versions. These tests verify that
+// messages are correctly extracted from both envelope shapes.
+describe("MessagesResponse: Android Remote session-detail envelope regression", () => {
+  function sessionMessage(id: number): Record<string, unknown> {
+    return {
+      id,
+      session_id: "s1",
+      role: "user",
+      content: "hi",
+      timestamp: 100 + id,
+    };
+  }
+
+  it("should extract messages from a { session: { id, messages } } envelope", () => {
+    // Verifies that the { session: { id, messages } } wrapper is unwrapped.
+    const envelope = {
+      session: {
+        id: "s1",
+        messages: [sessionMessage(1), sessionMessage(2)],
+      },
+    };
+    const parsed = MessagesResponse.parse(envelope);
+    // Messages should be extracted from the nested session wrapper.
+    expect(parsed.session_id).toBe("s1");
+    expect(parsed.messages).toHaveLength(2);
+    expect(parsed.messages[0]!.id).toBe(1);
+    expect(parsed.messages[1]!.id).toBe(2);
+  });
+
+});
+
+// Both SessionDetail and MessagesResponse normalize the { session: { ... } }
+// wrapper, confirming consistent envelope handling across both schemas.
+describe("MessagesResponse vs SessionDetail: session-wrapper normalization", () => {
+  it("both SessionDetail and MessagesResponse unwrap {session:{...}}", () => {
+    const sessionPayload = {
+      session: {
+        id: "s1",
+        model: "gpt-4",
+        title: "test session",
+        started_at: 1000,
+        ended_at: 2000,
+        message_count: 2,
+        input_tokens: 100,
+        output_tokens: 200,
+        estimated_cost_usd: 0.01,
+      },
+    };
+
+    // SessionDetail preprocessor unwraps session → id is "s1"
+    const detail = SessionDetail.parse(sessionPayload);
+    expect(detail.id).toBe("s1");
+
+    // MessagesResponse preprocessor also unwraps the session wrapper.
+    const messagesPayload = {
+      session: {
+        id: "s1",
+        messages: [
+          { id: 1, session_id: "s1", role: "user", content: "hello", timestamp: 100 },
+        ],
+      },
+    };
+    const msgs = MessagesResponse.parse(messagesPayload);
+    // Both session_id and messages should be extracted from the wrapper.
+    expect(msgs.session_id).toBe("s1");
+    expect(msgs.messages).toHaveLength(1);
+  });
+});

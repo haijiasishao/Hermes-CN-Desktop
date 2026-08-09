@@ -331,18 +331,31 @@ function AndroidHistoryRoute() {
     <main className={s.androidPage}>
       <TopBar title="历史会话" sub={isLoading ? undefined : `${sessions.length} 个会话`} />
 
-      {isLoading ? (
-        <LoadingState label="加载会话列表…" />
-      ) : error ? (
-        <div style={{ padding: "24px 16px" }}>
-          <p style={{ color: "var(--h-err)", marginBottom: 12 }}>{sessionListErrorMessage(error)}</p>
-          <button type="button" onClick={() => void refetch()}>重试</button>
-          {" "}
-          <button type="button" onClick={() => navigate("/connection")}>打开连接设置</button>
-        </div>
-      ) : (
-        <RecentTable sessions={sessions} onOpen={goSession} />
-      )}
+      <div className={s.androidContent}>
+        {isLoading ? (
+          <div className={s.androidLoading}>
+            <LoadingState label="加载会话列表…" />
+          </div>
+        ) : error ? (
+          <div className={s.androidError}>
+            <p className={s.androidErrorText}>{sessionListErrorMessage(error)}</p>
+            <div className={s.androidActions}>
+              <button type="button" className={s.androidBtn} onClick={() => void refetch()}>重试</button>
+              <button type="button" className={s.androidBtn} onClick={() => navigate("/connection")}>打开连接设置</button>
+            </div>
+          </div>
+        ) : sessions.length === 0 ? (
+          <div className={s.androidEmpty}>
+            <span className={s.androidEmptyTitle}>暂无会话</span>
+            <span className={s.androidEmptyHint}>连接远程 Dashboard 后，会话将显示在此处</span>
+          </div>
+        ) : (
+          <>
+            <div className={s.androidSectionHint}>最近会话 · 点击会话查看完整记录</div>
+            <RecentTable compact sessions={sessions} onOpen={goSession} />
+          </>
+        )}
+      </div>
     </main>
   );
 }

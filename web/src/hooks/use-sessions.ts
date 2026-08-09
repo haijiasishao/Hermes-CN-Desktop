@@ -53,7 +53,7 @@ export async function fetchSessionMessages(id: string, signal?: AbortSignal): Pr
   let result: MessagesResponse;
   try {
     result = await fetchJSON(
-      `/api/sessions/${id}/messages`,
+      `/api/sessions/${encodeURIComponent(id)}/messages`,
       { signal },
       MessagesResponse,
     );
@@ -107,7 +107,7 @@ export function useSession(id: string | undefined) {
   const profile = useActiveProfileName();
   return useQuery<SessionDetail>({
     queryKey: ["session", profile, id],
-    queryFn: ({ signal }) => fetchJSON(`/api/sessions/${id}`, { signal }, SessionDetail),
+    queryFn: ({ signal }) => fetchJSON(`/api/sessions/${encodeURIComponent(id!)}`, { signal }, SessionDetail),
     enabled: !!id,
   });
 }
