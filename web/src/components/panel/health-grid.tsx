@@ -24,6 +24,8 @@ import { useOAuthProviders } from "@/hooks/use-oauth-providers";
 import { useLastUsedModel } from "@/lib/last-used-model";
 import { DiagnosticCopyButton } from "@/components/ui/diagnostic-copy-button";
 import { Dot } from "@/components/ui/pill";
+import { runtime } from "@/lib/runtime";
+import { resolveHermesHomeDisplay } from "./health-grid-state";
 import s from "./health-grid.module.css";
 
 const TOKEN_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GLM_API_KEY", "DEEPSEEK_API_KEY"];
@@ -311,6 +313,12 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
     const invalidProviders = findInvalidProviderApiKeys(providers);
     const providerTotal = Object.keys(providers).length;
     const providersOk = currentOAuthLoggedIn || (providerTotal > 0 && invalidProviders.length === 0);
+    const homeDisplay = resolveHermesHomeDisplay({
+      path: status?.hermes_home,
+      statusReady: Boolean(status),
+      statusError: statusQuery.isError,
+      androidRemoteOnly: runtime.androidRemoteOnly,
+    });
 
     const items: HealthItem[] = [
       {
@@ -336,12 +344,12 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
         id: "home",
         group: "runtime",
         label: "Hermes Home",
-        tone: status?.hermes_home ? "ok" : "warn",
-        value: status?.hermes_home || "—",
-        sub: status?.hermes_home ? "数据目录已识别" : "正在读取数据目录",
+        tone: homeDisplay.tone,
+        value: homeDisplay.value,
+        sub: homeDisplay.sub,
         detail: status?.config_path || status?.env_path
           ? `配置：${status?.config_path ?? "—"}；环境变量：${status?.env_path ?? "—"}`
-          : "这是桌面端当前 profile 的配置、会话和环境变量根目录。",
+          : homeDisplay.detail,
         mono: true,
       },
       {

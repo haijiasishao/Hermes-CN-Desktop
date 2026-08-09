@@ -113,6 +113,66 @@ function reportRestFailure(method: string, target: string, status: number, body:
   });
 }
 
+function responseShape(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) return { type: "array", length: value.length };
+  if (value === null) return { type: "null" };
+  if (typeof value !== "object") return { type: typeof value };
+
+  const record = value as Record<string, unknown>;
+  const shape: Record<string, unknown> = {
+    type: "object",
+    keys: Object.keys(record).slice(0, 30),
+  };
+  const servers = record.servers;
+  if (Array.isArray(servers)) shape.servers = { type: "array", length: servers.length };
+  else if (servers !== undefined && servers !== null) shape.servers = { type: typeof servers };
+  return shape;
+}
+
+function reportRestParseFailure(
+  method: string,
+  target: string,
+  status: number,
+  error: unknown,
+  data: unknown,
+): void {
+  debugBus.push({
+    type: "rest",
+    level: "error",
+    summary: `${method} ${target} → ${status} (response parse failed)`,
+    payload: {
+      method,
+      url: target,
+      status,
+      error: error instanceof Error ? error.message.slice(0, 800) : String(error).slice(0, 800),
+      shape: responseShape(data),
+    },
+  });
+}
+
+function parseJSONResponse<T>(
+  method: string,
+  target: string,
+  status: number,
+  body: string,
+  parser?: Parser<T>,
+): T {
+  let data: unknown;
+  try {
+    data = body ? JSON.parse(body) : null;
+  } catch (error) {
+    reportRestParseFailure(method, target, status, error, { type: "invalid-json" });
+    throw error;
+  }
+  if (!parser) return data as T;
+  try {
+    return parser.parse(data);
+  } catch (error) {
+    reportRestParseFailure(method, target, status, error, data);
+    throw error;
+  }
+}
+
 async function fetchViaElectron<T>(
   path: string,
   init?: RequestInit,
@@ -140,8 +200,7 @@ async function fetchViaElectron<T>(
     throw new Error(`HTTP ${result.status}: ${result.body}`);
   }
 
-  const data = result.body ? JSON.parse(result.body) : null;
-  return parser ? parser.parse(data) : data as T;
+  return parseJSONResponse(init?.method ?? "GET", path, result.status, result.body, parser);
 }
 
 export async function fetchJSON<T>(
@@ -162,8 +221,8 @@ export async function fetchJSON<T>(
     reportRestFailure(init?.method ?? "GET", path, res.status, body);
     throw new Error(`HTTP ${res.status}: ${body}`);
   }
-  const data = await res.json();
-  return parser ? parser.parse(data) : data as T;
+  const body = await res.text();
+  return parseJSONResponse(init?.method ?? "GET", path, res.status, body, parser);
 }
 
 /**

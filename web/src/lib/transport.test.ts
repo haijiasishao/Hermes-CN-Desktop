@@ -86,6 +86,25 @@ describe("transport · debug-bus integration", () => {
     expect(restPushes.length).toBe(0);
   });
 
+  it("fetchJSON reports a successful response that fails schema parsing", async () => {
+    stubFetch(() => makeResponse(200, '{"servers":[{"name":"mcp-a"}]}'));
+    const parser = {
+      parse: () => { throw new Error("invalid_type at servers.0.transport"); },
+    };
+
+    await expect(fetchJSON("/api/mcp/servers", undefined, parser)).rejects.toThrow("invalid_type");
+
+    const restPushes = restPushesFrom(pushSpy);
+    const last = restPushes[restPushes.length - 1];
+    expect(last.level).toBe("error");
+    expect(last.summary).toContain("/api/mcp/servers");
+    expect(last.summary).toContain("response parse failed");
+    expect(last.payload).toMatchObject({
+      status: 200,
+      shape: { type: "object", servers: { type: "array", length: 1 } },
+    });
+  });
+
   it("fetchMediaDataUrl loads an encoded gateway image path", async () => {
     stubFetch(() => makeResponse(200, '{"data_url":"data:image/png;base64,QUJD"}'));
 
