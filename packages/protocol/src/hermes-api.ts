@@ -839,6 +839,14 @@ export type McpServersResponse = z.infer<typeof McpServersResponse>;
 
 // GET /api/mcp/servers 的单条。transport: "http" | "stdio" | "unknown"。
 // env 的值已被后端脱敏（仅用于展示键名/计数，不含真实密钥）。
+// tools 既可能是旧版的工具名称数组，也可能是当前服务端使用的
+// 工具筛选配置对象（include/exclude/resources/prompts 等）。
+export const McpServerTools = z.union([
+  z.array(z.string()),
+  z.record(z.unknown()),
+]).nullable().optional();
+export type McpServerTools = z.infer<typeof McpServerTools>;
+
 export const McpServer = z.object({
   name: z.string(),
   transport: z.string(),
@@ -848,8 +856,7 @@ export const McpServer = z.object({
   env: z.record(z.string()).optional().default({}),
   auth: z.string().nullable().optional(),
   enabled: z.boolean(),
-  // 启用的工具名列表；null = 全部启用。
-  tools: z.array(z.string()).nullable().optional(),
+  tools: McpServerTools,
 });
 export type McpServer = z.infer<typeof McpServer>;
 

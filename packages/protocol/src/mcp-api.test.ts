@@ -49,6 +49,32 @@ describe("McpServersFullResponse (GET /api/mcp/servers)", () => {
     expect(parsed.servers[1].enabled).toBe(false);
   });
 
+  it("parses the current object-shaped tool selection config", () => {
+    const parsed = McpServersFullResponse.parse({
+      servers: [{
+        name: "filtered-server",
+        transport: "http",
+        url: "https://example.com/mcp",
+        enabled: true,
+        args: [],
+        env: {},
+        tools: {
+          include: ["read_file"],
+          exclude: ["delete_file"],
+          resources: true,
+          prompts: false,
+        },
+      }],
+    });
+
+    expect(parsed.servers[0]!.tools).toEqual({
+      include: ["read_file"],
+      exclude: ["delete_file"],
+      resources: true,
+      prompts: false,
+    });
+  });
+
   it("single McpServer matches the POST /api/mcp/servers response", () => {
     const added = McpServer.parse({
       name: "added",
