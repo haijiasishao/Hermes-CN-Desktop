@@ -75,6 +75,12 @@ pub struct ConnectionConfigInput {
     pub remote_token: Option<String>,
     /// "token" (default) or "oauth". Absent keeps the saved mode.
     pub remote_auth_mode: Option<String>,
+    /// Optional backup remote URL. Empty string clears the backup config.
+    #[serde(default)]
+    pub remote_backup_url: Option<String>,
+    /// Optional backup session token. Empty keeps saved value; explicit empty clears it.
+    #[serde(default)]
+    pub remote_backup_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +204,26 @@ fn coerce_config(
         }
     }
 
+    // Backup URL: explicit empty clears it, absent keeps the saved one.
+    let remote_backup_url = match input.remote_backup_url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() => Some(connection::normalize_remote_base_url(url)?),
+        Some(_) => None, // explicit empty clears
+        None => existing.remote_backup_url.clone(),
+    };
+    // Backup token: explicit empty clears it (use primary), absent keeps the saved one.
+    let remote_backup_token = match input.remote_backup_token.as_deref().map(str::trim) {
+        Some(tok) if !tok.is_empty() => Some(tok.to_string()),
+        Some(_) => None, // explicit empty clears
+        None => existing.remote_backup_token.clone(),
+    };
+
+    // Validate backup constraints.
+    connection::validate_backup_config(
+        remote_url.as_deref(),
+        remote_backup_url.as_deref(),
+        remote_auth_mode,
+    )?;
+
     // Editing the URL invalidates any saved cookie session (it belonged to the
     // old gateway) so it is never sent to a different host.
     let url_changed = remote_url != existing.remote_url;
@@ -214,6 +240,8 @@ fn coerce_config(
         remote_token,
         remote_auth_mode,
         remote_session,
+        remote_backup_url,
+        remote_backup_token,
     })
 }
 
@@ -344,16 +372,32 @@ fn status_field<'a>(
     body.as_ref().and_then(|b| b.get(key))
 }
 
-#[tauri::command]
-pub fn get_connection_config(state: State<'_, AppState>) -> Result<ConnectionConfigView, AppError> {
+fn connection_config_view(
+    state: &State<'_, AppState>,
+    config: &ConnectionConfig,
+) -> Result<ConnectionConfigView, AppError> {
+    let mut sanitized = connection::sanitize(config);
     let effective_mode = {
         let inner = state.inner.lock()?;
+        if let Some(failover) = &inner.failover {
+            sanitized.active_remote = if failover.using_backup {
+                "backup".to_string()
+            } else {
+                "primary".to_string()
+            };
+            sanitized.failover_active = failover.using_backup;
+        }
         inner.connection_mode.as_str().to_string()
     };
     Ok(ConnectionConfigView {
-        config: connection::sanitize(&connection::read_config()),
+        config: sanitized,
         effective_mode,
     })
+}
+
+#[tauri::command]
+pub fn get_connection_config(state: State<'_, AppState>) -> Result<ConnectionConfigView, AppError> {
+    connection_config_view(&state, &connection::read_config())
 }
 
 #[tauri::command]
@@ -365,14 +409,7 @@ pub fn save_connection_config(
     let config = coerce_config(&connection::read_config(), &input)?;
     connection::write_config(&config)?;
 
-    let effective_mode = {
-        let inner = state.inner.lock()?;
-        inner.connection_mode.as_str().to_string()
-    };
-    Ok(ConnectionConfigView {
-        config: connection::sanitize(&config),
-        effective_mode,
-    })
+    connection_config_view(&state, &config)
 }
 
 /// Unauthenticated reachability probe for the as-you-type settings UX.
@@ -657,57 +694,104 @@ async fn apply_remote(
     state: &State<'_, AppState>,
     config: &ConnectionConfig,
 ) -> Result<ApplyConnectionResult, AppError> {
-    let base_url = config.remote_url.clone().unwrap_or_default();
+    let primary_base_url = config.remote_url.clone().unwrap_or_default();
     if config.remote_auth_mode == connection::RemoteAuthMode::Oauth {
-        return apply_remote_oauth(state, config, &base_url).await;
+        return apply_remote_oauth(state, config, &primary_base_url).await;
     }
     // coerce_config guarantees the token is present in remote token mode.
-    let token = config.remote_token.clone().unwrap_or_default();
+    let primary_token = config.remote_token.clone().unwrap_or_default();
+    let backup_endpoint = config.remote_backup_url.as_ref().map(|bu| {
+        let backup_token = config
+            .remote_backup_token
+            .clone()
+            .unwrap_or_else(|| primary_token.clone());
+        crate::state::RemoteEndpoint {
+            base_url: bu.clone(),
+            session_token: backup_token,
+        }
+    });
 
-    if !dashboard::probe_dashboard(&base_url).await {
-        return Ok(ApplyConnectionResult {
-            ok: false,
-            mode: "remote".to_string(),
-            error: Some(format!(
-                "远程 Hermes Agent 不可达（{}/api/status 无响应），已保存配置但未切换",
-                base_url
-            )),
-            ..Default::default()
-        });
-    }
-    if !dashboard::dashboard_supports_ws(&base_url, Some(&token)).await {
-        return Ok(ApplyConnectionResult {
-            ok: false,
-            mode: "remote".to_string(),
-            error: Some(
+    let mut active_base_url = primary_base_url.clone();
+    let mut active_token = primary_token.clone();
+    let mut using_backup = false;
+    let primary_reachable = dashboard::probe_dashboard(&primary_base_url).await;
+    let primary_ws_ok = primary_reachable
+        && dashboard::dashboard_supports_ws(&primary_base_url, Some(&primary_token)).await;
+    if !primary_ws_ok {
+        if let Some(backup) = backup_endpoint.as_ref() {
+            let backup_reachable = dashboard::probe_dashboard(&backup.base_url).await;
+            let backup_ws_ok = backup_reachable
+                && dashboard::dashboard_supports_ws(&backup.base_url, Some(&backup.session_token))
+                    .await;
+            if backup_ws_ok {
+                active_base_url = backup.base_url.clone();
+                active_token = backup.session_token.clone();
+                using_backup = true;
+            } else {
+                let detail = if primary_reachable {
+                    "主地址 WebSocket 和备用地址均不可用"
+                } else {
+                    "主地址与备用地址均不可达"
+                };
+                return Ok(ApplyConnectionResult {
+                    ok: false,
+                    mode: "remote".to_string(),
+                    error: Some(format!("远程 Hermes Agent {}，已保存配置但未切换", detail)),
+                    ..Default::default()
+                });
+            }
+        } else {
+            let error = if primary_reachable {
                 "远程 WebSocket（/api/ws）握手失败：检查 token 是否正确，已保存配置但未切换"
-                    .to_string(),
-            ),
-            ..Default::default()
-        });
+            } else {
+                "远程 Hermes Agent 不可达（/api/status 无响应），已保存配置但未切换"
+            };
+            return Ok(ApplyConnectionResult {
+                ok: false,
+                mode: "remote".to_string(),
+                error: Some(error.to_string()),
+                ..Default::default()
+            });
+        }
     }
 
     detach_current_backend(state)?;
 
-    let gateway_url = dashboard::build_gateway_url(&base_url, Some(&token));
+    let gateway_url = dashboard::build_gateway_url(&active_base_url, Some(&active_token));
+
     {
         let mut inner = state.inner.lock()?;
-        inner.api_base_url = base_url.clone();
+        inner.api_base_url = active_base_url.clone();
         inner.gateway_url = gateway_url.clone();
-        inner.session_token = Some(token.clone());
+        inner.session_token = Some(active_token.clone());
         inner.connection_mode = ConnectionMode::Remote;
         inner.yolo_mode = false;
         inner.last_runtime_error = None;
-        inner.dashboard_handle = Some(DashboardHandle::remote(base_url.clone(), token.clone()));
+        inner.dashboard_handle = Some(DashboardHandle::remote(
+            active_base_url.clone(),
+            active_token.clone(),
+        ));
+        inner.failover = backup_endpoint.map(|backup| crate::state::FailoverState {
+            primary: crate::state::RemoteEndpoint {
+                base_url: primary_base_url.clone(),
+                session_token: primary_token.clone(),
+            },
+            backup: Some(backup),
+            using_backup,
+        });
     }
 
-    log::info!("Connection switched to remote Hermes Agent at {}", base_url);
+    log::info!(
+        "Connection switched to remote Hermes Agent at {}{}",
+        active_base_url,
+        if using_backup { " (backup)" } else { "" }
+    );
     Ok(ApplyConnectionResult {
         ok: true,
         mode: "remote".to_string(),
-        api_base_url: Some(base_url),
+        api_base_url: Some(active_base_url),
         gateway_url: Some(gateway_url),
-        session_token: Some(token),
+        session_token: Some(active_token),
         error: None,
     })
 }
@@ -784,6 +868,7 @@ async fn apply_remote_oauth(
         inner.session_token = None;
         inner.oauth_session = Some(session);
         inner.connection_mode = ConnectionMode::Remote;
+        inner.failover = None;
         inner.yolo_mode = false;
         inner.last_runtime_error = None;
         inner.dashboard_handle = Some(DashboardHandle::remote_oauth(base_url.to_string()));
@@ -885,6 +970,7 @@ async fn apply_local_connection(
         inner.hermes_home_base = hermes_home;
         inner.current_profile = "default".to_string();
         inner.connection_mode = ConnectionMode::Local;
+        inner.failover = None;
         inner.yolo_mode = false;
         inner.last_runtime_error = None;
         inner.dashboard_handle = Some(DashboardHandle::local(
@@ -1023,6 +1109,7 @@ pub(crate) async fn apply_managed(
             inner.hermes_home_base = hermes_home_base;
             inner.current_profile = current_profile;
             inner.connection_mode = ConnectionMode::Managed;
+            inner.failover = None;
             inner.yolo_mode = dashboard::yolo_mode_effective(&hermes_home);
             inner.last_runtime_error = None;
             inner.dashboard_handle = Some(handle);
@@ -1056,6 +1143,8 @@ mod tests {
             remote_token: Some("saved-token".to_string()),
             remote_auth_mode: connection::RemoteAuthMode::Token,
             remote_session: None,
+            remote_backup_url: None,
+            remote_backup_token: None,
         }
     }
 

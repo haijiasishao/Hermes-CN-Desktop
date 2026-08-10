@@ -99,7 +99,7 @@ function BackendApp() {
               ? <Navigate to="/" replace />
               : withBoundary(<ImOnboardingRoute />)}
           />
-          <Route path="/console" element={withBoundary(<ConsoleRoute />)} />
+          <Route path="/console" element={remoteSafeRoute("/console", <ConsoleRoute />)} />
           <Route path="/health" element={withBoundary(<HealthRoute />)} />
           <Route path="/analytics" element={withBoundary(<AnalyticsRoute />)} />
           <Route path="/logs" element={withBoundary(<LogsRoute />)} />

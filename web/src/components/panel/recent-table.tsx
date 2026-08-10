@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { sessionDisplayTitle } from "@/lib/session-title";
 import { formatTokens, relativeTime } from "@/lib/format";
 import { Dot } from "@/components/ui/pill";
 import { getSourceMeta } from "@/lib/source-meta";
 import type { SessionSummary } from "@hermes/protocol";
+import { useLongPress } from "@/hooks/use-long-press";
 import s from "./recent-table.module.css";
 
 const COLLAPSED_ROWS = 5;
@@ -39,6 +40,11 @@ interface RecentTableProps {
   onOpen: (session: SessionSummary) => void;
   /** Compact card layout for mobile/Android. Omit for desktop table. */
   compact?: boolean;
+  /**
+   * Called when a compact card is long-pressed (~500 ms hold without moving).
+   * Only used in compact (mobile/Android) mode.
+   */
+  onLongPress?: (session: SessionSummary, anchorX: number, anchorY: number) => void;
 }
 
 // ── Compact card list (Android / mobile) ──
@@ -46,12 +52,57 @@ interface RecentTableProps {
 function CompactCardList({
   sessions,
   onOpen,
+  onLongPress,
 }: {
   sessions: SessionSummary[];
   onOpen: (session: SessionSummary) => void;
+  onLongPress?: (session: SessionSummary, anchorX: number, anchorY: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [page, setPage] = useState(1);
+
+  const onLongPressRef = useRef(onLongPress);
+  onLongPressRef.current = onLongPress;
+
+  const sessionMap = useMemo(
+    () => new Map(sessions.map((s) => [s.id, s])),
+    [sessions],
+  );
+
+  const guardRef = useRef(false);
+
+  const lpHandlers = useLongPress(
+    useCallback(
+      (e: TouchEvent | PointerEvent) => {
+        const el = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+          "[data-session-id]",
+        );
+        if (!el) return;
+        const session = sessionMap.get(el.dataset.sessionId ?? "");
+        if (!session) return;
+        guardRef.current = true;
+        const touchPoint = "touches" in e
+          ? (e.touches[0] ?? e.changedTouches[0])
+          : undefined;
+        const x = touchPoint?.clientX ?? ("clientX" in e ? e.clientX : 0);
+        const y = touchPoint?.clientY ?? ("clientY" in e ? e.clientY : 0);
+        onLongPressRef.current?.(session, x, y);
+      },
+      [sessionMap],
+    ),
+    { delay: 500, moveThreshold: 10 },
+  );
+
+  const handleCardClick = useCallback(
+    (session: SessionSummary) => {
+      if (guardRef.current) {
+        guardRef.current = false;
+        return;
+      }
+      onOpen(session);
+    },
+    [onOpen],
+  );
 
   const canCollapse = sessions.length > COLLAPSED_ROWS;
   const showPager = expanded && canCollapse;
@@ -88,13 +139,15 @@ function CompactCardList({
               className={s.compactCard}
               role="button"
               tabIndex={0}
-              onClick={() => onOpen(sess)}
+              data-session-id={sess.id}
+              onClick={() => handleCardClick(sess)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   onOpen(sess);
                 }
               }}
+              {...(onLongPress ? lpHandlers : {})}
             >
               <span className={s.compactTitle}>
                 {sessionDisplayTitle(sess)}
@@ -285,7 +338,7 @@ function DesktopTable({
 
 // ── Exported entry point ──
 
-export function RecentTable({ sessions, onOpen, compact }: RecentTableProps) {
+export function RecentTable({ sessions, onOpen, compact, onLongPress }: RecentTableProps) {
   if (sessions.length === 0) {
     return (
       <div className={s.wrap}>
@@ -295,7 +348,7 @@ export function RecentTable({ sessions, onOpen, compact }: RecentTableProps) {
   }
 
   if (compact) {
-    return <CompactCardList sessions={sessions} onOpen={onOpen} />;
+    return <CompactCardList sessions={sessions} onOpen={onOpen} onLongPress={onLongPress} />;
   }
 
   return <DesktopTable sessions={sessions} onOpen={onOpen} />;

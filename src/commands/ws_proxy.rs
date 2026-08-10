@@ -86,6 +86,23 @@ fn shutdown_active(state: &State<'_, AppState>) -> Result<(), AppError> {
     Ok(())
 }
 
+fn activate_other_remote_target(state: &AppState) -> Option<(String, String, bool)> {
+    let mut inner = state.inner.lock().ok()?;
+    inner.activate_other_remote_target()
+}
+
+fn emit_remote_failover(app: &tauri::AppHandle, from_url: &str, to_url: &str, using_backup: bool) {
+    let _ = app.emit(
+        "connection-failover",
+        serde_json::json!({
+            "fromUrl": from_url,
+            "toUrl": to_url,
+            "activeRemote": if using_backup { "backup" } else { "primary" },
+            "failoverActive": using_backup,
+        }),
+    );
+}
+
 pub type GatewayWebSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Open the currently configured Core gateway with the desktop-owned auth.
@@ -142,16 +159,30 @@ pub async fn connect_gateway_stream(
         }
         crate::state::DashboardAuth::Token(token) => {
             let token = token.clone();
-            match tokio_tungstenite::connect_async(build_gateway_url(
-                &api_base_url,
-                token.as_deref(),
-            ))
-            .await
-            {
+            let first_url = build_gateway_url(&api_base_url, token.as_deref());
+            match tokio_tungstenite::connect_async(first_url).await {
                 Ok((ws, _resp)) => Ok(ws),
-                // Remote tokens are static; scraping the remote's HTML for a
-                // fresh one would just hammer it with a doomed retry.
-                Err(first_err) if is_remote => Err(AppError::GatewayWs(first_err.to_string())),
+                // Remote tokens are static; when the first endpoint is
+                // unreachable, try the other configured endpoint exactly once.
+                Err(first_err) if is_remote => {
+                    if let Some((from_url, to_url, using_backup)) =
+                        activate_other_remote_target(state)
+                    {
+                        emit_remote_failover(app, &from_url, &to_url, using_backup);
+                        let (retry_url, retry_token) = {
+                            let inner = state.inner.lock()?;
+                            (inner.api_base_url.clone(), inner.session_token.clone())
+                        };
+                        return tokio_tungstenite::connect_async(build_gateway_url(
+                            &retry_url,
+                            retry_token.as_deref(),
+                        ))
+                        .await
+                        .map(|(ws, _)| ws)
+                        .map_err(|e| AppError::GatewayWs(e.to_string()));
+                    }
+                    Err(AppError::GatewayWs(first_err.to_string()))
+                }
                 Err(first_err) => {
                     // Token may have rotated (dashboard restarted). Refresh once.
                     match fetch_session_token(&api_base_url).await {

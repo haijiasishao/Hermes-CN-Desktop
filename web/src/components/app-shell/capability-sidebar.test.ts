@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CAPABILITY_SECTIONS } from "./capability-sidebar";
+import { CAPABILITY_SECTIONS, getVisibleConfigItems } from "./capability-sidebar";
 import { GATEWAY_SECTIONS } from "./gateway-sidebar";
 import { EXTERNAL_MEMORY_ITEMS } from "./external-memory-sidebar";
 import { TOP_TABS } from "./use-active-top-tab";
@@ -42,4 +42,16 @@ describe("configuration navigation", () => {
       ["Hindsight", "/hindsight"],
     ]);
   });
+
+  it("hides console from config sidebar in Android Remote mode", () => {
+    const desktop = getVisibleConfigItems(false);
+    const android = getVisibleConfigItems(true);
+
+    expect(desktop.some((item) => item.path === "/console")).toBe(true);
+    expect(android.some((item) => item.path === "/console")).toBe(false);
+    // Other items remain visible
+    expect(android.some((item) => item.path === "/models")).toBe(true);
+    expect(android.some((item) => item.path === "/mcp")).toBe(true);
+  });
+
 });

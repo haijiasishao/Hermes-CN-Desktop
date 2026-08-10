@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useActiveProfileName } from "@/hooks/use-profiles";
+import { runtime } from "@/lib/runtime";
 import { prefetchSoul } from "@/hooks/use-soul";
 import s from "./debug-sidebar.module.css";
 
@@ -54,6 +55,11 @@ export const CONFIG_ITEMS: readonly CapabilityItem[] = [
   },
 ];
 
+export function getVisibleConfigItems(androidRemoteOnly: boolean): readonly CapabilityItem[] {
+  if (!androidRemoteOnly) return CONFIG_ITEMS;
+  return CONFIG_ITEMS.filter((item) => item.path !== "/console");
+}
+
 export const BACKUP_ITEMS: readonly CapabilityItem[] = [
   { label: "备份恢复", path: "/backup", icon: Archive },
   { label: "配置迁移", path: "/config-migration", icon: Sparkles, shortcut: "/migration" },
@@ -67,7 +73,7 @@ export const CAPABILITY_SECTIONS: readonly {
   label: string;
   items: readonly CapabilityItem[];
 }[] = [
-  { label: "§021 · 配置", items: CONFIG_ITEMS },
+  { label: "§021 · 配置", items: getVisibleConfigItems(runtime.androidRemoteOnly) },
   { label: "§022 · 自动化", items: AUTOMATION_ITEMS },
   { label: "§023 · 备份与恢复", items: BACKUP_ITEMS },
 ];

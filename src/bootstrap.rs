@@ -23,7 +23,7 @@ use crate::environment;
 use crate::error::AppError;
 #[cfg(feature = "desktop")]
 use crate::process::{dashboard, runtime};
-use crate::state::{AppState, DashboardHandle};
+use crate::state::{AppState, DashboardHandle, FailoverState, RemoteEndpoint};
 
 /// Emit a "runtime-status" event for the frontend overlay to consume.
 /// Phases (in order along the happy path):
@@ -333,6 +333,29 @@ pub async fn finalize_bootstrap(
         (hermes_home, hermes_home_base, profile)
     };
 
+    let failover = if mode == ConnectionMode::Remote
+        && !crate::connection::env_override_active()
+        && session_token.is_some()
+    {
+        let saved = crate::connection::read_config();
+        saved.remote_backup_url.map(|base_url| FailoverState {
+            primary: RemoteEndpoint {
+                base_url: handle.api_base_url.clone(),
+                session_token: session_token.clone().unwrap_or_default(),
+            },
+            backup: Some(RemoteEndpoint {
+                base_url,
+                session_token: saved
+                    .remote_backup_token
+                    .or(saved.remote_token)
+                    .unwrap_or_else(|| session_token.clone().unwrap_or_default()),
+            }),
+            using_backup: false,
+        })
+    } else {
+        None
+    };
+
     {
         let state = app.state::<AppState>();
         let mut inner = state.inner.lock().unwrap();
@@ -350,6 +373,7 @@ pub async fn finalize_bootstrap(
         };
         inner.connection_mode = mode;
         inner.oauth_session = oauth_session;
+        inner.failover = failover;
         inner.dashboard_handle = Some(handle);
     }
 

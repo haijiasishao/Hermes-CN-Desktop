@@ -35,7 +35,6 @@ const androidUnsupportedCommands = new Set([
   "config_migration_scan",
   "create_workspace_project",
   "desktop_check_update",
-  "desktop_notify",
   "environment_check",
   "get_yolo_mode",
   "git_branch_list",

@@ -82,7 +82,8 @@ describe("RecentTable", () => {
     );
 
     expect(html).not.toContain("gpt-4o");
-    expect(html).not.toContain("def456");
+    // Full ID is in data-session-id but not rendered as a visible column
+    expect(html).not.toContain('data-label="ID"');
   });
 
   it("shows source label (not raw key) in compact mode", () => {
@@ -149,4 +150,41 @@ it("keeps error/interrupted precedence over active state in compact mode", () =>
   // time area still shows active state
   expect(html).toContain("进行中");
   expect(html).not.toContain("已完成");
+});
+
+describe("RecentTable compact onLongPress wiring", () => {
+  it("renders data-session-id on each compact card", () => {
+    const sessions = [makeSession({ id: "sess-aaa-111" }), makeSession({ id: "sess-bbb-222" })];
+    const html = ReactDOMServer.renderToStaticMarkup(
+      <RecentTable sessions={sessions} onOpen={() => {}} compact onLongPress={() => {}} />,
+    );
+    expect(html).toContain('data-session-id="sess-aaa-111"');
+    expect(html).toContain('data-session-id="sess-bbb-222"');
+  });
+
+  it("does not render data-session-id in desktop (non-compact) mode", () => {
+    const sessions = [makeSession({ id: "sess-aaa-111" })];
+    const html = ReactDOMServer.renderToStaticMarkup(
+      <RecentTable sessions={sessions} onOpen={() => {}} />,
+    );
+    expect(html).not.toContain("data-session-id");
+  });
+
+  it("renders without error when onLongPress is omitted in compact mode", () => {
+    const sessions = [makeSession()];
+    const html = ReactDOMServer.renderToStaticMarkup(
+      <RecentTable sessions={sessions} onOpen={() => {}} compact />,
+    );
+    expect(html).toContain("测试会话标题");
+    // data-session-id is still present (for keyboard a11y etc.)
+    expect(html).toContain("data-session-id");
+  });
+
+  it("renders data-session-id even without onLongPress in compact mode", () => {
+    const sessions = [makeSession({ id: "card-only" })];
+    const html = ReactDOMServer.renderToStaticMarkup(
+      <RecentTable sessions={[sessions[0]]} onOpen={() => {}} compact />,
+    );
+    expect(html).toContain('data-session-id="card-only"');
+  });
 });

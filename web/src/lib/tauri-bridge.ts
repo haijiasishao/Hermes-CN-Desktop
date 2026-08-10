@@ -701,7 +701,6 @@ const ANDROID_REMOTE_UNSUPPORTED_BRIDGE_METHODS = [
   "imOnboardingBegin",
   "imOnboardingPoll",
   "imOnboardingApply",
-  "desktopNotify",
   "terminalStart",
   "terminalOpenExternal",
   "terminalWrite",

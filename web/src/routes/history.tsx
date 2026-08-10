@@ -66,6 +66,7 @@ import {
   SessionExportErrorModal,
   SessionRenameModal,
   SessionRowMenu,
+  useSessionRowActions,
 } from "@/components/session-actions";
 import { TopBar, TopBarActionButton } from "@/components/top-bar/top-bar";
 import s from "./history.module.css";
@@ -303,10 +304,21 @@ function AndroidHistoryRoute() {
   const runtimeBySession = useAtomValue(chatRuntimeBySessionAtom);
   const { data, isLoading, error, refetch } = useSessions();
   const [sessionTitleOverrides, setSessionTitleOverrides] = useState(readSessionTitleOverrides);
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => readPinnedSessionIds());
+  const activeProfile = useActiveProfileName();
+  const gateway = useGateway();
+  const deleteSessions = useDeleteSessions();
+  const archiveSession = useArchiveSession();
+  const sessionBranch = useSessionBranch();
+
+  // Long-press action state
+  const [actionSession, setActionSession] = useState<SessionSummary | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     return subscribeSessionUiStateChanges(() => {
       setSessionTitleOverrides(readSessionTitleOverrides());
+      setPinnedIds(readPinnedSessionIds());
     });
   }, []);
 
@@ -326,6 +338,44 @@ function AndroidHistoryRoute() {
     setActiveId(sess.id);
     navigate(`/tasks/${sess.id}`);
   };
+
+  // ── Session row actions (reuse hook) ──
+
+  const actions = useSessionRowActions({
+    deleteSessions: useCallback(
+      async (ids: string[]) => {
+        await deleteSessions.mutateAsync(ids);
+        return { succeededIds: ids };
+      },
+      [deleteSessions],
+    ),
+    isDeleting: deleteSessions.isPending,
+    setSessionTitle: gateway.setSessionTitle,
+    resumeSession: gateway.resumeSession,
+    archive: useCallback(
+      (id: string) => archiveSession.mutate(id),
+      [archiveSession],
+    ),
+    profile: activeProfile,
+    onDeleted: useCallback(() => {
+      setActionSession(null);
+    }, []),
+  });
+
+  // ── Long-press handler ──
+
+  const handleLongPress = useCallback(
+    (session: SessionSummary, anchorX: number, anchorY: number) => {
+      setActionSession(session);
+      setMenuAnchor({ x: anchorX, y: anchorY });
+    },
+    [],
+  );
+
+  const menuDisabled =
+    !!actionSession &&
+    (actions.isDeleting ||
+      sessionBranch.branchingSessionId === actionSession.id);
 
   return (
     <main className={s.androidPage}>
@@ -351,11 +401,76 @@ function AndroidHistoryRoute() {
           </div>
         ) : (
           <>
-            <div className={s.androidSectionHint}>最近会话 · 点击会话查看完整记录</div>
-            <RecentTable compact sessions={sessions} onOpen={goSession} />
+            <div className={s.androidSectionHint}>最近会话 · 长按会话打开操作菜单</div>
+            <RecentTable compact sessions={sessions} onOpen={goSession} onLongPress={handleLongPress} />
           </>
         )}
       </div>
+
+      {/* ── Long-press context menu ── */}
+      {actionSession && menuAnchor && (
+        <Popover.Root
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setActionSession(null);
+              setMenuAnchor(null);
+            }
+          }}
+        >
+          <Popover.Trigger asChild>
+            <span
+              aria-hidden
+              style={{
+                position: "fixed",
+                left: menuAnchor.x,
+                top: menuAnchor.y,
+                width: 1,
+                height: 1,
+              }}
+            />
+          </Popover.Trigger>
+          <SessionRowMenu
+            pinned={pinnedIds.has(actionSession.id)}
+            disabled={menuDisabled}
+            archived={false}
+            onTogglePin={() => actions.togglePin(actionSession.id)}
+            onRename={() => actions.startRename(actionSession)}
+            onBranch={() => void sessionBranch.branchSession(actionSession)}
+            onExport={() => void actions.handleExport(actionSession)}
+            onArchive={() => actions.handleArchive(actionSession)}
+            onDelete={() => actions.openDeleteDialog([actionSession])}
+          />
+        </Popover.Root>
+      )}
+
+      {/* ── Action modals ── */}
+      {actions.renamingSession && (
+        <SessionRenameModal
+          value={actions.renameValue}
+          saving={actions.renameSaving}
+          error={actions.renameError}
+          onChange={actions.setRenameValue}
+          onClose={actions.closeRename}
+          onSubmit={actions.submitRename}
+        />
+      )}
+
+      {actions.deleteTargets && (
+        <SessionDeleteModal
+          sessions={actions.deleteTargets}
+          deleting={actions.isDeleting}
+          onClose={actions.closeDeleteDialog}
+          onConfirm={actions.confirmDelete}
+        />
+      )}
+
+      {sessionBranch.error && (
+        <SessionBranchErrorModal
+          error={sessionBranch.error}
+          onClose={sessionBranch.clearError}
+        />
+      )}
     </main>
   );
 }

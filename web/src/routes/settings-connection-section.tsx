@@ -61,8 +61,11 @@ export function ConnectionSection({
   const [loadError, setLoadError] = useState("");
   const mode: ConnectionMode = "remote";
   const [remoteUrl, setRemoteUrl] = useState("");
+  const [remoteBackupUrl, setRemoteBackupUrl] = useState("");
   // The saved token never round-trips; this holds only what the user types.
   const [tokenInput, setTokenInput] = useState("");
+  const [backupTokenInput, setBackupTokenInput] = useState("");
+  const [backupTokenDirty, setBackupTokenDirty] = useState(false);
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>("idle");
   const probeSeq = useRef(0);
   // OAuth gate state (populated when a remote probe reports auth_required).
@@ -85,11 +88,52 @@ export function ConnectionSection({
       .then((view) => {
         setConfig(view);
         setRemoteUrl(view.remoteUrl);
+        setRemoteBackupUrl(view.remoteBackupUrl ?? "");
+        setBackupTokenInput("");
+        setBackupTokenDirty(false);
       })
       .catch((error) => {
         setLoadError(error instanceof Error ? error.message : String(error));
       });
   }, [desktop, externalOnly]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const stop = await listen<{
+        activeRemote?: "primary" | "backup";
+        failoverActive?: boolean;
+        toUrl?: string;
+      }>("connection-failover", (event) => {
+        const payload = event.payload;
+        const activeRemote = payload.activeRemote ?? "backup";
+        setConfig((previous) =>
+          previous
+            ? {
+                ...previous,
+                activeRemote,
+                failoverActive: payload.failoverActive ?? activeRemote === "backup",
+              }
+            : previous,
+        );
+        setMessage({
+          tone: "ok",
+          text:
+            activeRemote === "backup"
+              ? `主连接不可用，已自动切换至备用地址${payload.toUrl ? `：${payload.toUrl}` : ""}`
+              : "备用连接不可用，已回试主地址",
+        });
+      });
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [desktop]);
 
   const envOverride = config?.envOverride ?? false;
   const busy = saving || applying;
@@ -230,7 +274,8 @@ export function ConnectionSection({
   const remoteReady = gated
     ? Boolean(identity) // oauth: must be logged in
     : Boolean(trimmedRemoteUrl && (tokenInput.trim() || config?.remoteTokenSet));
-  const canSubmit = remoteReady;
+  const backupBlockedByOauth = gated && Boolean(remoteBackupUrl.trim());
+  const canSubmit = remoteReady && !backupBlockedByOauth;
   const identityLabel = identity
     ? identity.displayName || identity.email || identity.userId || "已登录"
     : null;
@@ -245,6 +290,8 @@ export function ConnectionSection({
         remoteUrl: trimmedRemoteUrl,
         remoteToken: !gated ? tokenInput || undefined : undefined,
         remoteAuthMode: gated ? "oauth" : "token",
+        remoteBackupUrl: remoteBackupUrl.trim(),
+        remoteBackupToken: backupTokenDirty ? backupTokenInput : undefined,
       });
       setMessage(testResultSummary(result));
     } catch (error) {
@@ -258,7 +305,11 @@ export function ConnectionSection({
     if (!canSubmit) {
       setMessage({
         tone: "error",
-        text: gated ? "请先完成远程登录" : "请先填写远程地址和会话令牌",
+        text: backupBlockedByOauth
+          ? "OAuth 模式暂不支持主备自动切换，请清空备用地址后再保存"
+          : gated
+            ? "请先完成远程登录"
+            : "请先填写远程地址和会话令牌",
       });
       return;
     }
@@ -271,11 +322,17 @@ export function ConnectionSection({
         remoteUrl: trimmedRemoteUrl,
         remoteToken: !gated ? tokenInput || undefined : undefined,
         remoteAuthMode: gated ? ("oauth" as const) : ("token" as const),
+        remoteBackupUrl: remoteBackupUrl.trim(),
+        remoteBackupToken: backupTokenDirty ? backupTokenInput : undefined,
       };
       if (apply) {
         const result = await desktop!.applyConnectionConfig!(payload);
         if (result.ok) {
-          setMessage({ tone: "ok", text: "已切换，正在重新加载界面…" });
+          const appliedToBackup = Boolean(result.apiBaseUrl && result.apiBaseUrl !== trimmedRemoteUrl);
+          setMessage({
+            tone: "ok",
+            text: appliedToBackup ? "主地址不可用，已切换至备用地址并连接" : "已切换，正在重新加载界面…",
+          });
           if (onApplied) {
             await onApplied(mode);
             return;
@@ -287,7 +344,10 @@ export function ConnectionSection({
       } else {
         const view = await desktop!.saveConnectionConfig!(payload);
         setConfig(view);
+        setRemoteBackupUrl(view.remoteBackupUrl ?? "");
         setTokenInput("");
+        setBackupTokenInput("");
+        setBackupTokenDirty(false);
         setMessage({ tone: "ok", text: "已保存，下次启动应用时生效" });
       }
     } catch (error) {
@@ -409,6 +469,13 @@ export function ConnectionSection({
       )}
 
       <>
+          {config?.remoteBackupConfigured && (
+            <Alert className={s.connResult} tone={config.failoverActive ? "ok" : "info"} size="sm">
+              {config.failoverActive
+                ? `主地址不可用，当前已自动切换至备用地址：${config.remoteBackupUrl}`
+                : `已配置备用地址：${config.remoteBackupUrl}；主连接失败时将自动切换`}
+            </Alert>
+          )}
           <div className={`${s.row} ${s.connRow}`}>
             <div className={s.rowLeft}>
               <div className={s.rowLabel}>远程地址</div>
@@ -539,6 +606,53 @@ export function ConnectionSection({
                     )}
                   </>
                 )}
+              </div>
+            </div>
+          )}
+
+          <div className={`${s.row} ${s.connRow}`}>
+            <div className={s.rowLeft}>
+              <div className={s.rowLabel}>备用远程地址</div>
+              <div className={s.rowSub}>
+                可选。主地址连接失败时自动切换到同一远程 Hermes；留空表示不启用主备。
+                {gated && " OAuth 模式暂不支持主备，请清空此项。"}
+              </div>
+            </div>
+            <div className={s.rowRight}>
+              <Input
+                mono
+                className={s.connControl}
+                value={remoteBackupUrl}
+                placeholder="https://backup.example.com/hermes"
+                disabled={disabled}
+                onChange={(e) => setRemoteBackupUrl(e.target.value)}
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
+          {!gated && (
+            <div className={`${s.row} ${s.connRow}`}>
+              <div className={s.rowLeft}>
+                <div className={s.rowLabel}>备用会话令牌</div>
+                <div className={s.rowSub}>
+                  可选。留空表示复用主令牌；已保存的备用令牌留空不改，清空后保存即可恢复复用主令牌。
+                </div>
+              </div>
+              <div className={s.rowRight}>
+                <Input
+                  type="password"
+                  className={s.connControl}
+                  value={backupTokenInput}
+                  placeholder={config?.remoteBackupTokenSet ? "已保存，留空保持不变" : "留空复用主令牌"}
+                  disabled={disabled}
+                  onChange={(e) => {
+                    setBackupTokenInput(e.target.value);
+                    setBackupTokenDirty(true);
+                  }}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
               </div>
             </div>
           )}

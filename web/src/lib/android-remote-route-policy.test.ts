@@ -31,4 +31,13 @@ describe("Android Remote route policy", () => {
     expect(getAndroidRemoteRouteRedirect("/common", true)).toBeNull();
     expect(getAndroidRemoteRouteRedirect("/connection", true)).toBeNull();
   });
+
+  it("redirects /console to /health on Android Remote", () => {
+    expect(getAndroidRemoteRouteRedirect("/console", true)).toBe("/health");
+  });
+
+  it("does not redirect /console on desktop shells", () => {
+    expect(getAndroidRemoteRouteRedirect("/console", false)).toBeNull();
+  });
+
 });

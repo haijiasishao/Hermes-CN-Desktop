@@ -6,6 +6,7 @@ const ANDROID_REMOTE_ROUTE_REDIRECTS: Readonly<Record<string, string>> = {
   "/kernel": "/health",
   "/env": "/health",
   "/about": "/health",
+  "/console": "/health",
   "/advanced/kernel": "/health",
   "/advanced/env": "/health",
   "/advanced/about": "/health",

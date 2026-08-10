@@ -198,6 +198,33 @@ impl Drop for DashboardHandle {
     }
 }
 
+/// Token-authenticated remote endpoint used by the client-side failover
+/// state. The token is kept in native state and is never serialized to the
+/// renderer.
+#[derive(Clone)]
+pub struct RemoteEndpoint {
+    pub base_url: String,
+    pub session_token: String,
+}
+
+/// Runtime state for a primary/backup pair. Both endpoints are expected to
+/// address the same remote Hermes service (for example, two ingress paths).
+pub struct FailoverState {
+    pub primary: RemoteEndpoint,
+    pub backup: Option<RemoteEndpoint>,
+    pub using_backup: bool,
+}
+
+impl FailoverState {
+    fn alternate(&self) -> Option<RemoteEndpoint> {
+        if self.using_backup {
+            Some(self.primary.clone())
+        } else {
+            self.backup.clone()
+        }
+    }
+}
+
 /// Interior mutable state shared across all Tauri commands.
 pub struct AppStateInner {
     pub api_base_url: String,
@@ -237,6 +264,9 @@ pub struct AppStateInner {
     /// Debounce marker for `connection-auth-expired` emits (a burst of 401s
     /// must not storm the UI with re-login banners).
     pub last_auth_expired_emit: Option<std::time::Instant>,
+    /// Token-mode primary/backup runtime state. `None` for managed, local, or
+    /// OAuth connections.
+    pub failover: Option<FailoverState>,
 }
 
 /// A snapshot of how the currently-connected dashboard authenticates, taken
@@ -256,6 +286,34 @@ impl AppStateInner {
             Some(session) => DashboardAuth::Oauth(session.clone()),
             None => DashboardAuth::Token(self.session_token.clone()),
         }
+    }
+
+    /// Switch the active remote endpoint to the other side of the configured
+    /// pair. Returns `(from_url, to_url, using_backup)` when a switch occurred.
+    /// This only changes attach metadata; it never stops a remote process.
+    pub fn activate_other_remote_target(&mut self) -> Option<(String, String, bool)> {
+        if self.connection_mode != crate::connection::ConnectionMode::Remote {
+            return None;
+        }
+        let failover = self.failover.as_mut()?;
+        let target = failover.alternate()?;
+        if target.base_url == self.api_base_url {
+            return None;
+        }
+        let from_url = self.api_base_url.clone();
+        let using_backup = !failover.using_backup;
+        failover.using_backup = using_backup;
+
+        self.api_base_url = target.base_url.clone();
+        self.gateway_url =
+            crate::android_compat::build_gateway_url(&target.base_url, Some(&target.session_token));
+        self.session_token = Some(target.session_token.clone());
+        self.oauth_session = None;
+        self.dashboard_handle = Some(DashboardHandle::remote(
+            target.base_url.clone(),
+            target.session_token,
+        ));
+        Some((from_url, self.api_base_url.clone(), using_backup))
     }
 }
 
@@ -287,6 +345,7 @@ impl AppState {
                 },
                 oauth_session: None,
                 last_auth_expired_emit: None,
+                failover: None,
             }),
         }
     }

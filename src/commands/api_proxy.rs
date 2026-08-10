@@ -668,14 +668,46 @@ pub async fn api_request_from_state(
         crate::state::DashboardAuth::Token(t) => t.clone(),
         crate::state::DashboardAuth::Oauth(_) => None,
     };
-    let first = api_request_impl_with_home_base(
+    let first_result = api_request_impl_with_home_base(
         input.clone(),
         &api_base_url,
         session_token.as_deref(),
         &hermes_home,
         &hermes_home_base,
     )
-    .await?;
+    .await;
+    let first = match first_result {
+        Ok(result) => result,
+        Err(first_error) if mode == crate::connection::ConnectionMode::Remote => {
+            if let Some((from_url, to_url, using_backup)) = activate_other_remote_target(app, state)
+            {
+                emit_remote_failover(app, &from_url, &to_url, using_backup);
+                let (retry_url, retry_token) = {
+                    let inner = state.inner.lock()?;
+                    (inner.api_base_url.clone(), inner.session_token.clone())
+                };
+                match api_request_impl_with_home_base(
+                    input,
+                    &retry_url,
+                    retry_token.as_deref(),
+                    &hermes_home,
+                    &hermes_home_base,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        if should_emit_auth_expired(result.status, &result.body) {
+                            emit_auth_expired(app, state, &retry_url, &result.body);
+                        }
+                        return Ok(result);
+                    }
+                    Err(second_error) => return Err(second_error),
+                }
+            }
+            return Err(first_error);
+        }
+        Err(error) => return Err(error),
+    };
     if should_emit_auth_expired(first.status, &first.body) {
         emit_auth_expired(app, state, &api_base_url, &first.body);
     }
@@ -717,6 +749,34 @@ pub async fn api_request_from_state(
         &hermes_home_base,
     )
     .await
+}
+
+fn activate_other_remote_target(
+    _app: &tauri::AppHandle,
+    state: &AppState,
+) -> Option<(String, String, bool)> {
+    let mut inner = state.inner.lock().ok()?;
+    inner.activate_other_remote_target()
+}
+
+fn emit_remote_failover(app: &tauri::AppHandle, from_url: &str, to_url: &str, using_backup: bool) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "connection-failover",
+        serde_json::json!({
+            "fromUrl": from_url,
+            "toUrl": to_url,
+            "activeRemote": if using_backup { "backup" } else { "primary" },
+            "failoverActive": using_backup,
+        }),
+    );
+}
+
+fn is_transport_error(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::DashboardUnreachable(_) | AppError::ProxyError(_)
+    )
 }
 
 /// The main API proxy command. Handles local route intercepts and proxies
@@ -1144,17 +1204,41 @@ pub async fn upload_file_impl(
 /// The file data arrives as a base64-encoded string from the frontend.
 #[tauri::command]
 pub async fn upload_file(
+    app: tauri::AppHandle,
     input: UploadFileInput,
     state: State<'_, AppState>,
 ) -> Result<ApiRequestResult, AppError> {
-    let (api_base_url, session_token) = {
+    let (api_base_url, session_token, mode) = {
         let inner = state.inner.lock()?;
-        (inner.api_base_url.clone(), inner.session_token.clone())
+        (
+            inner.api_base_url.clone(),
+            inner.session_token.clone(),
+            inner.connection_mode,
+        )
     };
-    upload_file_impl(input, &api_base_url, session_token.as_deref()).await
+    let first = upload_file_impl(input.clone(), &api_base_url, session_token.as_deref()).await;
+    match first {
+        Ok(result) => Ok(result),
+        Err(error)
+            if mode == crate::connection::ConnectionMode::Remote && is_transport_error(&error) =>
+        {
+            if let Some((from_url, to_url, using_backup)) =
+                activate_other_remote_target(&app, &state)
+            {
+                emit_remote_failover(&app, &from_url, &to_url, using_backup);
+                let (retry_url, retry_token) = {
+                    let inner = state.inner.lock()?;
+                    (inner.api_base_url.clone(), inner.session_token.clone())
+                };
+                return upload_file_impl(input, &retry_url, retry_token.as_deref()).await;
+            }
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadFileInput {
     pub session_id: String,
@@ -1325,12 +1409,17 @@ pub async fn download_file_impl(
 /// Called from the frontend via `invoke("download_file", { input })`.
 #[tauri::command]
 pub async fn download_file(
+    app: tauri::AppHandle,
     input: DownloadFileInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<DownloadFileResult, AppError> {
-    let (api_base_url, auth) = {
+    let (api_base_url, auth, mode) = {
         let inner = state.inner.lock()?;
-        (inner.api_base_url.clone(), inner.dashboard_auth())
+        (
+            inner.api_base_url.clone(),
+            inner.dashboard_auth(),
+            inner.connection_mode,
+        )
     };
 
     if api_base_url.is_empty() {
@@ -1346,7 +1435,29 @@ pub async fn download_file(
             Ok(result)
         }
         crate::state::DashboardAuth::Token(token) => {
-            download_file_impl(input, &api_base_url, token.as_deref(), None).await
+            let first =
+                download_file_impl(input.clone(), &api_base_url, token.as_deref(), None).await;
+            match first {
+                Ok(result) => Ok(result),
+                Err(error)
+                    if mode == crate::connection::ConnectionMode::Remote
+                        && is_transport_error(&error) =>
+                {
+                    if let Some((from_url, to_url, using_backup)) =
+                        activate_other_remote_target(&app, &state)
+                    {
+                        emit_remote_failover(&app, &from_url, &to_url, using_backup);
+                        let (retry_url, retry_token) = {
+                            let inner = state.inner.lock()?;
+                            (inner.api_base_url.clone(), inner.session_token.clone())
+                        };
+                        return download_file_impl(input, &retry_url, retry_token.as_deref(), None)
+                            .await;
+                    }
+                    Err(error)
+                }
+                Err(error) => Err(error),
+            }
         }
     }
 }

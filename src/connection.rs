@@ -158,6 +158,10 @@ pub struct RemoteBackend {
     pub base_url: String,
     pub auth: RemoteAuth,
     pub source: RemoteSource,
+    /// Optional backup base URL for failover (token mode only).
+    pub backup_base_url: Option<String>,
+    /// Optional backup token; None means reuse the primary auth token.
+    pub backup_token: Option<String>,
 }
 
 impl RemoteBackend {
@@ -181,6 +185,10 @@ pub struct ConnectionConfig {
     pub remote_auth_mode: RemoteAuthMode,
     /// Persisted OAuth session cookies (oauth mode only).
     pub remote_session: Option<Vec<PersistedCookie>>,
+    /// Optional backup remote URL for primary/backup failover (token mode only).
+    pub remote_backup_url: Option<String>,
+    /// Optional backup session token; `None` means reuse `remote_token`.
+    pub remote_backup_token: Option<String>,
 }
 
 /// Renderer-facing config: presence/preview signals only, never the token.
@@ -195,6 +203,19 @@ pub struct SanitizedConnectionConfig {
     pub remote_auth_mode: String,
     pub remote_session_set: bool,
     pub env_override: bool,
+    /// Whether a backup remote URL is configured.
+    pub remote_backup_configured: bool,
+    /// Normalized backup URL (empty when not configured).
+    pub remote_backup_url: String,
+    /// Whether a backup token is saved (distinct from the primary token).
+    pub remote_backup_token_set: bool,
+    /// Preview of the backup token (presence/last-6-chars only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_backup_token_preview: Option<String>,
+    /// Which remote is currently active: "primary" or "backup".
+    pub active_remote: String,
+    /// Whether failover to backup has occurred.
+    pub failover_active: bool,
 }
 
 // --- File schema ------------------------------------------------------------
@@ -225,6 +246,12 @@ struct RemoteFileEntry {
     /// Persisted OAuth cookie session (oauth mode only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<SessionFileEntry>,
+    /// Optional backup remote URL for primary/backup failover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_url: Option<String>,
+    /// Optional backup session token; absent means reuse the primary token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_token: Option<TokenFileEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -309,6 +336,20 @@ fn read_config_from(path: &PathBuf) -> ConnectionConfig {
         .filter(|s| s.encoding == "plain")
         .map(|s| s.cookies.clone());
 
+    let remote_backup_url = file
+        .remote
+        .as_ref()
+        .and_then(|r| r.backup_url.as_ref())
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    let remote_backup_token = file
+        .remote
+        .as_ref()
+        .and_then(|r| r.backup_token.as_ref())
+        .filter(|t| t.encoding == "plain")
+        .map(|t| t.value.clone())
+        .filter(|v| !v.is_empty());
+
     ConnectionConfig {
         mode,
         local_url,
@@ -316,12 +357,15 @@ fn read_config_from(path: &PathBuf) -> ConnectionConfig {
         remote_token,
         remote_auth_mode,
         remote_session,
+        remote_backup_url,
+        remote_backup_token,
     }
 }
 
 /// Persist the connection config atomically (temp file + rename) with 0600
 /// permissions on Unix — the file may hold a session token in plaintext.
 pub fn write_config(config: &ConnectionConfig) -> AppResult<()> {
+    validate_connection_config(config)?;
     write_config_to(&config_path(), config)
 }
 
@@ -348,6 +392,14 @@ fn write_config_to(path: &PathBuf, config: &ConnectionConfig) -> AppResult<()> {
                     encoding: "plain".to_string(),
                     saved_at_ms: Some(now_ms()),
                     cookies: cookies.clone(),
+                }),
+            backup_url: config.remote_backup_url.clone(),
+            backup_token: config
+                .remote_backup_token
+                .as_ref()
+                .map(|value| TokenFileEntry {
+                    encoding: "plain".to_string(),
+                    value: value.clone(),
                 }),
         }),
     };
@@ -397,6 +449,42 @@ pub fn normalize_remote_base_url(raw: &str) -> AppResult<String> {
     parsed.set_path(&trimmed_path);
 
     Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
+/// Validate a backup configuration: backup URL must not equal primary URL,
+/// and OAuth mode is not supported with backup.
+pub fn validate_backup_config(
+    primary_url: Option<&str>,
+    backup_url: Option<&str>,
+    auth_mode: RemoteAuthMode,
+) -> AppResult<()> {
+    if backup_url.is_none() {
+        return Ok(());
+    }
+    if auth_mode == RemoteAuthMode::Oauth {
+        return Err(AppError::InvalidRequest(
+            "当前主备自动切换仅支持 token 模式，OAuth 模式暂不支持备用地址".to_string(),
+        ));
+    }
+    if let (Some(primary), Some(backup)) = (primary_url, backup_url) {
+        let norm_primary = normalize_remote_base_url(primary)?;
+        let norm_backup = normalize_remote_base_url(backup)?;
+        if norm_primary == norm_backup {
+            return Err(AppError::InvalidRequest(
+                "备用远程地址不能与主地址相同".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a full connection config including backup constraints.
+pub fn validate_connection_config(config: &ConnectionConfig) -> AppResult<()> {
+    validate_backup_config(
+        config.remote_url.as_deref(),
+        config.remote_backup_url.as_deref(),
+        config.remote_auth_mode,
+    )
 }
 
 fn normalize_base_url(raw: &str, empty_message: &str, invalid_prefix: &str) -> AppResult<url::Url> {
@@ -491,10 +579,13 @@ pub fn resolve_connection_backend() -> Result<ConnectionBackend, String> {
             .map_err(|e| format!("{} 无效: {}", ENV_REMOTE_URL, e))?;
         // Env override stays token-only by design (documented): OAuth sessions
         // are interactive and cannot be provisioned from a static env var.
+        // Env override never carries a backup (by design).
         return Ok(ConnectionBackend::Remote(RemoteBackend {
             base_url,
             auth: RemoteAuth::Token(token),
             source: RemoteSource::Env,
+            backup_base_url: None,
+            backup_token: None,
         }));
     }
 
@@ -538,11 +629,25 @@ pub fn resolve_connection_backend() -> Result<ConnectionBackend, String> {
                     RemoteAuth::Token(token)
                 }
             };
+            // Resolve backup URL/token (token mode only; OAuth backup is rejected at coerce time).
+            let (backup_base_url, backup_token) = match &auth {
+                RemoteAuth::Token(_) => {
+                    let backup_url = config
+                        .remote_backup_url
+                        .as_ref()
+                        .and_then(|u| normalize_remote_base_url(u).ok());
+                    (backup_url, config.remote_backup_token.clone())
+                }
+                RemoteAuth::Oauth(_) => (None, None),
+            };
+
             match normalize_remote_base_url(&raw_url) {
                 Ok(base_url) => Ok(ConnectionBackend::Remote(RemoteBackend {
                     base_url,
                     auth,
                     source: RemoteSource::Settings,
+                    backup_base_url,
+                    backup_token,
                 })),
                 Err(err) => {
                     log::warn!(
@@ -582,6 +687,12 @@ pub fn sanitize(config: &ConnectionConfig) -> SanitizedConnectionConfig {
             remote_auth_mode: RemoteAuthMode::Token.as_str().to_string(),
             remote_session_set: false,
             env_override,
+            remote_backup_configured: false,
+            remote_backup_url: String::new(),
+            remote_backup_token_set: false,
+            remote_backup_token_preview: None,
+            active_remote: "primary".to_string(),
+            failover_active: false,
         };
     }
 
@@ -601,6 +712,15 @@ pub fn sanitize(config: &ConnectionConfig) -> SanitizedConnectionConfig {
             .map(|c| !c.is_empty())
             .unwrap_or(false),
         env_override,
+        remote_backup_configured: config.remote_backup_url.is_some(),
+        remote_backup_url: config.remote_backup_url.clone().unwrap_or_default(),
+        remote_backup_token_set: config.remote_backup_token.is_some(),
+        remote_backup_token_preview: config
+            .remote_backup_token
+            .as_deref()
+            .and_then(token_preview),
+        active_remote: "primary".to_string(),
+        failover_active: false,
     }
 }
 
@@ -715,6 +835,8 @@ mod tests {
             remote_token: Some("tok-123".to_string()),
             remote_auth_mode: RemoteAuthMode::Token,
             remote_session: None,
+            remote_backup_url: None,
+            remote_backup_token: None,
         };
         write_config_to(&path, &config).unwrap();
         assert_eq!(read_config_from(&path), config);
@@ -801,6 +923,8 @@ mod tests {
                 value: "RT".to_string(),
                 expires_at_ms: Some(now_ms() + 86_400_000),
             }]),
+            remote_backup_url: None,
+            remote_backup_token: None,
         };
         write_config_to(&path, &config).unwrap();
         let read = read_config_from(&path);
@@ -854,6 +978,8 @@ mod tests {
                 remote_token: Some("secret".to_string()),
                 remote_auth_mode: RemoteAuthMode::Token,
                 remote_session: None,
+                remote_backup_url: None,
+                remote_backup_token: None,
             },
         )
         .unwrap();
@@ -910,6 +1036,8 @@ mod tests {
             remote_token: Some("supersecretvalue".to_string()),
             remote_auth_mode: RemoteAuthMode::Token,
             remote_session: None,
+            remote_backup_url: None,
+            remote_backup_token: None,
         };
         let sanitized = sanitize(&config);
         assert_eq!(sanitized.mode, "remote");
@@ -933,6 +1061,134 @@ mod tests {
         assert_eq!(sanitized.mode, "remote");
         assert_eq!(sanitized.remote_url, "http://env-host:9120");
         assert!(sanitized.remote_token_set);
+    }
+
+    // --- backup config tests ---
+
+    #[test]
+    fn read_old_file_without_backup_fields_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("connection.json");
+        fs::write(
+            &path,
+            r#"{ "version": 3, "mode": "remote",
+                 "remote": { "url": "http://primary:9119", "token": { "encoding": "plain", "value": "tok" } } }"#,
+        )
+        .unwrap();
+        let config = read_config_from(&path);
+        assert_eq!(config.mode, ConnectionMode::Remote);
+        assert_eq!(config.remote_url.as_deref(), Some("http://primary:9119"));
+        assert_eq!(config.remote_token.as_deref(), Some("tok"));
+        assert_eq!(config.remote_backup_url, None);
+        assert_eq!(config.remote_backup_token, None);
+    }
+
+    #[test]
+    fn backup_round_trip_preserves_fields() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("connection.json");
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: Some("primary-tok".to_string()),
+            remote_auth_mode: RemoteAuthMode::Token,
+            remote_session: None,
+            remote_backup_url: Some("http://backup:9120".to_string()),
+            remote_backup_token: Some("backup-tok".to_string()),
+        };
+        write_config_to(&path, &config).unwrap();
+        let loaded = read_config_from(&path);
+        assert_eq!(loaded.remote_url.as_deref(), Some("http://primary:9119"));
+        assert_eq!(loaded.remote_token.as_deref(), Some("primary-tok"));
+        assert_eq!(
+            loaded.remote_backup_url.as_deref(),
+            Some("http://backup:9120")
+        );
+        assert_eq!(loaded.remote_backup_token.as_deref(), Some("backup-tok"));
+    }
+
+    #[test]
+    fn backup_round_trip_no_backup_token() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("connection.json");
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: Some("primary-tok".to_string()),
+            remote_auth_mode: RemoteAuthMode::Token,
+            remote_session: None,
+            remote_backup_url: Some("http://backup:9120".to_string()),
+            remote_backup_token: None,
+        };
+        write_config_to(&path, &config).unwrap();
+        let loaded = read_config_from(&path);
+        assert_eq!(
+            loaded.remote_backup_url.as_deref(),
+            Some("http://backup:9120")
+        );
+        assert_eq!(loaded.remote_backup_token, None);
+    }
+
+    #[test]
+    fn validate_rejects_same_url() {
+        let result = validate_backup_config(
+            Some("http://same:9119"),
+            Some("http://same:9119/"),
+            RemoteAuthMode::Token,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("不能与主地址相同"));
+    }
+
+    #[test]
+    fn validate_rejects_oauth_with_backup() {
+        let result = validate_backup_config(
+            Some("http://primary:9119"),
+            Some("http://backup:9120"),
+            RemoteAuthMode::Oauth,
+        );
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("仅支持 token 模式"));
+    }
+
+    #[test]
+    fn validate_passes_no_backup() {
+        let result =
+            validate_backup_config(Some("http://primary:9119"), None, RemoteAuthMode::Oauth);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn sanitize_never_leaks_backup_token() {
+        clear_env();
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://h:1".to_string()),
+            remote_token: Some("supersecretvalue".to_string()),
+            remote_auth_mode: RemoteAuthMode::Token,
+            remote_session: None,
+            remote_backup_url: Some("http://b:2".to_string()),
+            remote_backup_token: Some("backupsecretvalue".to_string()),
+        };
+        let sanitized = sanitize(&config);
+        assert!(sanitized.remote_backup_configured);
+        assert_eq!(sanitized.remote_backup_url, "http://b:2");
+        assert!(sanitized.remote_backup_token_set);
+        assert_eq!(
+            sanitized.remote_backup_token_preview.as_deref(),
+            Some("...tvalue")
+        );
+        assert!(!sanitized.failover_active);
+        assert_eq!(sanitized.active_remote, "primary");
+        let json = serde_json::to_string(&sanitized).unwrap();
+        assert!(!json.contains("backupsecretvalue"));
+        assert!(!json.contains("supersecretvalue"));
     }
 
     #[test]

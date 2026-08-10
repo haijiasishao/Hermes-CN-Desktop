@@ -80,6 +80,16 @@ describe("command palette item building and filtering", () => {
     expect(desktopItems).toEqual(items);
   });
 
+
+  it("hides console command only in Android Remote mode", () => {
+    const items = buildCommandPaletteItems({});
+    const androidItems = getVisibleCommandPaletteItems(items, true);
+    const desktopItems = getVisibleCommandPaletteItems(items, false);
+
+    expect(androidItems.map((item) => item.id)).not.toContain("command-console");
+    expect(desktopItems.map((item) => item.id)).toContain("command-console");
+  });
+
   it("matches sessions by title, preview and id", () => {
     const items = buildCommandPaletteItems({
       sessions: [session("session-abc123", "修复登录问题", "检查 token 刷新")],

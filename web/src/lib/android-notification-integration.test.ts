@@ -38,6 +38,18 @@ describe("Android native notification integration", () => {
     expect(settings).toContain("Android 通知权限");
     expect(settings).toContain("notificationPermission");
   });
+
+  it("does not disable desktopNotify bridge method for Android Remote", () => {
+    const bridge = read("web/src/lib/tauri-bridge.ts");
+    // desktopNotify must NOT appear in the ANDROID_REMOTE_UNSUPPORTED_BRIDGE_METHODS list
+    // so that Android Remote-only builds can send native notifications.
+    const match = bridge.match(
+      /ANDROID_REMOTE_UNSUPPORTED_BRIDGE_METHODS\s*=\s*\[([\s\S]*?)\]\s*as\s*const/,
+    );
+    expect(match).not.toBeNull();
+    const unsupportedEntries = match![1];
+    expect(unsupportedEntries).not.toContain('"desktopNotify"');
+  });
 });
 
 describe("Android visible app name", () => {
