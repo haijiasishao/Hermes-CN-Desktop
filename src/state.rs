@@ -198,13 +198,17 @@ impl Drop for DashboardHandle {
     }
 }
 
-/// Token-authenticated remote endpoint used by the client-side failover
-/// state. The token is kept in native state and is never serialized to the
+/// Remote endpoint used by the client-side failover state. For token mode,
+/// `session_token` is the bearer token; for OAuth/password mode,
+/// `oauth_session` holds the cookie jar. Neither is ever serialized to the
 /// renderer.
 #[derive(Clone)]
 pub struct RemoteEndpoint {
     pub base_url: String,
+    /// Token for token-mode endpoints; empty string for OAuth/password mode.
     pub session_token: String,
+    /// OAuth/cookie session for OAuth/password-mode endpoints; None for token mode.
+    pub oauth_session: Option<std::sync::Arc<crate::oauth_session::OauthSession>>,
 }
 
 /// Runtime state for a primary/backup pair. Both endpoints are expected to
@@ -264,8 +268,8 @@ pub struct AppStateInner {
     /// Debounce marker for `connection-auth-expired` emits (a burst of 401s
     /// must not storm the UI with re-login banners).
     pub last_auth_expired_emit: Option<std::time::Instant>,
-    /// Token-mode primary/backup runtime state. `None` for managed, local, or
-    /// OAuth connections.
+    /// Primary/backup runtime state for remote connections (both token and
+    /// OAuth/password modes). `None` for managed or local connections.
     pub failover: Option<FailoverState>,
 }
 
@@ -305,14 +309,25 @@ impl AppStateInner {
         failover.using_backup = using_backup;
 
         self.api_base_url = target.base_url.clone();
-        self.gateway_url =
-            crate::android_compat::build_gateway_url(&target.base_url, Some(&target.session_token));
-        self.session_token = Some(target.session_token.clone());
-        self.oauth_session = None;
-        self.dashboard_handle = Some(DashboardHandle::remote(
-            target.base_url.clone(),
-            target.session_token,
-        ));
+        if let Some(oauth) = &target.oauth_session {
+            // OAuth/password mode: swap to the target's cookie session.
+            self.gateway_url = crate::android_compat::build_gateway_url(&target.base_url, None);
+            self.session_token = None;
+            self.oauth_session = Some(oauth.clone());
+            self.dashboard_handle = Some(DashboardHandle::remote_oauth(target.base_url.clone()));
+        } else {
+            // Token mode: swap to the target's bearer token.
+            self.gateway_url = crate::android_compat::build_gateway_url(
+                &target.base_url,
+                Some(&target.session_token),
+            );
+            self.session_token = Some(target.session_token.clone());
+            self.oauth_session = None;
+            self.dashboard_handle = Some(DashboardHandle::remote(
+                target.base_url.clone(),
+                target.session_token.clone(),
+            ));
+        }
         Some((from_url, self.api_base_url.clone(), using_backup))
     }
 }

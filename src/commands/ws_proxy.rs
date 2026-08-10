@@ -131,6 +131,11 @@ pub async fn connect_gateway_stream(
                 Err(err) => {
                     if let AppError::AuthSessionExpired(_) = &err {
                         emit_ws_auth_expired(app, &api_base_url);
+                        return Err(err);
+                    }
+                    // Non-auth mint error — try failover if Remote.
+                    if is_remote {
+                        return oauth_ws_connect_on_backup(app, state, err).await;
                     }
                     return Err(err);
                 }
@@ -138,22 +143,43 @@ pub async fn connect_gateway_stream(
             let url = build_gateway_ws_url_with_ticket(&api_base_url, &ticket);
             match tokio_tungstenite::connect_async(url).await {
                 Ok((ws, _)) => Ok(ws),
-                Err(_) => {
+                Err(first_err) => {
+                    // If the server explicitly rejected auth, surface it now.
+                    let mapped_first = map_ws_connect_error(first_err);
+                    if let AppError::AuthSessionExpired(_) = &mapped_first {
+                        emit_ws_auth_expired(app, &api_base_url);
+                        return Err(mapped_first);
+                    }
                     // Ticket may have expired (single-use, 30s); mint fresh once.
                     let ticket2 = match session.mint_ws_ticket().await {
                         Ok(t) => t,
                         Err(err) => {
                             if let AppError::AuthSessionExpired(_) = &err {
                                 emit_ws_auth_expired(app, &api_base_url);
+                                return Err(err);
+                            }
+                            if is_remote {
+                                return oauth_ws_connect_on_backup(app, state, err).await;
                             }
                             return Err(err);
                         }
                     };
                     let url2 = build_gateway_ws_url_with_ticket(&api_base_url, &ticket2);
-                    tokio_tungstenite::connect_async(url2)
-                        .await
-                        .map(|(ws, _)| ws)
-                        .map_err(map_ws_connect_error)
+                    match tokio_tungstenite::connect_async(url2).await {
+                        Ok((ws, _)) => Ok(ws),
+                        Err(second_err) => {
+                            let mapped = map_ws_connect_error(second_err);
+                            if let AppError::AuthSessionExpired(_) = &mapped {
+                                emit_ws_auth_expired(app, &api_base_url);
+                                return Err(mapped);
+                            }
+                            // Second failure — try failover if Remote.
+                            if is_remote {
+                                return oauth_ws_connect_on_backup(app, state, mapped).await;
+                            }
+                            Err(mapped)
+                        }
+                    }
                 }
             }
         }
@@ -384,6 +410,37 @@ fn emit_ws_auth_expired(app: &tauri::AppHandle, base_url: &str) {
         "connection-auth-expired",
         serde_json::json!({ "baseUrl": base_url, "reason": "session_expired", "loginUrl": null }),
     );
+}
+
+/// After a non-auth transport error on the active OAuth endpoint, switch to the
+/// backup endpoint and attempt one mint + connect. Returns the original error
+/// when no failover is configured or the backup has no OAuth session.
+async fn oauth_ws_connect_on_backup(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    original_err: AppError,
+) -> Result<GatewayWebSocket, AppError> {
+    if let Some((from_url, to_url, using_backup)) = activate_other_remote_target(state) {
+        emit_remote_failover(app, &from_url, &to_url, using_backup);
+        let (retry_url, retry_session) = {
+            let inner = state.inner.lock()?;
+            (inner.api_base_url.clone(), inner.oauth_session.clone())
+        };
+        if let Some(retry_session) = retry_session {
+            let ticket = retry_session.mint_ws_ticket().await.map_err(|err| {
+                if let AppError::AuthSessionExpired(_) = &err {
+                    emit_ws_auth_expired(app, &retry_url);
+                }
+                err
+            })?;
+            let url = build_gateway_ws_url_with_ticket(&retry_url, &ticket);
+            return tokio_tungstenite::connect_async(url)
+                .await
+                .map(|(ws, _)| ws)
+                .map_err(map_ws_connect_error);
+        }
+    }
+    Err(original_err)
 }
 
 #[tauri::command]

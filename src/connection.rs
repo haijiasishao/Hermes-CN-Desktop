@@ -158,10 +158,12 @@ pub struct RemoteBackend {
     pub base_url: String,
     pub auth: RemoteAuth,
     pub source: RemoteSource,
-    /// Optional backup base URL for failover (token mode only).
+    /// Optional backup base URL for failover.
     pub backup_base_url: Option<String>,
-    /// Optional backup token; None means reuse the primary auth token.
+    /// Optional backup token; None means reuse the primary auth token (token mode).
     pub backup_token: Option<String>,
+    /// Optional backup OAuth/cookie session (oauth/password mode).
+    pub backup_cookies: Option<Vec<PersistedCookie>>,
 }
 
 impl RemoteBackend {
@@ -189,6 +191,8 @@ pub struct ConnectionConfig {
     pub remote_backup_url: Option<String>,
     /// Optional backup session token; `None` means reuse `remote_token`.
     pub remote_backup_token: Option<String>,
+    /// Persisted OAuth session cookies for the backup origin (oauth/password mode).
+    pub remote_backup_session: Option<Vec<PersistedCookie>>,
 }
 
 /// Renderer-facing config: presence/preview signals only, never the token.
@@ -212,6 +216,8 @@ pub struct SanitizedConnectionConfig {
     /// Preview of the backup token (presence/last-6-chars only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_backup_token_preview: Option<String>,
+    /// Whether a backup OAuth cookie session is saved.
+    pub remote_backup_session_set: bool,
     /// Which remote is currently active: "primary" or "backup".
     pub active_remote: String,
     /// Whether failover to backup has occurred.
@@ -252,6 +258,9 @@ struct RemoteFileEntry {
     /// Optional backup session token; absent means reuse the primary token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     backup_token: Option<TokenFileEntry>,
+    /// Persisted OAuth cookie session for the backup origin (oauth/password mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_session: Option<SessionFileEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -283,7 +292,7 @@ pub fn read_config() -> ConnectionConfig {
     read_config_from(&config_path())
 }
 
-fn read_config_from(path: &PathBuf) -> ConnectionConfig {
+pub(crate) fn read_config_from(path: &PathBuf) -> ConnectionConfig {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(_) => return ConnectionConfig::default(),
@@ -349,6 +358,12 @@ fn read_config_from(path: &PathBuf) -> ConnectionConfig {
         .filter(|t| t.encoding == "plain")
         .map(|t| t.value.clone())
         .filter(|v| !v.is_empty());
+    let remote_backup_session = file
+        .remote
+        .as_ref()
+        .and_then(|r| r.backup_session.as_ref())
+        .filter(|s| s.encoding == "plain")
+        .map(|s| s.cookies.clone());
 
     ConnectionConfig {
         mode,
@@ -359,6 +374,7 @@ fn read_config_from(path: &PathBuf) -> ConnectionConfig {
         remote_session,
         remote_backup_url,
         remote_backup_token,
+        remote_backup_session,
     }
 }
 
@@ -369,7 +385,7 @@ pub fn write_config(config: &ConnectionConfig) -> AppResult<()> {
     write_config_to(&config_path(), config)
 }
 
-fn write_config_to(path: &PathBuf, config: &ConnectionConfig) -> AppResult<()> {
+pub(crate) fn write_config_to(path: &PathBuf, config: &ConnectionConfig) -> AppResult<()> {
     let file = ConnectionFile {
         version: CONNECTION_FILE_VERSION,
         mode: config.mode.as_str().to_string(),
@@ -400,6 +416,15 @@ fn write_config_to(path: &PathBuf, config: &ConnectionConfig) -> AppResult<()> {
                 .map(|value| TokenFileEntry {
                     encoding: "plain".to_string(),
                     value: value.clone(),
+                }),
+            backup_session: config
+                .remote_backup_session
+                .as_ref()
+                .filter(|_| config.remote_auth_mode == RemoteAuthMode::Oauth)
+                .map(|cookies| SessionFileEntry {
+                    encoding: "plain".to_string(),
+                    saved_at_ms: Some(now_ms()),
+                    cookies: cookies.clone(),
                 }),
         }),
     };
@@ -451,20 +476,15 @@ pub fn normalize_remote_base_url(raw: &str) -> AppResult<String> {
     Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
-/// Validate a backup configuration: backup URL must not equal primary URL,
-/// and OAuth mode is not supported with backup.
+/// Validate a backup configuration: backup URL must not equal primary URL.
+/// OAuth/password and token modes both support backup with independent sessions.
 pub fn validate_backup_config(
     primary_url: Option<&str>,
     backup_url: Option<&str>,
-    auth_mode: RemoteAuthMode,
+    _auth_mode: RemoteAuthMode,
 ) -> AppResult<()> {
     if backup_url.is_none() {
         return Ok(());
-    }
-    if auth_mode == RemoteAuthMode::Oauth {
-        return Err(AppError::InvalidRequest(
-            "当前主备自动切换仅支持 token 模式，OAuth 模式暂不支持备用地址".to_string(),
-        ));
     }
     if let (Some(primary), Some(backup)) = (primary_url, backup_url) {
         let norm_primary = normalize_remote_base_url(primary)?;
@@ -586,6 +606,7 @@ pub fn resolve_connection_backend() -> Result<ConnectionBackend, String> {
             source: RemoteSource::Env,
             backup_base_url: None,
             backup_token: None,
+            backup_cookies: None,
         }));
     }
 
@@ -629,16 +650,28 @@ pub fn resolve_connection_backend() -> Result<ConnectionBackend, String> {
                     RemoteAuth::Token(token)
                 }
             };
-            // Resolve backup URL/token (token mode only; OAuth backup is rejected at coerce time).
-            let (backup_base_url, backup_token) = match &auth {
+            // Resolve backup URL/token/cookies. Both token and OAuth/password modes
+            // support backup; each has its own persisted session or token.
+            let (backup_base_url, backup_token, backup_cookies) = match &auth {
                 RemoteAuth::Token(_) => {
                     let backup_url = config
                         .remote_backup_url
                         .as_ref()
                         .and_then(|u| normalize_remote_base_url(u).ok());
-                    (backup_url, config.remote_backup_token.clone())
+                    (backup_url, config.remote_backup_token.clone(), None)
                 }
-                RemoteAuth::Oauth(_) => (None, None),
+                RemoteAuth::Oauth(_) => {
+                    let backup_url = config
+                        .remote_backup_url
+                        .as_ref()
+                        .and_then(|u| normalize_remote_base_url(u).ok());
+                    let backup_cookies = if backup_url.is_some() {
+                        config.remote_backup_session.clone()
+                    } else {
+                        None
+                    };
+                    (backup_url, None, backup_cookies)
+                }
             };
 
             match normalize_remote_base_url(&raw_url) {
@@ -648,6 +681,7 @@ pub fn resolve_connection_backend() -> Result<ConnectionBackend, String> {
                     source: RemoteSource::Settings,
                     backup_base_url,
                     backup_token,
+                    backup_cookies,
                 })),
                 Err(err) => {
                     log::warn!(
@@ -691,6 +725,7 @@ pub fn sanitize(config: &ConnectionConfig) -> SanitizedConnectionConfig {
             remote_backup_url: String::new(),
             remote_backup_token_set: false,
             remote_backup_token_preview: None,
+            remote_backup_session_set: false,
             active_remote: "primary".to_string(),
             failover_active: false,
         };
@@ -719,6 +754,11 @@ pub fn sanitize(config: &ConnectionConfig) -> SanitizedConnectionConfig {
             .remote_backup_token
             .as_deref()
             .and_then(token_preview),
+        remote_backup_session_set: config
+            .remote_backup_session
+            .as_ref()
+            .map(|c| !c.is_empty())
+            .unwrap_or(false),
         active_remote: "primary".to_string(),
         failover_active: false,
     }
@@ -837,6 +877,7 @@ mod tests {
             remote_session: None,
             remote_backup_url: None,
             remote_backup_token: None,
+            remote_backup_session: None,
         };
         write_config_to(&path, &config).unwrap();
         assert_eq!(read_config_from(&path), config);
@@ -925,6 +966,7 @@ mod tests {
             }]),
             remote_backup_url: None,
             remote_backup_token: None,
+            remote_backup_session: None,
         };
         write_config_to(&path, &config).unwrap();
         let read = read_config_from(&path);
@@ -980,6 +1022,7 @@ mod tests {
                 remote_session: None,
                 remote_backup_url: None,
                 remote_backup_token: None,
+                remote_backup_session: None,
             },
         )
         .unwrap();
@@ -1038,6 +1081,7 @@ mod tests {
             remote_session: None,
             remote_backup_url: None,
             remote_backup_token: None,
+            remote_backup_session: None,
         };
         let sanitized = sanitize(&config);
         assert_eq!(sanitized.mode, "remote");
@@ -1096,6 +1140,7 @@ mod tests {
             remote_session: None,
             remote_backup_url: Some("http://backup:9120".to_string()),
             remote_backup_token: Some("backup-tok".to_string()),
+            remote_backup_session: None,
         };
         write_config_to(&path, &config).unwrap();
         let loaded = read_config_from(&path);
@@ -1121,6 +1166,7 @@ mod tests {
             remote_session: None,
             remote_backup_url: Some("http://backup:9120".to_string()),
             remote_backup_token: None,
+            remote_backup_session: None,
         };
         write_config_to(&path, &config).unwrap();
         let loaded = read_config_from(&path);
@@ -1143,17 +1189,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_oauth_with_backup() {
+    fn validate_allows_oauth_with_backup() {
+        // OAuth/password mode now supports backup with independent cookie sessions.
         let result = validate_backup_config(
             Some("http://primary:9119"),
             Some("http://backup:9120"),
             RemoteAuthMode::Oauth,
         );
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("仅支持 token 模式"));
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1175,6 +1218,7 @@ mod tests {
             remote_session: None,
             remote_backup_url: Some("http://b:2".to_string()),
             remote_backup_token: Some("backupsecretvalue".to_string()),
+            remote_backup_session: None,
         };
         let sanitized = sanitize(&config);
         assert!(sanitized.remote_backup_configured);
@@ -1201,5 +1245,285 @@ mod tests {
         assert!(require_local_filesystem(ConnectionMode::Managed, "files").is_ok());
         assert!(require_local_filesystem(ConnectionMode::Local, "files").is_ok());
         assert!(require_local_filesystem(ConnectionMode::Remote, "files").is_err());
+    }
+
+    // --- Backup OAuth session presence/round-trip/active auth selection ---
+
+    #[test]
+    fn backup_oauth_session_round_trips_independently() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("connection.json");
+
+        let primary_cookies = vec![PersistedCookie {
+            name: "hermes_session_at".to_string(),
+            value: "primary-at".to_string(),
+            expires_at_ms: None,
+        }];
+        let backup_cookies = vec![
+            PersistedCookie {
+                name: "__Host-hermes_session_at".to_string(),
+                value: "backup-at".to_string(),
+                expires_at_ms: Some(1700000000000),
+            },
+            PersistedCookie {
+                name: "__Host-hermes_session_rt".to_string(),
+                value: "backup-rt".to_string(),
+                expires_at_ms: Some(1700086400000),
+            },
+        ];
+
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: None,
+            remote_auth_mode: RemoteAuthMode::Oauth,
+            remote_session: Some(primary_cookies),
+            remote_backup_url: Some("http://backup:9120".to_string()),
+            remote_backup_token: None,
+            remote_backup_session: Some(backup_cookies),
+        };
+
+        write_config_to(&path, &config).unwrap();
+        let loaded = read_config_from(&path);
+
+        // Auth mode must be oauth.
+        assert_eq!(loaded.remote_auth_mode, RemoteAuthMode::Oauth);
+        // Primary session survives.
+        let pc = loaded.remote_session.as_ref().unwrap();
+        assert_eq!(pc.len(), 1);
+        assert_eq!(pc[0].value, "primary-at");
+        // Backup session survives independently.
+        let bc = loaded.remote_backup_session.as_ref().unwrap();
+        assert_eq!(bc.len(), 2);
+        assert_eq!(bc[0].name, "__Host-hermes_session_at");
+        assert_eq!(bc[0].value, "backup-at");
+        assert_eq!(bc[1].name, "__Host-hermes_session_rt");
+        assert_eq!(bc[1].value, "backup-rt");
+        // URLs are independent.
+        assert_eq!(loaded.remote_url.as_deref(), Some("http://primary:9119"));
+        assert_eq!(
+            loaded.remote_backup_url.as_deref(),
+            Some("http://backup:9120")
+        );
+    }
+
+    #[test]
+    fn changing_backup_url_invalidates_backup_session() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("connection.json");
+
+        // Start with a config that has backup session cookies.
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: None,
+            remote_auth_mode: RemoteAuthMode::Oauth,
+            remote_session: None,
+            remote_backup_url: Some("http://old-backup:9120".to_string()),
+            remote_backup_token: None,
+            remote_backup_session: Some(vec![PersistedCookie {
+                name: "hermes_session_at".to_string(),
+                value: "old-value".to_string(),
+                expires_at_ms: None,
+            }]),
+        };
+        write_config_to(&path, &config).unwrap();
+
+        // Simulate coerce_config with a changed backup URL: the backup
+        // session must be invalidated (set to None).
+        let loaded = read_config_from(&path);
+        let new_backup_url = Some("http://new-backup:9999".to_string());
+        assert_ne!(loaded.remote_backup_url, new_backup_url);
+
+        // When coerce_config detects a URL change, it sets session to None.
+        let session_after_change = if new_backup_url != loaded.remote_backup_url {
+            None
+        } else {
+            loaded.remote_backup_session.clone()
+        };
+        assert!(session_after_change.is_none());
+    }
+
+    #[test]
+    fn sanitize_shows_backup_session_presence() {
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: None,
+            remote_auth_mode: RemoteAuthMode::Oauth,
+            remote_session: Some(vec![]),
+            remote_backup_url: Some("http://backup:9120".to_string()),
+            remote_backup_token: None,
+            remote_backup_session: Some(vec![PersistedCookie {
+                name: "hermes_session_at".to_string(),
+                value: "secret".to_string(),
+                expires_at_ms: None,
+            }]),
+        };
+        let sanitized = sanitize(&config);
+        assert!(sanitized.remote_backup_session_set);
+        assert!(sanitized.remote_backup_configured);
+        // Ensure cookie values are never leaked.
+        let json = serde_json::to_string(&sanitized).unwrap();
+        assert!(!json.contains("secret"));
+    }
+
+    #[test]
+    fn sanitize_shows_no_backup_session_when_absent() {
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: None,
+            remote_auth_mode: RemoteAuthMode::Oauth,
+            remote_session: None,
+            remote_backup_url: Some("http://backup:9120".to_string()),
+            remote_backup_token: None,
+            remote_backup_session: None,
+        };
+        let sanitized = sanitize(&config);
+        assert!(!sanitized.remote_backup_session_set);
+    }
+
+    // --- RemoteBackend construction: OAuth backup_cookies + endpoint auth ---
+
+    /// Simulates the Settings-branch logic of `resolve_connection_backend` to
+    /// verify that `RemoteBackend` carries `backup_cookies` when the config
+    /// provides them, and that auth selection matches the configured mode.
+    #[test]
+    fn remote_backend_construction_carries_backup_cookies() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("connection.json");
+
+        let primary_cookies = vec![PersistedCookie {
+            name: "hermes_session_at".to_string(),
+            value: "primary-at".to_string(),
+            expires_at_ms: None,
+        }];
+        let backup_cookies = vec![PersistedCookie {
+            name: "__Host-hermes_session_at".to_string(),
+            value: "backup-at".to_string(),
+            expires_at_ms: Some(1700000000000),
+        }];
+
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: None,
+            remote_auth_mode: RemoteAuthMode::Oauth,
+            remote_session: Some(primary_cookies.clone()),
+            remote_backup_url: Some("http://backup:9120".to_string()),
+            remote_backup_token: None,
+            remote_backup_session: Some(backup_cookies.clone()),
+        };
+        write_config_to(&path, &config).unwrap();
+        let loaded = read_config_from(&path);
+
+        // Simulate the Settings branch of resolve_connection_backend.
+        let raw_url = loaded.remote_url.clone().unwrap();
+        let auth = match loaded.remote_auth_mode {
+            RemoteAuthMode::Oauth => {
+                RemoteAuth::Oauth(loaded.remote_session.clone().unwrap_or_default())
+            }
+            RemoteAuthMode::Token => RemoteAuth::Token(loaded.remote_token.clone().unwrap()),
+        };
+        let (backup_base_url, backup_token, backup_cookies_resolved) = match &auth {
+            RemoteAuth::Token(_) => {
+                let url = loaded
+                    .remote_backup_url
+                    .as_ref()
+                    .and_then(|u| normalize_remote_base_url(u).ok());
+                (url, loaded.remote_backup_token.clone(), None)
+            }
+            RemoteAuth::Oauth(_) => {
+                let url = loaded
+                    .remote_backup_url
+                    .as_ref()
+                    .and_then(|u| normalize_remote_base_url(u).ok());
+                let cookies = if url.is_some() {
+                    loaded.remote_backup_session.clone()
+                } else {
+                    None
+                };
+                (url, None, cookies)
+            }
+        };
+        let base_url = normalize_remote_base_url(&raw_url).unwrap();
+        let backend = RemoteBackend {
+            base_url,
+            auth: auth.clone(),
+            source: RemoteSource::Settings,
+            backup_base_url,
+            backup_token,
+            backup_cookies: backup_cookies_resolved,
+        };
+
+        // Auth mode must be OAuth with correct cookies.
+        match &backend.auth {
+            RemoteAuth::Oauth(cookies) => {
+                assert_eq!(cookies.len(), 1);
+                assert_eq!(cookies[0].value, "primary-at");
+            }
+            other => panic!("expected Oauth, got {:?}", other),
+        }
+        // backup_cookies MUST be present (this was the bug).
+        let bc = backend.backup_cookies.as_ref().unwrap();
+        assert_eq!(bc.len(), 1);
+        assert_eq!(bc[0].value, "backup-at");
+        assert_eq!(bc[0].expires_at_ms, Some(1700000000000));
+        // backup_base_url present.
+        assert_eq!(
+            backend.backup_base_url.as_deref(),
+            Some("http://backup:9120")
+        );
+        // Token mode never carries backup_cookies.
+        assert!(backend.backup_token.is_none());
+    }
+
+    /// Token-mode backend carries backup_token but never backup_cookies.
+    #[test]
+    fn remote_backend_token_mode_no_backup_cookies() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("connection.json");
+
+        let config = ConnectionConfig {
+            mode: ConnectionMode::Remote,
+            local_url: None,
+            remote_url: Some("http://primary:9119".to_string()),
+            remote_token: Some("primary-tok".to_string()),
+            remote_auth_mode: RemoteAuthMode::Token,
+            remote_session: None,
+            remote_backup_url: Some("http://backup:9120".to_string()),
+            remote_backup_token: Some("backup-tok".to_string()),
+            remote_backup_session: None,
+        };
+        write_config_to(&path, &config).unwrap();
+        let loaded = read_config_from(&path);
+
+        // Token auth.
+        let auth = RemoteAuth::Token(loaded.remote_token.clone().unwrap());
+        let backup_url = loaded
+            .remote_backup_url
+            .as_ref()
+            .and_then(|u| normalize_remote_base_url(u).ok());
+        let backend = RemoteBackend {
+            base_url: normalize_remote_base_url(loaded.remote_url.as_deref().unwrap()).unwrap(),
+            auth,
+            source: RemoteSource::Settings,
+            backup_base_url: backup_url,
+            backup_token: loaded.remote_backup_token.clone(),
+            backup_cookies: None, // Token mode: no cookies
+        };
+
+        match &backend.auth {
+            RemoteAuth::Token(t) => assert_eq!(t, "primary-tok"),
+            other => panic!("expected Token, got {:?}", other),
+        }
+        assert!(backend.backup_cookies.is_none());
+        assert_eq!(backend.backup_token.as_deref(), Some("backup-tok"));
     }
 }

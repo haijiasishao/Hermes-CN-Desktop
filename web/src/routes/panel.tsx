@@ -13,7 +13,6 @@ import {
 import { HealthGrid } from "@/components/panel/health-grid";
 import { PanelComposer } from "@/components/panel/panel-composer";
 import { PanelHero } from "@/components/panel/panel-hero";
-import { QuickStart } from "@/components/panel/quick-start";
 import { RecentTable } from "@/components/panel/recent-table";
 import { TaskCard } from "@/components/panel/task-card";
 import type { SessionSummary } from "@hermes/protocol";
@@ -151,14 +150,6 @@ export function PanelRoute() {
           <RecentTable sessions={recent} onOpen={goSession} />
         </Section>
 
-        <Section
-          num={active.length > 0 ? "05" : "04"}
-          tag="模板"
-          title="快速起手"
-          meta="点击预填到 Composer"
-        >
-          <QuickStart />
-        </Section>
       </div>
     </div>
   );

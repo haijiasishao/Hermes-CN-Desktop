@@ -83,3 +83,89 @@ describe("URL handling", () => {
     expect(oauthBody).toContain('mode: "remote"');
   });
 });
+
+describe("Backup login flow", () => {
+  it("handlePasswordLogin accepts a target parameter (primary or backup)", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    expect(body).toContain('target: "primary"');
+    expect(body).toContain('target === "backup"');
+  });
+
+  it("backup login uses remoteBackupUrl as loginUrl and saves config first", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    expect(body).toContain("remoteBackupUrl.trim()");
+    // Must save config before login so persist_backup_login can match URL.
+    expect(body).toContain("saveConnectionConfig");
+  });
+
+  it("backup login also calls applyConnectionConfig to establish failover", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    // Both primary and backup logins should call applyConnectionConfig
+    // to establish the live failover state immediately.
+    expect(body).toContain("applyConnectionConfig");
+    expect(body).toContain("applyPayload");
+  });
+
+  it("backup login refreshes config to update remoteBackupSessionSet", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    expect(body).toContain("getConnectionConfig");
+  });
+
+  it("backup login saves connection config before calling password login", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    // The saveConnectionConfig call must appear before the actual
+    // connectionPasswordLogin invocation (with arguments), not the guard check.
+    const saveIdx = body.indexOf("saveConnectionConfig");
+    const loginIdx = body.indexOf("connectionPasswordLogin({");
+    expect(saveIdx).toBeGreaterThan(-1);
+    expect(loginIdx).toBeGreaterThan(-1);
+    expect(saveIdx).toBeLessThan(loginIdx);
+  });
+
+  it("primary login passes remoteBackupUrl to applyConnectionConfig", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    expect(body).toContain("remoteBackupUrl.trim()");
+    expect(body).toContain("applyPayload");
+  });
+
+  it("pwPass is cleared after successful login (inside r.ok branch)", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    // setPwPass("") must be called on the success path, before target-specific logic
+    expect(body).toContain('setPwPass("")');
+    // It must appear inside the r.ok block (after the r.ok check)
+    const okCheck = body.indexOf("r.ok");
+    const clearPass = body.indexOf('setPwPass("")');
+    expect(okCheck).toBeGreaterThan(-1);
+    expect(clearPass).toBeGreaterThan(okCheck);
+  });
+});
+
+describe("Backup session validation", () => {
+  it("blocks save when backup URL is set but no backup session exists", () => {
+    expect(source).toContain("backupNeedsLogin");
+    expect(source).toContain("已填写备用地址但尚未登录");
+  });
+
+  it("backupNeedsLogin checks gated, backupUrl, session, and normalized URL match", () => {
+    expect(source).toContain("backupNeedsLogin");
+    expect(source).toContain("normalizeRemoteUrl");
+    expect(source).toContain("remoteBackupUrl");
+    expect(source).toContain("remoteBackupSessionSet");
+  });
+});
+
+describe("QuickStart removal", () => {
+  const panelSource = readFileSync(
+    resolve(import.meta.dirname ?? __dirname, "panel.tsx"),
+    "utf-8",
+  );
+  it("panel.tsx does not import QuickStart", () => {
+    expect(panelSource).not.toContain("quick-start");
+    expect(panelSource).not.toContain("QuickStart");
+  });
+
+  it("panel.tsx does not render a QuickStart section", () => {
+    expect(panelSource).not.toContain('"快速起手"');
+    expect(panelSource).not.toContain('"模板"');
+  });
+});

@@ -257,9 +257,14 @@ fn notify_blocking(
     let mut delivered = false;
     let mut error = None;
     if input.show_system_notification {
-        if let Some(permission_error) = notification_permission_error(app) {
-            error = Some(permission_error);
-        } else {
+        // Log permission state for diagnostics but don't gate on it —
+        // the plugin's permission_state() can return stale results on
+        // Android (e.g. user granted in system settings but the plugin
+        // hasn't refreshed). The authoritative test is builder.show().
+        if let Some(permission_hint) = notification_permission_error(app) {
+            log::info!("Notification permission pre-check: {}", permission_hint);
+        }
+        {
             let mut builder = app.notification().builder().title(title).body(body);
             #[cfg(target_os = "android")]
             {

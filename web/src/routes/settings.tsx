@@ -220,13 +220,13 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
   const allChannelsOff = !notifySystem && !notifySound;
   const toggleOptions = [{ value: "off", label: "关闭" }, { value: "on", label: "开启" }];
 
-  const updateAndroidPermission = useCallback(async (request: boolean): Promise<boolean> => {
-    if (!isAndroid) return true;
+  const updateAndroidPermission = useCallback(async (request: boolean): Promise<{ granted: boolean; state: string }> => {
+    if (!isAndroid) return { granted: true, state: "granted" };
     const permission = window.hermesDesktop?.notificationPermission;
     if (typeof permission !== "function") {
       setPermissionState("unavailable");
       setPermissionError("当前 APK 未提供 Android 原生通知权限接口");
-      return false;
+      return { granted: false, state: "unavailable" };
     }
     setPermissionState("checking");
     setPermissionError("");
@@ -240,11 +240,11 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
             : "尚未授予 Android 通知权限",
         );
       }
-      return result.granted;
+      return { granted: result.granted, state: result.state };
     } catch (error) {
       setPermissionState("unavailable");
       setPermissionError(error instanceof Error ? error.message : String(error));
-      return false;
+      return { granted: false, state: "unavailable" };
     }
   }, [isAndroid]);
 
@@ -252,12 +252,32 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
     if (isAndroid) void updateAndroidPermission(false);
   }, [isAndroid, updateAndroidPermission]);
 
+  // Re-check Android permission when the user returns from system settings.
+  // Android's permission_state() reads the live system state, so calling it on
+  // visibilitychange / focus / pageshow catches grants made outside the app.
+  useEffect(() => {
+    if (!isAndroid) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        void updateAndroidPermission(false);
+      }
+    };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("pageshow", refresh);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("pageshow", refresh);
+    };
+  }, [isAndroid, updateAndroidPermission]);
+
   const handleSystemChange = async (value: string) => {
     if (value !== "on") {
       setNotifySystem(false);
       return;
     }
-    if (!isAndroid || await updateAndroidPermission(true)) {
+    if (!isAndroid || (await updateAndroidPermission(true)).granted) {
       setNotifySystem(true);
       setTestState({ phase: "idle" });
     } else {
@@ -274,9 +294,14 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
     }
     setTestState({ phase: "sending" });
     try {
-      if (isAndroid && notifySystem && !await updateAndroidPermission(true)) {
-        setTestState({ phase: "error", message: "Android 通知权限未授予，请先授权后再测试" });
-        return;
+      // On Android with system notifications enabled: request permission fresh
+      // (the native plugin reads the live OS state, not a cache). We capture
+      // the state for diagnostics but never early-return — the actual
+      // desktop_notify call is authoritative.
+      let freshState: string | undefined;
+      if (isAndroid && notifySystem) {
+        const perm = await updateAndroidPermission(true);
+        freshState = perm.state;
       }
       const result = await bridge.desktopNotify({
         kind: "test",
@@ -296,9 +321,14 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
       };
       if (shouldPlayFallbackSound(previewSettings, result)) playChime();
       if (result.error) {
+        // If the OS permission is permanently denied, guide the user to
+        // system settings; otherwise show the actual plugin error.
+        const denied = freshState === "denied";
         setTestState({
           phase: "error",
-          message: `系统通知发送失败：${result.error}（请检查系统设置中的通知权限）`,
+          message: denied
+            ? "Android 通知权限已被永久拒绝，请在系统设置中开启"
+            : `系统通知发送失败：${result.error}（请检查系统设置中的通知权限）`,
         });
       } else if (notifySystem && result.delivered) {
         setTestState({ phase: "ok", message: "已发送，请查看系统通知" });
@@ -344,7 +374,7 @@ export function NotificationSection({ showHeading = true }: SettingsSectionProps
             type="button"
             variant="outline"
             loading={permissionState === "checking"}
-            onClick={() => void updateAndroidPermission(true).then((granted) => {
+            onClick={() => void updateAndroidPermission(true).then(({ granted }) => {
               if (granted) setNotifySystem(true);
             })}
           >

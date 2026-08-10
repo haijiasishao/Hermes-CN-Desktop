@@ -646,22 +646,60 @@ pub async fn api_request_from_state(
     // OAuth remote: cookie-authed proxy. The server may rotate AT/RT on the
     // response (captured by the jar) — persist promptly. A 401 with a
     // session_expired/unauthenticated envelope means re-login is needed.
+    // On transport error in Remote mode, try the backup endpoint once.
     if let crate::state::DashboardAuth::Oauth(session) = &auth {
-        let result = api_request_impl_oauth(
-            input,
+        match api_request_impl_oauth(
+            input.clone(),
             &api_base_url,
             session,
             &hermes_home,
             &hermes_home_base,
         )
-        .await?;
-        if session.take_dirty() {
-            crate::oauth_session::persist_if_dirty(&api_base_url, session);
+        .await
+        {
+            Ok(result) => {
+                if session.take_dirty() {
+                    crate::oauth_session::persist_if_dirty(&api_base_url, session);
+                }
+                if should_emit_auth_expired(result.status, &result.body) {
+                    emit_auth_expired(app, state, &api_base_url, &result.body);
+                }
+                return Ok(result);
+            }
+            Err(error)
+                if mode == crate::connection::ConnectionMode::Remote
+                    && is_transport_error(&error) =>
+            {
+                if let Some((from_url, to_url, using_backup)) =
+                    activate_other_remote_target(app, state)
+                {
+                    emit_remote_failover(app, &from_url, &to_url, using_backup);
+                    let (retry_url, retry_session) = {
+                        let inner = state.inner.lock()?;
+                        (inner.api_base_url.clone(), inner.oauth_session.clone())
+                    };
+                    if let Some(retry_session) = retry_session {
+                        let result = api_request_impl_oauth(
+                            input,
+                            &retry_url,
+                            &retry_session,
+                            &hermes_home,
+                            &hermes_home_base,
+                        )
+                        .await?;
+                        if retry_session.take_dirty() {
+                            crate::oauth_session::persist_if_dirty(&retry_url, &retry_session);
+                        }
+                        if should_emit_auth_expired(result.status, &result.body) {
+                            emit_auth_expired(app, state, &retry_url, &result.body);
+                        }
+                        return Ok(result);
+                    }
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
         }
-        if should_emit_auth_expired(result.status, &result.body) {
-            emit_auth_expired(app, state, &api_base_url, &result.body);
-        }
-        return Ok(result);
     }
 
     let session_token = match &auth {
@@ -1200,6 +1238,59 @@ pub async fn upload_file_impl(
     })
 }
 
+/// OAuth-aware upload helper: uses the session's cookie-authed client.
+async fn upload_file_impl_oauth(
+    input: UploadFileInput,
+    session: &crate::oauth_session::OauthSession,
+) -> Result<ApiRequestResult, AppError> {
+    use base64::Engine;
+
+    ensure_upload_base64_size(input.data.len())?;
+    let file_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&input.data)
+        .map_err(|e| AppError::InvalidRequest(format!("Invalid base64: {}", e)))?;
+    ensure_upload_decoded_size(file_bytes.len())?;
+
+    let mime_type = input
+        .r#type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+
+    let file_part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name(input.name.clone())
+        .mime_str(mime_type)?;
+
+    let form = reqwest::multipart::Form::new()
+        .text("session_id", input.session_id)
+        .part("file", file_part);
+
+    let base = session.base_url().trim_end_matches('/');
+    let url = format!("{}/api/upload", base);
+    let res = session
+        .client()
+        .post(&url)
+        .timeout(UPLOAD_TIMEOUT)
+        .multipart(form)
+        .send()
+        .await?;
+    let status = res.status().as_u16();
+    let status_text = res.status().canonical_reason().unwrap_or("").to_string();
+    let headers: HashMap<String, String> = res
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let body = res.text().await.unwrap_or_default();
+
+    Ok(ApiRequestResult {
+        ok: (200..300).contains(&status),
+        status,
+        status_text,
+        headers,
+        body,
+    })
+}
+
 /// Upload a file to the dashboard's /api/upload endpoint.
 /// The file data arrives as a base64-encoded string from the frontend.
 #[tauri::command]
@@ -1208,33 +1299,74 @@ pub async fn upload_file(
     input: UploadFileInput,
     state: State<'_, AppState>,
 ) -> Result<ApiRequestResult, AppError> {
-    let (api_base_url, session_token, mode) = {
+    let (api_base_url, auth, mode) = {
         let inner = state.inner.lock()?;
         (
             inner.api_base_url.clone(),
-            inner.session_token.clone(),
+            inner.dashboard_auth(),
             inner.connection_mode,
         )
     };
-    let first = upload_file_impl(input.clone(), &api_base_url, session_token.as_deref()).await;
-    match first {
-        Ok(result) => Ok(result),
-        Err(error)
-            if mode == crate::connection::ConnectionMode::Remote && is_transport_error(&error) =>
-        {
-            if let Some((from_url, to_url, using_backup)) =
-                activate_other_remote_target(&app, &state)
-            {
-                emit_remote_failover(&app, &from_url, &to_url, using_backup);
-                let (retry_url, retry_token) = {
-                    let inner = state.inner.lock()?;
-                    (inner.api_base_url.clone(), inner.session_token.clone())
-                };
-                return upload_file_impl(input, &retry_url, retry_token.as_deref()).await;
+    match &auth {
+        crate::state::DashboardAuth::Oauth(session) => {
+            let first = upload_file_impl_oauth(input.clone(), session).await;
+            match first {
+                Ok(result) => {
+                    if session.take_dirty() {
+                        crate::oauth_session::persist_if_dirty(&api_base_url, session);
+                    }
+                    Ok(result)
+                }
+                Err(error)
+                    if mode == crate::connection::ConnectionMode::Remote
+                        && is_transport_error(&error) =>
+                {
+                    if let Some((from_url, to_url, using_backup)) =
+                        activate_other_remote_target(&app, &state)
+                    {
+                        emit_remote_failover(&app, &from_url, &to_url, using_backup);
+                        let (retry_url, retry_session) = {
+                            let inner = state.inner.lock()?;
+                            (inner.api_base_url.clone(), inner.oauth_session.clone())
+                        };
+                        if let Some(retry_session) = retry_session {
+                            let result = upload_file_impl_oauth(input, &retry_session).await?;
+                            if retry_session.take_dirty() {
+                                crate::oauth_session::persist_if_dirty(&retry_url, &retry_session);
+                            }
+                            return Ok(result);
+                        }
+                    }
+                    Err(error)
+                }
+                Err(error) => Err(error),
             }
-            Err(error)
         }
-        Err(error) => Err(error),
+        crate::state::DashboardAuth::Token(token) => {
+            let session_token = token.clone();
+            let first =
+                upload_file_impl(input.clone(), &api_base_url, session_token.as_deref()).await;
+            match first {
+                Ok(result) => Ok(result),
+                Err(error)
+                    if mode == crate::connection::ConnectionMode::Remote
+                        && is_transport_error(&error) =>
+                {
+                    if let Some((from_url, to_url, using_backup)) =
+                        activate_other_remote_target(&app, &state)
+                    {
+                        emit_remote_failover(&app, &from_url, &to_url, using_backup);
+                        let (retry_url, retry_token) = {
+                            let inner = state.inner.lock()?;
+                            (inner.api_base_url.clone(), inner.session_token.clone())
+                        };
+                        return upload_file_impl(input, &retry_url, retry_token.as_deref()).await;
+                    }
+                    Err(error)
+                }
+                Err(error) => Err(error),
+            }
+        }
     }
 }
 
@@ -1428,11 +1560,41 @@ pub async fn download_file(
 
     match &auth {
         crate::state::DashboardAuth::Oauth(session) => {
-            let result = download_file_impl(input, &api_base_url, None, Some(session)).await?;
-            if session.take_dirty() {
-                crate::oauth_session::persist_if_dirty(&api_base_url, session);
+            let result =
+                download_file_impl(input.clone(), &api_base_url, None, Some(session)).await;
+            match result {
+                Ok(result) => {
+                    if session.take_dirty() {
+                        crate::oauth_session::persist_if_dirty(&api_base_url, session);
+                    }
+                    Ok(result)
+                }
+                Err(error)
+                    if mode == crate::connection::ConnectionMode::Remote
+                        && is_transport_error(&error) =>
+                {
+                    if let Some((from_url, to_url, using_backup)) =
+                        activate_other_remote_target(&app, &state)
+                    {
+                        emit_remote_failover(&app, &from_url, &to_url, using_backup);
+                        let (retry_url, retry_session) = {
+                            let inner = state.inner.lock()?;
+                            (inner.api_base_url.clone(), inner.oauth_session.clone())
+                        };
+                        if let Some(retry_session) = retry_session {
+                            let result =
+                                download_file_impl(input, &retry_url, None, Some(&retry_session))
+                                    .await?;
+                            if retry_session.take_dirty() {
+                                crate::oauth_session::persist_if_dirty(&retry_url, &retry_session);
+                            }
+                            return Ok(result);
+                        }
+                    }
+                    Err(error)
+                }
+                Err(error) => Err(error),
             }
-            Ok(result)
         }
         crate::state::DashboardAuth::Token(token) => {
             let first =
@@ -1603,5 +1765,33 @@ mod download_file_tests {
             safe_filename_from_content_disposition(&headers),
             "联合 督导.xlsx"
         );
+    }
+}
+
+#[cfg(test)]
+mod oauth_failover_tests {
+    use super::*;
+
+    /// Verify `is_transport_error` correctly gates the failover path:
+    /// only `DashboardUnreachable` and `ProxyError` are classified as
+    /// transport errors.  `AuthSessionExpired` (OAuth session dead) and
+    /// status-code results must never trigger failover.
+    #[test]
+    fn transport_errors_trigger_failover_gate() {
+        assert!(is_transport_error(&AppError::DashboardUnreachable(
+            "unreachable".into()
+        )));
+        assert!(is_transport_error(&AppError::ProxyError(
+            "connection reset".into()
+        )));
+        // Auth expiry is a business error — the user must re-login.
+        assert!(!is_transport_error(&AppError::AuthSessionExpired(
+            "session_expired".into()
+        )));
+        // HTTP status errors are returned as ApiRequestResult, not AppError.
+        assert!(!is_transport_error(&AppError::InvalidRequest(
+            "bad request".into()
+        )));
+        assert!(!is_transport_error(&AppError::NotReady));
     }
 }

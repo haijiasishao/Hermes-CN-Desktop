@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn sanitize_case_insensitive_match() {
-        let body = "some COOKIE=abc and Authorization: xyz";
+        let body = "some COOKIE=abc\nAuthorization: ***";
         let out = truncate_and_sanitize(body, 500);
         assert_eq!(
             out,

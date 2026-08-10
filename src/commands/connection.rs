@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "desktop")]
 use tauri::Manager;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::android_compat as dashboard;
 #[cfg(feature = "desktop")]
@@ -232,6 +232,13 @@ fn coerce_config(
     } else {
         existing.remote_session.clone()
     };
+    // Same for backup: changing the backup URL invalidates its saved session.
+    let backup_url_changed = remote_backup_url != existing.remote_backup_url;
+    let remote_backup_session = if backup_url_changed {
+        None
+    } else {
+        existing.remote_backup_session.clone()
+    };
 
     Ok(ConnectionConfig {
         mode,
@@ -242,6 +249,7 @@ fn coerce_config(
         remote_session,
         remote_backup_url,
         remote_backup_token,
+        remote_backup_session,
     })
 }
 
@@ -660,7 +668,7 @@ pub async fn apply_connection_config(
     let result = match config.mode {
         ConnectionMode::Managed => apply_managed(&app, &state).await,
         ConnectionMode::Local => apply_local_connection(&state, &config).await,
-        ConnectionMode::Remote => apply_remote(&state, &config).await,
+        ConnectionMode::Remote => apply_remote(&app, &state, &config).await,
     };
 
     restart::end_restart(&state);
@@ -691,12 +699,13 @@ fn detach_current_backend(state: &State<'_, AppState>) -> Result<(), AppError> {
 /// before anything local is torn down, so a bad URL/token leaves the current
 /// backend untouched.
 async fn apply_remote(
+    app: &tauri::AppHandle,
     state: &State<'_, AppState>,
     config: &ConnectionConfig,
 ) -> Result<ApplyConnectionResult, AppError> {
     let primary_base_url = config.remote_url.clone().unwrap_or_default();
     if config.remote_auth_mode == connection::RemoteAuthMode::Oauth {
-        return apply_remote_oauth(state, config, &primary_base_url).await;
+        return apply_remote_oauth(app, state, config, &primary_base_url).await;
     }
     // coerce_config guarantees the token is present in remote token mode.
     let primary_token = config.remote_token.clone().unwrap_or_default();
@@ -708,6 +717,7 @@ async fn apply_remote(
         crate::state::RemoteEndpoint {
             base_url: bu.clone(),
             session_token: backup_token,
+            oauth_session: None,
         }
     });
 
@@ -775,6 +785,7 @@ async fn apply_remote(
             primary: crate::state::RemoteEndpoint {
                 base_url: primary_base_url.clone(),
                 session_token: primary_token.clone(),
+                oauth_session: None,
             },
             backup: Some(backup),
             using_backup,
@@ -800,6 +811,7 @@ async fn apply_remote(
 /// the user to have already logged in (a live session for this URL); the
 /// session is verified by minting a ws-ticket before anything is torn down.
 async fn apply_remote_oauth(
+    app: &tauri::AppHandle,
     state: &State<'_, AppState>,
     config: &ConnectionConfig,
     base_url: &str,
@@ -817,74 +829,286 @@ async fn apply_remote_oauth(
         });
     }
 
-    let session = crate::oauth_session::session_for(base_url)?;
+    // Helper: verify an OAuth session (ws-ticket + REST probe). Auth errors
+    // (401/session expired) are distinct from transport errors (unreachable).
+    async fn verify_oauth_session(
+        session: &crate::oauth_session::OauthSession,
+    ) -> Result<(), AppError> {
+        session.mint_ws_ticket().await?;
+        session.authenticated_sessions_probe().await
+    }
+
+    fn is_auth_error(err: &AppError) -> bool {
+        matches!(err, AppError::AuthSessionExpired(_))
+    }
+
+    // ---- Step 1: Try primary ----
+    let primary_session = crate::oauth_session::session_for(base_url)?;
     if let Some(cookies) = config.remote_session.clone() {
-        session.import_cookies(&cookies);
+        primary_session.import_cookies(&cookies);
     }
-    // Verify the session is live by minting a ticket; a 401 means re-login.
-    if let Err(err) = session.mint_ws_ticket().await {
-        let msg = match err {
-            AppError::AuthSessionExpired(_) => {
-                "远程登录已过期或尚未登录，请在设置中登录后再连接".to_string()
-            }
-            other => format!("远程会话校验失败：{}，已保存配置但未切换", other),
-        };
-        return Ok(ApplyConnectionResult {
-            ok: false,
-            mode: "remote".to_string(),
-            error: Some(msg),
-            ..Default::default()
-        });
-    }
+    let primary_result = verify_oauth_session(&primary_session).await;
 
-    // Verify the REST session boundary with the same cookie client as the WS
-    // ticket. Do this before detaching the current backend so a failed probe
-    // leaves the existing connection intact.
-    if let Err(err) = session.authenticated_sessions_probe().await {
-        let msg = match err {
-            AppError::AuthSessionExpired(_) => {
-                "远程登录已过期或尚未登录，请在设置中登录后再连接".to_string()
+    // ---- Step 2: If primary failed with transport error, try backup ----
+    let (active_session, active_url, active_cookies, using_backup) = match &primary_result {
+        Ok(()) => {
+            // Primary verified successfully.
+            (
+                primary_session.clone(),
+                base_url.to_string(),
+                primary_session.export_cookies(),
+                false,
+            )
+        }
+        Err(err) if is_auth_error(err) => {
+            // Primary auth error (401/session expired) — do NOT fall back to backup.
+            let msg = match err {
+                AppError::AuthSessionExpired(_) => {
+                    "远程登录已过期或尚未登录，请在设置中登录后再连接".to_string()
+                }
+                other => format!("远程会话校验失败：{}，已保存配置但未切换", other),
+            };
+            return Ok(ApplyConnectionResult {
+                ok: false,
+                mode: "remote".to_string(),
+                error: Some(msg),
+                ..Default::default()
+            });
+        }
+        Err(primary_err) => {
+            // Primary transport/unreachable error — attempt backup.
+            log::warn!(
+                "apply_remote_oauth: primary verification failed ({}), trying backup",
+                primary_err
+            );
+            let backup_result: Option<(
+                std::sync::Arc<crate::oauth_session::OauthSession>,
+                String,
+                Vec<crate::oauth_session::PersistedCookie>,
+            )> = 'try_backup: {
+                let Some(ref backup_url_raw) = config.remote_backup_url else {
+                    break 'try_backup None;
+                };
+                let Ok(norm_backup) = connection::normalize_remote_base_url(backup_url_raw) else {
+                    log::warn!("apply_remote_oauth: invalid backup URL, skipping failover");
+                    break 'try_backup None;
+                };
+                if norm_backup
+                    == connection::normalize_remote_base_url(base_url).unwrap_or_default()
+                {
+                    break 'try_backup None;
+                }
+                let Some(ref backup_cookies) = config.remote_backup_session else {
+                    break 'try_backup None;
+                };
+                if backup_cookies.is_empty() {
+                    break 'try_backup None;
+                }
+                let backup_session = match crate::oauth_session::session_for(&norm_backup) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!("apply_remote_oauth: cannot create backup session: {e}");
+                        break 'try_backup None;
+                    }
+                };
+                backup_session.import_cookies(backup_cookies);
+                match verify_oauth_session(&backup_session).await {
+                    Ok(()) => {
+                        let cookies = backup_session.export_cookies();
+                        Some((backup_session, norm_backup, cookies))
+                    }
+                    Err(e) => {
+                        log::warn!("apply_remote_oauth: backup verification also failed: {e}");
+                        break 'try_backup None;
+                    }
+                }
+            };
+            match backup_result {
+                Some((session, url, cookies)) => {
+                    log::info!(
+                        "apply_remote_oauth: primary unavailable, using backup at {}",
+                        url
+                    );
+                    (session, url, cookies, true)
+                }
+                None => {
+                    let detail = format!(
+                        "主地址不可用（{}），且备用地址验证也失败，已保存配置但未切换",
+                        primary_err
+                    );
+                    return Ok(ApplyConnectionResult {
+                        ok: false,
+                        mode: "remote".to_string(),
+                        error: Some(detail),
+                        ..Default::default()
+                    });
+                }
             }
-            other => format!("远程会话 REST 探针失败：{}，已保存配置但未切换", other),
-        };
-        return Ok(ApplyConnectionResult {
-            ok: false,
-            mode: "remote".to_string(),
-            error: Some(msg),
-            ..Default::default()
-        });
-    }
+        }
+    };
 
+    let gateway_url = dashboard::build_gateway_url(&active_url, None);
+
+    // Build and verify backup endpoint BEFORE detaching the current backend.
+    // When primary succeeded, independently verify backup cookies (ws-ticket
+    // + REST probe) so only authenticated endpoints enter FailoverState.
+    // When using_backup, primary session exists but transport failed — store
+    // it so failover can retry later.
+    // Doing this before detach_current_backend ensures we never tear down a
+    // live connection only to discover the backup we planned to use is dead.
+    let (backup_endpoint, verified_backup_cookies): (
+        Option<crate::state::RemoteEndpoint>,
+        Option<Vec<crate::oauth_session::PersistedCookie>>,
+    ) = if using_backup {
+        (
+            Some(crate::state::RemoteEndpoint {
+                base_url: base_url.to_string(),
+                session_token: String::new(),
+                oauth_session: Some(primary_session.clone()),
+            }),
+            None,
+        )
+    } else {
+        // Primary active: verify backup cookies independently before failover.
+        let try_verified: Option<(
+            crate::state::RemoteEndpoint,
+            Vec<crate::oauth_session::PersistedCookie>,
+        )> = 'try_verified: {
+            let Some(ref backup_url_raw) = config.remote_backup_url else {
+                break 'try_verified None;
+            };
+            let Ok(norm_backup) = connection::normalize_remote_base_url(backup_url_raw) else {
+                log::warn!("apply_remote_oauth: invalid backup URL, skipping");
+                break 'try_verified None;
+            };
+            if norm_backup == connection::normalize_remote_base_url(base_url).unwrap_or_default() {
+                break 'try_verified None;
+            }
+            let Some(ref backup_cookies) = config.remote_backup_session else {
+                break 'try_verified None;
+            };
+            if backup_cookies.is_empty() {
+                break 'try_verified None;
+            }
+            let backup_session = match crate::oauth_session::session_for(&norm_backup) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!("apply_remote_oauth: cannot create backup session: {e}");
+                    break 'try_verified None;
+                }
+            };
+            backup_session.import_cookies(backup_cookies);
+            match verify_oauth_session(&backup_session).await {
+                Ok(()) => {
+                    let cookies = backup_session.export_cookies();
+                    let ep = crate::state::RemoteEndpoint {
+                        base_url: norm_backup,
+                        session_token: String::new(),
+                        oauth_session: Some(backup_session),
+                    };
+                    Some((ep, cookies))
+                }
+                Err(e) => {
+                    log::info!(
+                        "apply_remote_oauth: backup verification failed ({}), skipping failover",
+                        e
+                    );
+                    break 'try_verified None;
+                }
+            }
+        };
+        match try_verified {
+            Some((ep, cookies)) => (Some(ep), Some(cookies)),
+            None => (None, None),
+        }
+    };
+
+    // All probes above completed before detaching the current backend.
+    // The relay mints a ticket per connect in OAuth mode.
     detach_current_backend(state)?;
 
-    // Gateway URL carries no token in oauth mode; the relay mints a ticket per
-    // connect. Persist any cookies the verify captured.
-    let gateway_url = dashboard::build_gateway_url(base_url, None);
-    let cookies = session.export_cookies();
+    // Gateway URL carries no token in oauth mode; the relay mints a ticket per connect.
     {
         let mut inner = state.inner.lock()?;
-        inner.api_base_url = base_url.to_string();
+        inner.api_base_url = active_url.clone();
         inner.gateway_url = gateway_url.clone();
         inner.session_token = None;
-        inner.oauth_session = Some(session);
+        inner.oauth_session = Some(active_session.clone());
         inner.connection_mode = ConnectionMode::Remote;
-        inner.failover = None;
+
+        if using_backup {
+            let primary_endpoint = crate::state::RemoteEndpoint {
+                base_url: base_url.to_string(),
+                session_token: String::new(),
+                oauth_session: Some(primary_session.clone()),
+            };
+            inner.failover = Some(crate::state::FailoverState {
+                primary: primary_endpoint,
+                backup: Some(crate::state::RemoteEndpoint {
+                    base_url: active_url.clone(),
+                    session_token: String::new(),
+                    oauth_session: Some(active_session.clone()),
+                }),
+                using_backup: true,
+            });
+        } else if let Some(backup_ep) = backup_endpoint {
+            inner.failover = Some(crate::state::FailoverState {
+                primary: crate::state::RemoteEndpoint {
+                    base_url: base_url.to_string(),
+                    session_token: String::new(),
+                    oauth_session: Some(active_session.clone()),
+                },
+                backup: Some(backup_ep),
+                using_backup: false,
+            });
+        } else {
+            inner.failover = None;
+        }
+
         inner.yolo_mode = false;
         inner.last_runtime_error = None;
-        inner.dashboard_handle = Some(DashboardHandle::remote_oauth(base_url.to_string()));
+        inner.dashboard_handle = Some(DashboardHandle::remote_oauth(active_url.clone()));
     }
+
+    // Persist rotated cookies for both primary and backup — captured before
+    // the state lock so no async or re-lock is needed here.
     let mut persisted = config.clone();
-    persisted.remote_session = Some(cookies);
+    if using_backup {
+        persisted.remote_backup_session = Some(active_cookies);
+        persisted.remote_session = Some(primary_session.export_cookies());
+    } else {
+        persisted.remote_session = Some(active_cookies);
+        if let Some(backup_cookies) = verified_backup_cookies {
+            persisted.remote_backup_session = Some(backup_cookies);
+        }
+    }
     let _ = connection::write_config(&persisted);
 
+    // Emit failover event if we ended up using backup.
+    if using_backup {
+        let _ = app.emit(
+            "connection-failover",
+            serde_json::json!({
+                "activeRemote": "backup",
+                "failoverActive": true,
+                "toUrl": &active_url,
+            }),
+        );
+    }
+
     log::info!(
-        "Connection switched to OAuth remote Hermes Agent at {}",
-        base_url
+        "Connection switched to OAuth remote Hermes Agent at {}{}",
+        active_url,
+        if using_backup {
+            " (via backup failover)"
+        } else {
+            ""
+        }
     );
     Ok(ApplyConnectionResult {
         ok: true,
         mode: "remote".to_string(),
-        api_base_url: Some(base_url.to_string()),
+        api_base_url: Some(active_url),
         gateway_url: Some(gateway_url),
         session_token: None,
         error: None,
@@ -1145,6 +1369,7 @@ mod tests {
             remote_session: None,
             remote_backup_url: None,
             remote_backup_token: None,
+            remote_backup_session: None,
         }
     }
 

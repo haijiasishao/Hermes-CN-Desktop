@@ -48,6 +48,21 @@ function testResultSummary(result: TestConnectionResult): ConnectionMessage {
   return { tone: "error", text: `${detail}　[${parts.join("，")}]` };
 }
 
+/** Lightweight frontend URL normalization for backup-URL comparison. */
+function normalizeRemoteUrl(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+    u.hash = "";
+    u.search = "";
+    let p = u.pathname.replace(/\/+$/, "");
+    if (!p) p = "/";
+    u.pathname = p;
+    return u.toString().replace(/\/+$/, "");
+  } catch {
+    return raw.trim().toLowerCase().replace(/\/+$/, "");
+  }
+}
+
 export function ConnectionSection({
   showHeading = true,
   externalOnly = false,
@@ -199,6 +214,17 @@ export function ConnectionSection({
     setLoggingIn(true);
     setMessage(null);
     try {
+      // Persist the origin before login so the native command can safely
+      // attach the returned HttpOnly cookies to this configured endpoint.
+      if (desktop.saveConnectionConfig) {
+        const saved = await desktop.saveConnectionConfig({
+          mode: "remote",
+          remoteUrl: trimmedRemoteUrl,
+          remoteAuthMode: "oauth",
+          remoteBackupUrl: remoteBackupUrl.trim() || undefined,
+        });
+        setConfig(saved);
+      }
       const r = await desktop.connectionOauthLogin(trimmedRemoteUrl);
       if (r.ok) {
         setIdentity(r.identity ?? null);
@@ -207,11 +233,19 @@ export function ConnectionSection({
             mode: "remote",
             remoteUrl: trimmedRemoteUrl,
             remoteAuthMode: "oauth",
+            remoteBackupUrl: remoteBackupUrl.trim() || undefined,
           });
           if (!applied.ok) {
             setMessage({ tone: "error", text: applied.error ?? "OAuth 连接应用失败" });
             return;
           }
+        }
+        // Refresh config so persisted session/backup state is reflected.
+        if (desktop.getConnectionConfig) {
+          try {
+            const view = await desktop.getConnectionConfig();
+            setConfig(view);
+          } catch {}
         }
         setMessage({ tone: "ok", text: "登录成功" });
         notifyConnectionAuthRestored();
@@ -225,33 +259,72 @@ export function ConnectionSection({
     }
   };
 
-  const handlePasswordLogin = async (provider: string): Promise<void> => {
+  const handlePasswordLogin = async (provider: string, target: "primary" | "backup" = "primary"): Promise<void> => {
     if (!desktop?.connectionPasswordLogin) return;
     setLoggingIn(true);
     setMessage(null);
+    const loginUrl = target === "backup" ? remoteBackupUrl.trim() : trimmedRemoteUrl;
+
+    // Save both origins before either login so the native command can persist
+    // HttpOnly cookies into the correct primary/backup slot. Passwords are
+    // deliberately not part of this payload.
+    if (desktop.saveConnectionConfig) {
+      try {
+        const saved = await desktop.saveConnectionConfig({
+          mode: "remote",
+          remoteUrl: trimmedRemoteUrl,
+          remoteAuthMode: "oauth",
+          remoteBackupUrl: remoteBackupUrl.trim() || undefined,
+        });
+        setConfig(saved);
+      } catch {
+        setMessage({ tone: "error", text: "保存连接地址配置失败，请检查地址格式" });
+        setLoggingIn(false);
+        return;
+      }
+    }
+
     try {
       const r = await desktop.connectionPasswordLogin({
-        remoteUrl: trimmedRemoteUrl,
+        remoteUrl: loginUrl,
         provider,
         username: pwUser,
         password: pwPass,
+        target,
       });
       if (r.ok) {
-        setIdentity(r.identity ?? null);
+        if (target === "primary") setIdentity(r.identity ?? null);
         setPwPass("");
+        // After a successful login, apply the full config (both primary and
+        // backup URLs) so the live failover state is established immediately
+        // without requiring a restart.
+        const applyPayload = {
+          mode: "remote" as const,
+          remoteUrl: trimmedRemoteUrl,
+          remoteAuthMode: "oauth" as const,
+          remoteBackupUrl: remoteBackupUrl.trim() || undefined,
+        };
         if (desktop.applyConnectionConfig) {
-          const applied = await desktop.applyConnectionConfig({
-            mode: "remote",
-            remoteUrl: trimmedRemoteUrl,
-            remoteAuthMode: "oauth",
-          });
+          const applied = await desktop.applyConnectionConfig(applyPayload);
           if (!applied.ok) {
             setMessage({ tone: "error", text: applied.error ?? "OAuth 连接应用失败" });
             return;
           }
         }
-        setMessage({ tone: "ok", text: "登录成功" });
-        notifyConnectionAuthRestored();
+        if (target === "backup") {
+          // Refresh config view so remoteBackupSessionSet updates immediately.
+          if (desktop.getConnectionConfig) {
+            try {
+              const view = await desktop.getConnectionConfig();
+              setConfig(view);
+            } catch {}
+          }
+          setMessage({ tone: "ok", text: "备用地址登录成功，已建立主备连接" });
+          notifyConnectionAuthRestored();
+        } else {
+          setMessage({ tone: "ok", text: "登录成功" });
+          notifyConnectionAuthRestored();
+        }
       } else {
         setMessage({ tone: "error", text: r.error ?? "登录失败" });
       }
@@ -274,8 +347,11 @@ export function ConnectionSection({
   const remoteReady = gated
     ? Boolean(identity) // oauth: must be logged in
     : Boolean(trimmedRemoteUrl && (tokenInput.trim() || config?.remoteTokenSet));
-  const backupBlockedByOauth = gated && Boolean(remoteBackupUrl.trim());
-  const canSubmit = remoteReady && !backupBlockedByOauth;
+  const backupNeedsLogin = gated
+    && Boolean(remoteBackupUrl.trim())
+    && (!config?.remoteBackupSessionSet
+      || normalizeRemoteUrl(remoteBackupUrl) !== normalizeRemoteUrl(config?.remoteBackupUrl ?? ""));
+  const canSubmit = remoteReady;
   const identityLabel = identity
     ? identity.displayName || identity.email || identity.userId || "已登录"
     : null;
@@ -305,11 +381,16 @@ export function ConnectionSection({
     if (!canSubmit) {
       setMessage({
         tone: "error",
-        text: backupBlockedByOauth
-          ? "OAuth 模式暂不支持主备自动切换，请清空备用地址后再保存"
-          : gated
-            ? "请先完成远程登录"
-            : "请先填写远程地址和会话令牌",
+        text: gated
+          ? "请先完成远程登录"
+          : "请先填写远程地址和会话令牌",
+      });
+      return;
+    }
+    if (backupNeedsLogin) {
+      setMessage({
+        tone: "error",
+        text: "已填写备用地址但尚未登录，请先登录备用地址后再保存",
       });
       return;
     }
@@ -593,7 +674,7 @@ export function ConnectionSection({
                             type="button"
                             variant="solid"
                             tone="accent"
-                            onClick={() => void handlePasswordLogin(p.name)}
+                            onClick={() => void handlePasswordLogin(p.name, "primary")}
                             disabled={disabled || !pwUser || !pwPass}
                             loading={loggingIn}
                           >
@@ -615,7 +696,7 @@ export function ConnectionSection({
               <div className={s.rowLabel}>备用远程地址</div>
               <div className={s.rowSub}>
                 可选。主地址连接失败时自动切换到同一远程 Hermes；留空表示不启用主备。
-                {gated && " OAuth 模式暂不支持主备，请清空此项。"}
+                {gated && " 备用地址需单独登录以获取独立会话。"}
               </div>
             </div>
             <div className={s.rowRight}>
@@ -653,6 +734,56 @@ export function ConnectionSection({
                   autoComplete="off"
                   spellCheck={false}
                 />
+              </div>
+            </div>
+          )}
+          {gated && remoteBackupUrl.trim() && (
+            <div className={`${s.row} ${s.connRow}`}>
+              <div className={s.rowLeft}>
+                <div className={s.rowLabel}>备用地址登录</div>
+                <div className={s.rowSub}>
+                  {config?.remoteBackupSessionSet ? "备用会话已保存。" : "使用与主地址相同的用户名/密码分别登录备用地址。"}
+                </div>
+              </div>
+              <div className={s.rowRight}>
+                {authProviders
+                  .filter((p) => p.supportsPassword)
+                  .map((p) => (
+                    <div key={p.name} className={s.pwRow}>
+                      <Input
+                        className={s.connControl}
+                        value={pwUser}
+                        placeholder="用户名"
+                        disabled={disabled || loggingIn}
+                        onChange={(e) => setPwUser(e.target.value)}
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      <Input
+                        type="password"
+                        className={s.connControl}
+                        value={pwPass}
+                        placeholder="密码"
+                        disabled={disabled || loggingIn}
+                        onChange={(e) => setPwPass(e.target.value)}
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        tone="accent"
+                        onClick={() => void handlePasswordLogin(p.name, "backup")}
+                        disabled={disabled || !pwUser || !pwPass}
+                        loading={loggingIn}
+                      >
+                        登录备用
+                      </Button>
+                    </div>
+                  ))}
+                {authProviders.length === 0 && (
+                  <div className={s.rowSub}>网关未注册任何登录方式，请检查网关配置。</div>
+                )}
               </div>
             </div>
           )}

@@ -610,6 +610,8 @@ export interface ConnectionConfigView {
   remoteBackupTokenSet: boolean;
   /** Preview only; never the backup token itself. */
   remoteBackupTokenPreview?: string | null;
+  /** True when a persisted OAuth cookie session exists for the backup origin. */
+  remoteBackupSessionSet: boolean;
   /** Currently active remote endpoint: primary or backup. */
   activeRemote: "primary" | "backup";
   /** True after an automatic switch to backup. */

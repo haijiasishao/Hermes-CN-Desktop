@@ -497,7 +497,7 @@ export function GooseComposer({
     }
   }, [startVoiceRecording, stopVoiceRecording, voiceStatus]);
 
-  // Make `initial` reactive so external prefill (e.g. quick-start recipes) takes
+  // Make `initial` reactive so external prefill (e.g. configuration migration) takes
   // effect after mount. We focus the textarea on non-empty external pushes so
   // the user can keep typing without an extra click.
   useEffect(() => {

@@ -519,6 +519,8 @@ declare global {
         provider: string;
         username: string;
         password: string;
+        /** "primary" (default) or "backup". */
+        target?: "primary" | "backup";
       }): Promise<OauthLoginResult>;
       connectionAuthMe?(remoteUrl: string): Promise<OauthLoginResult>;
       connectionOauthLogout?(remoteUrl: string): Promise<void>;

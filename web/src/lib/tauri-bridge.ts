@@ -440,6 +440,7 @@ const tauriBridge = {
     provider: string;
     username: string;
     password: string;
+    target?: "primary" | "backup";
   }): Promise<OauthLoginResult> {
     return invokeCommand("connection_password_login", { input });
   },
