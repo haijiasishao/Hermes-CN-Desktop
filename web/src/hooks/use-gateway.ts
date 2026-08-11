@@ -33,12 +33,15 @@ import {
 import { buildGatewayModelConfigValue } from "@/lib/provider-id";
 import type { ReasoningEffort } from "@/lib/reasoning-effort";
 import {
+  forgetSessionMapping,
+  forgetSessionMappingsForPersistentSession,
   rememberSessionMapping,
   resolveGatewaySessionId,
   resolvePersistentSessionId,
 } from "@/lib/session-map";
 import { mirrorSessionWorkspaceMapping } from "@/lib/workspaces";
 import { notifyFromReconnectSnapshot } from "@/lib/notifications";
+import { messagesResponseToHermesUIMessages } from "@/components/chat/message-adapter";
 import { runtime } from "@/lib/runtime";
 import { fetchSessionMessages } from "@/hooks/use-sessions";
 import { humanizeGatewayError, parseGatewayResult } from "@/lib/gateway-result";
@@ -56,6 +59,8 @@ import {
   gwSessionIdAtom,
   markSessionInterruptedAtom,
   markStreamsReconnectingAtom,
+  recoverCompletedTurnFromStoredMessagesAtom,
+  rekeyChatSessionRuntimeAtom,
   resetChatSessionAtom,
   resetStreamStateAtom,
   setSessionErrorAtom,
@@ -104,6 +109,13 @@ function forEachSubscriber(
 }
 
 let reattachInFlight = false;
+const REATTACH_SNAPSHOT_TIMEOUT_MS = 10_000;
+
+function fetchReattachSnapshot(sessionId: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REATTACH_SNAPSHOT_TIMEOUT_MS);
+  return fetchSessionMessages(sessionId, controller.signal).finally(() => clearTimeout(timer));
+}
 
 // On a transport reconnect, re-pin the active session's live backend turn by
 // re-issuing session.resume (the gateway has no socket-level replay). Runs
@@ -131,6 +143,14 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
           ),
         ),
       onResumed: (gatewaySessionId, persistentId) => {
+        const previousGatewaySessionId = store.get(gwSessionIdAtom);
+        if (previousGatewaySessionId && previousGatewaySessionId !== gatewaySessionId) {
+          store.set(rekeyChatSessionRuntimeAtom, {
+            fromSessionId: previousGatewaySessionId,
+            toSessionId: gatewaySessionId,
+          });
+          forgetSessionMapping(previousGatewaySessionId);
+        }
         store.set(gwSessionIdAtom, gatewaySessionId);
         rememberSessionMapping(gatewaySessionId, persistentId);
       },
@@ -140,19 +160,29 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
         // visible and can recover on the next reconnect. Only an explicit
         // server-side "session missing" response is terminal.
         if (isDefinitiveMissingSessionError(error)) {
+          const failedGatewaySessionId = store.get(gwSessionIdAtom);
+          // The gateway may have already retired a completed session while the
+          // Android WebView was backgrounded. Do not leave its ephemeral id in
+          // the active store/map: the next prompt would send to that dead id
+          // and surface `session not found` again.
+          if (failedGatewaySessionId) {
+            const failedPersistentSessionId = resolvePersistentSessionId(failedGatewaySessionId);
+            forgetSessionMapping(failedGatewaySessionId);
+            forgetSessionMappingsForPersistentSession(failedPersistentSessionId);
+            if (store.get(gwSessionIdAtom) === failedGatewaySessionId) {
+              store.set(gwSessionIdAtom, null);
+            }
+          }
           store.set(terminateAllStreamsAtom);
         }
       },
       // Eagerly refresh stored messages so the UI can retire a stale
-      // "思考中" spinner immediately — not after the potentially slow
-      // resume (which may take up to 300 s).
+      // "思考中" spinner before deciding whether a live session still needs
+      // resume. The Android REST snapshot is awaited by reattachAfterReconnect;
+      // this avoids racing a completed background turn with session.resume.
       onReattachStart: () => {
         void appQueryClient.invalidateQueries({ queryKey: ["session-messages"] });
 
-        // Android WebView can lose the final message.complete event while the
-        // app is backgrounded. The REST snapshot is authoritative for a turn
-        // that finished during that gap, so inspect the authenticated message
-        // endpoint once while the local runtime still marks the turn active.
         // Desktop keeps its existing reconnect path unchanged.
         if (!runtime.androidRemoteOnly) return;
         const sessionId = store.get(gwSessionIdAtom);
@@ -161,11 +191,28 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
         if (!activeRuntime?.activeAssistantId) return;
         const persistentId = resolvePersistentSessionId(sessionId) ?? sessionId;
 
-        void fetchSessionMessages(persistentId)
+        return fetchReattachSnapshot(persistentId)
           .then((messages) => {
             const currentRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
             if (!currentRuntime?.activeAssistantId) return;
+
             notifyFromReconnectSnapshot(sessionId, currentRuntime, messages);
+            store.set(recoverCompletedTurnFromStoredMessagesAtom, {
+              sessionId,
+              storedMessages: messagesResponseToHermesUIMessages(messages),
+            });
+
+            // A completed turn no longer has a live gateway session to resume.
+            // Clear the stale ephemeral id so the next prompt resolves/resumes
+            // from the persistent task id instead of sending to a dead socket.
+            const recoveredRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
+            if (!recoveredRuntime?.activeAssistantId) {
+              forgetSessionMappingsForPersistentSession(persistentId);
+              forgetSessionMapping(sessionId);
+              if (store.get(gwSessionIdAtom) === sessionId) {
+                store.set(gwSessionIdAtom, null);
+              }
+            }
           })
           .catch(() => {
             // Reconnect/REST errors remain on the normal recovery path; a

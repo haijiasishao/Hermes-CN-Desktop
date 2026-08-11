@@ -78,8 +78,6 @@ import type { ComposerSubmitShortcut } from "@/lib/composer-submit-shortcut";
 import type { ConfigSchemaField, CronJob, DesktopUpdateCheckResult, RuntimeInfo, RuntimeUpdateCheckResult } from "@hermes/protocol";
 import { CopyButton } from "@/components/ui/copy-button";
 import { DiagnosticCopyButton } from "@/components/ui/diagnostic-copy-button";
-import wechatCommunityQr from "@/assets/wechat-community-qr.png";
-import feishuCommunityQr from "@/assets/feishu-community-qr.png";
 import { WandermindsMark } from "@/components/brand/wanderminds-mark";
 import { SettingsHero } from "./settings-hero";
 import { ManagedRuntimePanel } from "./managed-runtime-panel";
@@ -1756,16 +1754,6 @@ export function AboutSection({ showHeading = true }: SettingsSectionProps) {
                   <ContactCopyLine label="电子邮箱" value="hello@wanderminds.ai" />
                 </div>
               </ContactField>
-            </div>
-            <div className={s.contactQrGroup}>
-              <div className={s.wechatQrPanel}>
-                <img src={wechatCommunityQr} alt="Hermes Agent 中文社区微信群二维码" />
-                <p>微信扫码加入 Hermes Agent 中文社区</p>
-              </div>
-              <div className={s.wechatQrPanel}>
-                <img src={feishuCommunityQr} alt="Hermes Agent 中文社区飞书群二维码" />
-                <p>飞书扫码加入 Hermes Agent 中文社区</p>
-              </div>
             </div>
           </div>
         </DebugCard>

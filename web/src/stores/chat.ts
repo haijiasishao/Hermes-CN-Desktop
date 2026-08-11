@@ -984,6 +984,36 @@ export const ensureChatSessionAtom = atom(null, (_get, set, sessionId: string) =
   );
 });
 
+/** Move a live runtime bucket when session.resume mints a new gateway id. */
+export const rekeyChatSessionRuntimeAtom = atom(
+  null,
+  (_get, set, params: { fromSessionId: string; toSessionId: string }) => {
+    const { fromSessionId, toSessionId } = params;
+    if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) return;
+    set(chatRuntimeBySessionAtom, (state) => {
+      const source = state[fromSessionId];
+      if (!source) return state;
+      const { [fromSessionId]: _removed, ...remaining } = state;
+      const target = state[toSessionId];
+      const sourceRuntime: ChatSessionRuntime = {
+        ...source,
+        messages: source.messages.map((message) => ({
+          ...message,
+          sessionId: toSessionId,
+        })),
+        pendingApprovals: source.pendingApprovals.map((approval) => ({
+          ...approval,
+          sessionId: toSessionId,
+        })),
+      };
+      return {
+        ...remaining,
+        [toSessionId]: target && target.updatedAt > source.updatedAt ? target : sourceRuntime,
+      };
+    });
+  },
+);
+
 export const resetChatSessionAtom = atom(null, (_get, set, sessionId: string) => {
   set(chatRuntimeBySessionAtom, (state) => ({
     ...state,

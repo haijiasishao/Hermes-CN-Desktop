@@ -34,12 +34,12 @@ export interface ReattachAfterReconnectDeps {
   /** Called when resume rejects or yields no session (session gone) so the caller can surface an error. */
   onResumeFailed: (error: unknown) => void;
   /**
-   * Called immediately at the start of reattach — before the active-session
-   * check and before `session.resume` is issued.  Used to eagerly invalidate
-   * / refresh stored session messages so the UI can retire a stale "思考中"
-   * spinner without waiting for resume (which may take up to 300 s).
+   * Called at the start of reattach — before the active-session check and
+   * before `session.resume` is issued. The promise is awaited so a completed
+   * Android background turn can retire its stale local runtime before we
+   * decide whether a live session still needs to be resumed.
    */
-  onReattachStart?: () => void;
+  onReattachStart?: () => void | Promise<void>;
 }
 
 /** Only explicit server-side absence is terminal; timeouts are recoverable. */
@@ -50,11 +50,12 @@ export function isDefinitiveMissingSessionError(error: unknown): boolean {
 }
 
 export async function reattachAfterReconnect(deps: ReattachAfterReconnectDeps): Promise<void> {
-  // Eagerly notify the caller before any active-session gating or resume.
+  // Notify the caller before any active-session gating or resume. Awaiting the
+  // callback prevents a completed background turn from racing session.resume.
   // On Android the REST message snapshot is the ONLY way to retire a stale
   // "思考中" indicator when the backend finished while the app was backgrounded,
   // so this must fire immediately — not after the (potentially slow) resume.
-  deps.onReattachStart?.();
+  await deps.onReattachStart?.();
 
   const activeSessionId = deps.getActiveSessionId();
   // Nothing open to re-pin — a fresh connect with no session is a no-op.

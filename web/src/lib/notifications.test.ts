@@ -486,6 +486,26 @@ describe("notifyFromGatewayEvent", () => {
     expect(desktopNotify).toHaveBeenCalledTimes(1);
   });
 
+  it("allows a later retry after native delivery fails", async () => {
+    const { notifyFromGatewayEvent } = await loadNotifications();
+    const desktopNotify = vi
+      .fn()
+      .mockResolvedValueOnce({ delivered: false, focused: false, error: "permission denied" })
+      .mockResolvedValueOnce({ delivered: true, focused: false, attentionRequested: true });
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      activeAssistantId: "live-assistant-1",
+      messages: [userMessage("后台任务")],
+    });
+    notifyFromGatewayEvent(completeEvent({ status: "complete" }), runtime);
+    await flushAsync();
+    notifyFromGatewayEvent(completeEvent({ status: "complete" }), runtime);
+    await flushAsync();
+
+    expect(desktopNotify).toHaveBeenCalledTimes(2);
+  });
+
   it("plays the WebAudio chime when system notifications are disabled", async () => {
     const { notifyFromGatewayEvent } = await loadNotifications({
       "hermes.notify-system": false,

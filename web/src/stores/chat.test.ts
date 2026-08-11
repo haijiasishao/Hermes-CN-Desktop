@@ -9,6 +9,7 @@ import {
   markSessionInterruptedAtom,
   markStreamsReconnectingAtom,
   recoverCompletedTurnFromStoredMessagesAtom,
+  rekeyChatSessionRuntimeAtom,
   reduceGatewayEvent,
   resetStreamStateAtom,
   startPromptAtom,
@@ -1366,5 +1367,42 @@ describe("lastActivityAt (stall watchdog source)", () => {
       const assistants = runtime.messages.filter((m) => m.role === "assistant");
       expect(assistants).toHaveLength(0);
     });
+  });
+});
+
+describe("rekeyChatSessionRuntimeAtom", () => {
+  it("moves a live runtime bucket and rewrites embedded session ids", () => {
+    const store = createStore();
+    const runtime = createEmptyChatRuntime(100);
+    runtime.activeAssistantId = "assistant-1";
+    runtime.messages = [runtimeMessage({ id: "assistant-1", sessionId: "gw-old", status: "streaming" })];
+    runtime.pendingApprovals = [{ requestId: "r1", sessionId: "gw-old", command: "echo ok" }];
+    store.set(chatRuntimeBySessionAtom, { "gw-old": runtime });
+
+    store.set(rekeyChatSessionRuntimeAtom, {
+      fromSessionId: "gw-old",
+      toSessionId: "gw-new",
+    });
+
+    const state = store.get(chatRuntimeBySessionAtom);
+    expect(state["gw-old"]).toBeUndefined();
+    expect(state["gw-new"].activeAssistantId).toBe("assistant-1");
+    expect(state["gw-new"].messages[0].sessionId).toBe("gw-new");
+    expect(state["gw-new"].pendingApprovals[0].sessionId).toBe("gw-new");
+  });
+
+  it("keeps a newer target runtime instead of overwriting it", () => {
+    const store = createStore();
+    const source = createEmptyChatRuntime(100);
+    const target = createEmptyChatRuntime(200);
+    store.set(chatRuntimeBySessionAtom, { "gw-old": source, "gw-new": target });
+
+    store.set(rekeyChatSessionRuntimeAtom, {
+      fromSessionId: "gw-old",
+      toSessionId: "gw-new",
+    });
+
+    expect(store.get(chatRuntimeBySessionAtom)["gw-new"]).toBe(target);
+    expect(store.get(chatRuntimeBySessionAtom)["gw-old"]).toBeUndefined();
   });
 });

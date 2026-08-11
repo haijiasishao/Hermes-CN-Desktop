@@ -2,9 +2,11 @@ import { lazy, Suspense, useState } from "react";
 import { FileDown } from "lucide-react";
 import {
   hasMediaFileRefs,
+  hasSandboxFileRefs,
   downloadMediaFile,
   MEDIA_LINE_RE,
   parseMediaFileRefs,
+  parseSandboxFileRefs,
   type MediaFileRef,
 } from "@/lib/media-file-link";
 import { runtime } from "@/lib/runtime";
@@ -161,7 +163,7 @@ async function saveDownloadedFile(
  */
 function MediaFileCard({ ref: mediaRef }: { ref: MediaFileRef }) {
   const { filename, path } = mediaRef;
-  const label = filename || path;
+  const label = mediaRef.displayName || filename || path;
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -257,6 +259,13 @@ function MessageTextWithMedia({ text, streaming }: MessageTextProps) {
       } else {
         textBuf.push(line);
       }
+      continue;
+    }
+
+    const sandboxRefs = parseSandboxFileRefs(trimmed);
+    if (sandboxRefs.length > 0) {
+      flushText();
+      segments.push({ type: "media", ref: sandboxRefs[0] });
     } else {
       textBuf.push(line);
     }
@@ -281,7 +290,7 @@ function MessageTextWithMedia({ text, streaming }: MessageTextProps) {
 }
 
 export function MessageText({ text, streaming = false }: MessageTextProps) {
-  if (hasMediaFileRefs(text)) {
+  if (hasMediaFileRefs(text) || hasSandboxFileRefs(text)) {
     return <MessageTextWithMedia text={text} streaming={streaming} />;
   }
 

@@ -17,9 +17,9 @@ import type {
 import type { ChatSessionRuntime } from "@/stores/chat";
 import { messagesResponseToHermesUIMessages } from "@/components/chat/message-adapter";
 import { readNotificationSettings, type NotificationSettings } from "@/stores/ui";
-import type { DesktopNotifyResult } from "@/lib/runtime";
 import { resolvePersistentSessionId } from "@/lib/session-map";
 import { queryClient } from "@/lib/query-client";
+import { runtime, type DesktopNotifyResult } from "@/lib/runtime";
 
 export interface NotificationAction {
   dedupeKey: string;
@@ -161,6 +161,12 @@ export function markNotified(key: string): void {
   }
 }
 
+function unmarkNotified(key: string): void {
+  if (!notifiedKeys.delete(key)) return;
+  const index = notifiedOrder.indexOf(key);
+  if (index >= 0) notifiedOrder.splice(index, 1);
+}
+
 export function __resetNotificationsForTests(): void {
   notifiedKeys.clear();
   notifiedOrder.length = 0;
@@ -246,15 +252,53 @@ export function playChime(): void {
   }
 }
 
+function notificationDiagnostic(message: string, details?: Record<string, unknown>): void {
+  if (!runtime.androidRemoteOnly || typeof console === "undefined") return;
+  try {
+    console.warn("[Hermes notification]", message, details ?? {});
+  } catch {
+    // Diagnostics must never affect notification delivery.
+  }
+}
+
+function commitOrReleaseNotification(
+  dedupeKey: string,
+  settings: NotificationSettings,
+  result: DesktopNotifyResult | undefined,
+  source: "gateway-event" | "reconnect-snapshot",
+): void {
+  // A focused window with only-background enabled is an intentional suppression,
+  // not a transport failure. All other `delivered:false` results remain retryable
+  // so a reconnect snapshot can recover after a transient Android IPC failure.
+  const intentionallySuppressed = Boolean(result?.focused && settings.onlyBackground);
+  if (!result || result.delivered || intentionallySuppressed) {
+    markNotified(dedupeKey);
+  } else {
+    unmarkNotified(dedupeKey);
+    notificationDiagnostic("native notification was not delivered", {
+      source,
+      focused: result.focused,
+      error: result.error ?? "",
+    });
+  }
+}
+
 // ── 触发器（副作用入口，错误全吞）──────────────────────────────────────
 
 export function notifyFromGatewayEvent(
   event: GatewayEvent,
   prevRuntime: ChatSessionRuntime | undefined,
 ): void {
+  let dispatchedDedupeKey: string | undefined;
   try {
     const bridge = window.hermesDesktop;
-    if (typeof bridge?.desktopNotify !== "function") return;
+    if (typeof bridge?.desktopNotify !== "function") {
+      notificationDiagnostic("desktop notification bridge is unavailable", {
+        source: "gateway-event",
+        eventType: event.type,
+      });
+      return;
+    }
     const settings = readNotificationSettings();
     const action = decideNotification({
       event,
@@ -263,6 +307,7 @@ export function notifyFromGatewayEvent(
       alreadyNotified: hasNotified,
     });
     if (!action || !event.session_id) return;
+    dispatchedDedupeKey = action.dedupeKey;
     markNotified(action.dedupeKey);
     void bridge
       .desktopNotify({
@@ -275,10 +320,22 @@ export function notifyFromGatewayEvent(
         requestAttention: true,
       })
       .then((result) => {
+        commitOrReleaseNotification(action.dedupeKey, settings, result, "gateway-event");
         if (result && shouldPlayFallbackSound(settings, result)) playChime();
       })
-      .catch(() => {});
-  } catch {
+      .catch((error: unknown) => {
+        unmarkNotified(action.dedupeKey);
+        notificationDiagnostic("native notification IPC rejected", {
+          source: "gateway-event",
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      });
+  } catch (error) {
+    if (dispatchedDedupeKey) unmarkNotified(dispatchedDedupeKey);
+    notificationDiagnostic("notification dispatch threw", {
+      source: "gateway-event",
+      error: error instanceof Error ? error.message : String(error ?? ""),
+    });
     // 通知永远不能影响聊天主流程。
   }
 }
@@ -311,9 +368,15 @@ export function notifyFromReconnectSnapshot(
   runtime: ChatSessionRuntime,
   messagesResponse: MessagesResponse | null | undefined,
 ): void {
+  let dispatchedDedupeKey: string | undefined;
   try {
     const bridge = window.hermesDesktop;
-    if (typeof bridge?.desktopNotify !== "function") return;
+    if (typeof bridge?.desktopNotify !== "function") {
+      notificationDiagnostic("desktop notification bridge is unavailable", {
+        source: "reconnect-snapshot",
+      });
+      return;
+    }
     const activeId = runtime.activeAssistantId;
     if (!activeId || runtime.interrupted || runtime.turnStartedAt === undefined) return;
 
@@ -323,11 +386,14 @@ export function notifyFromReconnectSnapshot(
     const storedMessages = messagesResponseToHermesUIMessages(messagesResponse ?? undefined);
     const latestAssistant = [...storedMessages]
       .reverse()
-      .find((message) => message.role === "assistant");
+      .find(
+        (message) =>
+          message.role === "assistant" &&
+          (message.status === "complete" || message.status === "error") &&
+          message.createdAt >= runtime.turnStartedAt! &&
+          hasStoredFinalContent(message),
+      );
     if (!latestAssistant) return;
-    if (latestAssistant.status !== "complete" && latestAssistant.status !== "error") return;
-    if (latestAssistant.createdAt < runtime.turnStartedAt) return;
-    if (!hasStoredFinalContent(latestAssistant)) return;
 
     const persistentSessionId = resolvePersistentSessionId(sessionId) ?? sessionId;
     const dedupeKey = `complete:${persistentSessionId}:${activeId}`;
@@ -343,6 +409,7 @@ export function notifyFromReconnectSnapshot(
       : lastUserPromptSummary(runtime, SUMMARY_CHARS) ?? "会话回复已就绪";
     const catchupSettings = { ...settings, onlyBackground: false };
 
+    dispatchedDedupeKey = dedupeKey;
     markNotified(dedupeKey);
     void bridge
       .desktopNotify({
@@ -358,10 +425,22 @@ export function notifyFromReconnectSnapshot(
         requestAttention: true,
       })
       .then((result) => {
+        commitOrReleaseNotification(dedupeKey, settings, result, "reconnect-snapshot");
         if (result && shouldPlayFallbackSound(catchupSettings, result)) playChime();
       })
-      .catch(() => {});
-  } catch {
+      .catch((error: unknown) => {
+        unmarkNotified(dedupeKey);
+        notificationDiagnostic("native notification IPC rejected", {
+          source: "reconnect-snapshot",
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      });
+  } catch (error) {
+    if (dispatchedDedupeKey) unmarkNotified(dispatchedDedupeKey);
+    notificationDiagnostic("notification dispatch threw", {
+      source: "reconnect-snapshot",
+      error: error instanceof Error ? error.message : String(error ?? ""),
+    });
     // 通知永远不能影响聊天主流程。
   }
 }

@@ -20,4 +20,9 @@ describe("configuration fields – structured value and narrow layout", () => {
     expect(cssSource).toMatch(/\.configStructuredEditor\s*\{[\s\S]*?width:\s*100%[\s\S]*?min-width:\s*0/);
     expect(cssSource).toMatch(/\.configStructuredEditor\s*\{[\s\S]*?max-height:\s*60vh[\s\S]*?overflow-y:\s*auto/);
   });
+
+  it("does not embed community QR panels in settings", () => {
+    expect(tsxSource).not.toMatch(/wechatCommunityQr|feishuCommunityQr|contactQrGroup|中文社区.*二维码/);
+    expect(cssSource).not.toMatch(/contactQrGroup|wechatQrPanel/);
+  });
 });

@@ -123,7 +123,10 @@ describe("reattachAfterReconnect stored-message refresh", () => {
   it("refreshes before resume is even issued", async () => {
     const calls: string[] = [];
     const { deps } = makeDeps({
-      onReattachStart: () => calls.push("refresh"),
+      onReattachStart: async () => {
+        calls.push("refresh");
+        await Promise.resolve();
+      },
       resume: vi.fn(async () => {
         calls.push("resume");
         return { session_id: "gw-new" };
@@ -133,6 +136,22 @@ describe("reattachAfterReconnect stored-message refresh", () => {
     await reattachAfterReconnect(deps);
 
     expect(calls).toEqual(["refresh", "resume"]);
+  });
+
+  it("skips resume when the awaited snapshot has retired the active turn", async () => {
+    const calls: string[] = [];
+    const { deps, resume } = makeDeps({
+      onReattachStart: async () => {
+        calls.push("refresh");
+        await Promise.resolve();
+        calls.push("recovered");
+      },
+      getActiveSessionId: () => (calls.includes("recovered") ? null : "gw-old"),
+    });
+
+    await reattachAfterReconnect(deps);
+
+    expect(resume).not.toHaveBeenCalled();
   });
 
   it("still refreshes when there is no active session to resume", async () => {

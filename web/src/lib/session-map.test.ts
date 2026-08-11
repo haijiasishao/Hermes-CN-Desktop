@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetUiStoreForTests, readUiValue, writeUiValue } from "./ui-store";
 import {
+  forgetSessionMapping,
+  forgetSessionMappingsForPersistentSession,
   rememberSessionMapping,
   resolveGatewaySessionId,
   resolvePersistentSessionId,
@@ -96,6 +98,27 @@ describe("session-map", () => {
     rememberSessionMapping("gw-1", "sess-old");
     rememberSessionMapping("gw-1", "sess-new");
     expect(resolvePersistentSessionId("gw-1")).toBe("sess-new");
+  });
+
+  it("forgets a stale gateway mapping after a definitive session-not-found", () => {
+    rememberSessionMapping("gw-stale", "sess-1");
+    rememberSessionMapping("gw-live", "sess-1");
+
+    forgetSessionMapping("gw-live");
+
+    expect(resolveGatewaySessionId("sess-1")).toBe("gw-stale");
+    expect(resolvePersistentSessionId("gw-live")).toBe("gw-live");
+  });
+
+  it("forgets every gateway alias for a persistent task", () => {
+    rememberSessionMapping("gw-stale", "sess-1");
+    rememberSessionMapping("gw-live", "sess-1");
+
+    forgetSessionMappingsForPersistentSession("sess-1");
+
+    expect(resolveGatewaySessionId("sess-1")).toBeUndefined();
+    expect(resolvePersistentSessionId("gw-stale")).toBe("gw-stale");
+    expect(resolvePersistentSessionId("gw-live")).toBe("gw-live");
   });
 
   it("returns undefined for undefined input", () => {

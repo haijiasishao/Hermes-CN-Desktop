@@ -39,4 +39,25 @@ describe("MessageText media download card", () => {
     expect(html).toContain("<button");
     expect(html).not.toContain("mediaFilePlaceholder");
   });
+
+  it("renders a sandbox Markdown link as the same native download card", () => {
+    vi.stubGlobal("window", {
+      __HERMES_RUNTIME__: {
+        apiBaseUrl: "http://192.168.0.10:9119",
+        sessionToken: "test-session-token",
+      },
+      hermesDesktop: {
+        downloadFile: vi.fn(),
+      },
+    });
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      <MessageText text="[下载：随便发我一个文件.txt](sandbox:/opt/data/随便发我一个文件.txt)" />,
+    );
+
+    expect(html).toContain("下载：随便发我一个文件.txt");
+    expect(html).toContain("<button");
+    expect(html).not.toContain("<a");
+    expect(html).not.toContain("sandbox:");
+  });
 });

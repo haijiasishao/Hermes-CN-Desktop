@@ -3,7 +3,9 @@ import {
   buildMediaDownloadUrl,
   downloadMediaFile,
   hasMediaFileRefs,
+  hasSandboxFileRefs,
   parseMediaFileRefs,
+  parseSandboxFileRefs,
 } from "./media-file-link";
 
 describe("hasMediaFileRefs", () => {
@@ -69,6 +71,29 @@ describe("parseMediaFileRefs", () => {
 
   it("returns empty array for text without MEDIA:", () => {
     expect(parseMediaFileRefs("No files here.")).toEqual([]);
+  });
+});
+
+describe("sandbox markdown file links", () => {
+  it("detects the sandbox link shape returned by Hermes", () => {
+    const text = "[下载：随便发我一个文件.txt](sandbox:/opt/data/随便发我一个文件.txt)";
+    expect(hasSandboxFileRefs(text)).toBe(true);
+  });
+
+  it("extracts the display label and decoded absolute path", () => {
+    const refs = parseSandboxFileRefs(
+      "[下载：my report.txt](sandbox:/opt/data/my%20report.txt)",
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      displayName: "下载：my report.txt",
+      filename: "my report.txt",
+      path: "/opt/data/my report.txt",
+    });
+  });
+
+  it("rejects non-absolute sandbox paths", () => {
+    expect(hasSandboxFileRefs("[file](sandbox:relative/file.txt)")).toBe(false);
   });
 });
 

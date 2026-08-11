@@ -1258,43 +1258,8 @@
 
 .contactLayout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   gap: 20px;
   align-items: start;
-}
-
-/* 微信 + 飞书两张群二维码并排（飞书在微信右侧）；窄屏可换行。 */
-.contactQrGroup {
-  display: flex;
-  gap: 16px;
-  align-items: start;
-  flex-wrap: wrap;
-}
-
-.wechatQrPanel {
-  display: grid;
-  justify-items: center;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--h-line-soft);
-  border-radius: 0;
-  background: var(--h-bg-pane);
-}
-
-.wechatQrPanel img {
-  display: block;
-  width: 148px;
-  height: 148px;
-  border-radius: 0;
-  background: #fff;
-}
-
-.wechatQrPanel p {
-  margin: 0;
-  color: var(--h-text-2);
-  font-size: 11.5px;
-  line-height: 1.55;
-  text-align: center;
 }
 
 .contactLines {
@@ -2989,14 +2954,6 @@ button.providerWebsiteButton:hover {
 
   .contactLayout {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .wechatQrPanel {
-    justify-items: flex-start;
-  }
-
-  .wechatQrPanel p {
-    text-align: left;
   }
 
   .providerPresetHeader {

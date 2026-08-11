@@ -65,6 +65,27 @@ export function rememberSessionMapping(gatewaySessionId: string, persistentSessi
   writeMap(map);
 }
 
+export function forgetSessionMapping(gatewaySessionId: string | undefined) {
+  if (!gatewaySessionId) return;
+  const map = pruneExpired(readMap());
+  if (!Object.hasOwn(map, gatewaySessionId)) return;
+  delete map[gatewaySessionId];
+  writeMap(map);
+}
+
+/** Remove every ephemeral gateway id that points at one persistent task. */
+export function forgetSessionMappingsForPersistentSession(persistentSessionId: string | undefined) {
+  if (!persistentSessionId) return;
+  const map = pruneExpired(readMap());
+  let changed = false;
+  for (const [gatewaySessionId, entry] of Object.entries(map)) {
+    if (entry.persistentId !== persistentSessionId) continue;
+    delete map[gatewaySessionId];
+    changed = true;
+  }
+  if (changed) writeMap(map);
+}
+
 export function resolvePersistentSessionId(sessionId: string | undefined): string | undefined {
   if (!sessionId) return undefined;
   const entry = readMap()[sessionId];
