@@ -39,6 +39,20 @@ describe("Android native notification integration", () => {
     expect(settings).toContain("notificationPermission");
   });
 
+  it("builds the APK with the android cargo feature so notify commands are registered", () => {
+    // desktop_notify / notification_permission and the notification plugin are
+    // gated behind #[cfg(feature = "android")] (src/lib.rs, src/commands/mod.rs).
+    // Tauri does NOT auto-select the feature: without an explicit --features
+    // android the APK ships without those commands and the settings page fails
+    // with "command_desktop_notify not found".
+    const workflow = read(".github/workflows/android-build.yml");
+    const buildCommand = workflow
+      .split("\n")
+      .find((line) => line.includes("tauri android build"));
+    expect(buildCommand).toBeDefined();
+    expect(buildCommand).toMatch(/--features[\s=]android\b/);
+  });
+
   it("does not disable desktopNotify bridge method for Android Remote", () => {
     const bridge = read("web/src/lib/tauri-bridge.ts");
     // desktopNotify must NOT appear in the ANDROID_REMOTE_UNSUPPORTED_BRIDGE_METHODS list

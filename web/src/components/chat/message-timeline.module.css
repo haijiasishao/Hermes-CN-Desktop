@@ -1365,3 +1365,21 @@ button.mediaFileLink:disabled {
   color: var(--h-success, #2e7d32);
   margin-left: 4px;
 }
+
+@media (max-width: 420px) {
+  .progressBlock {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .thinkingMeta {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .thinkingModel {
+    min-width: 0;
+    max-width: 100%;
+  }
+}

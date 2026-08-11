@@ -664,6 +664,26 @@ const tauriBridge = {
     };
   },
 
+  /** Listen for the Rust `connection-failover` Tauri event emitted when
+   *  `api_proxy` or `ws_proxy` switches the active remote endpoint after a
+   *  transport failure. GatewayClient uses this on Android Remote to tear down
+   *  a half-open socket and reconnect to the newly-active endpoint. */
+  onConnectionFailover(handler: (payload: unknown) => void): () => void {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("connection-failover", handler))
+      .then((fn) => {
+        if (disposed) safeUnlisten(fn);
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      safeUnlisten(unlisten);
+    };
+  },
+
   setUiZoom(factor: number): void {
     // Native webview page zoom (WKWebView setPageZoom / WebView2 ZoomFactor /
     // WebKitGTK zoom_level). Unlike CSS `zoom`, page zoom reflows the layout and

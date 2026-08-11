@@ -198,6 +198,42 @@ if (depAuditFailed) {
 console.log(`Cargo dependency boundary audit passed (${desktopOnlyDeps.length} deps verified)`);
 
 
+// --- Android build-surface audit ---
+// The notification plugin and the notify commands (desktop_notify /
+// notification_permission) only compile under the "android" cargo feature
+// (src/lib.rs, src/commands/mod.rs).  Tauri does NOT select that feature
+// automatically: an APK built without `--features android` registers none of
+// them and the settings page fails at runtime with
+// "command_desktop_notify not found".  Fail here — this audit runs before the
+// APK build step — instead of publishing an APK missing commands.
+const androidWorkflowPath = path.join(root, ".github/workflows/android-build.yml");
+const androidWorkflow = fs.readFileSync(androidWorkflowPath, "utf8");
+const androidBuildCommands = androidWorkflow
+  .split("\n")
+  .filter((line) => line.includes("tauri android build") && !line.trim().startsWith("#"));
+
+let buildSurfaceFailed = false;
+if (androidBuildCommands.length === 0) {
+  console.error(
+    "Build-surface violation: no `tauri android build` command found in .github/workflows/android-build.yml",
+  );
+  buildSurfaceFailed = true;
+}
+for (const command of androidBuildCommands) {
+  if (!/--features[\s=]android\b/.test(command)) {
+    console.error(
+      `Build-surface violation: \`${command.trim()}\` must pass --features android ` +
+        "(the notification plugin and notify commands are cfg-gated behind it)",
+    );
+    buildSurfaceFailed = true;
+  }
+}
+if (buildSurfaceFailed) {
+  process.exit(1);
+}
+console.log(`android_build_commands=${androidBuildCommands.length} (all pass --features android)`);
+
+
 // --- Android manifest audit ---
 const manifestPath = path.join(root, "gen/android/app/src/main/AndroidManifest.xml");
 const manifest = fs.readFileSync(manifestPath, "utf8");

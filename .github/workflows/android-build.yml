@@ -86,7 +86,7 @@ jobs:
           export NDK_ROOT="$ANDROID_NDK_HOME"
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          pnpm tauri android build --apk --target aarch64
+          pnpm tauri android build --apk --target aarch64 --features android
 
       - name: Sign APK with debug keystore (internal testing)
         run: |

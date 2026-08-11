@@ -368,4 +368,63 @@ describe("MessageTimeline", () => {
     expect(html).not.toContain('title="朗读回复"');
   });
 
+
+  it("passes turnStartedAt, sessionUsage, and progressModel to ProgressBlock in the no-blocks streaming path", () => {
+    const messages: ChatMessage[] = [
+      { id: "user-1", role: "user", createdAt: 1, text: "问题" },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        createdAt: 2,
+        status: "streaming",
+        text: "正在回答...",
+      },
+    ];
+
+    const html = renderTimeline(
+      <MessageTimeline
+        messages={messages}
+        turnStartedAt={Date.now() - 30_000}
+        sessionUsage={{
+          model: "qwen3.6-plus",
+          context_used: 42_000,
+          input: 40_000,
+          output: 2_000,
+          total: 42_000,
+        } as any}
+        progressModel="qwen3.6-plus"
+      />,
+    );
+
+    // The no-blocks streaming path should render ProgressBlock with tokens and model
+    expect(html).toContain("42.0k tokens");
+    expect(html).toContain("qwen3.6-plus");
+    expect(html).toContain('role="status"');
+  });
+
+  it("renders progressBlock structure with thinkingMeta and thinkingTimer for CSS class assertions", () => {
+    const messages: ChatMessage[] = [
+      { id: "user-1", role: "user", createdAt: 1, text: "问题" },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        createdAt: 2,
+        status: "streaming",
+        text: "回答中",
+      },
+    ];
+
+    const html = renderTimeline(
+      <MessageTimeline
+        messages={messages}
+        turnStartedAt={Date.now()}
+        sessionUsage={{ context_used: 1000, model: "test-model" } as any}
+        progressModel="test-model"
+      />,
+    );
+
+    // progressBlock must exist and contain both thinkingMeta and thinkingTimer
+    expect(html).toContain("thinkingMeta");
+    expect(html).toContain("thinkingTimer");
+  });
 });

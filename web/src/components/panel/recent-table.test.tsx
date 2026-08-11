@@ -1,3 +1,4 @@
+import * as React from "react";
 import ReactDOMServer from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "@hermes/protocol";
@@ -65,14 +66,30 @@ describe("RecentTable", () => {
     expect(html).toContain("已完成");
   });
 
-  it("renders role=button and tabIndex on compact cards for keyboard activation", () => {
+  it("renders an explicit three-dot action button for compact cards", () => {
+    const sessions = [makeSession()];
+    const props = {
+      sessions,
+      onOpen: () => {},
+      compact: true,
+      onActionMenu: () => {},
+    } as unknown as React.ComponentProps<typeof RecentTable>;
+    const html = ReactDOMServer.renderToStaticMarkup(
+      React.createElement(RecentTable, props),
+    );
+
+    expect(html).toContain('data-session-action="true"');
+    expect(html).toContain('aria-label="会话操作：测试会话标题"');
+  });
+
+  it("renders a keyboard-accessible primary button on compact cards", () => {
     const sessions = [makeSession()];
     const html = ReactDOMServer.renderToStaticMarkup(
       <RecentTable sessions={sessions} onOpen={() => {}} compact />,
     );
 
-    expect(html).toContain('role="button"');
-    expect(html).toContain('tabindex="0"');
+    expect(html).toContain('<button type="button"');
+    expect(html).toContain('aria-label="打开会话：测试会话标题"');
   });
 
   it("hides ID, model, and token fields in compact mode", () => {
@@ -152,11 +169,11 @@ it("keeps error/interrupted precedence over active state in compact mode", () =>
   expect(html).not.toContain("已完成");
 });
 
-describe("RecentTable compact onLongPress wiring", () => {
+describe("RecentTable compact onActionMenu wiring", () => {
   it("renders data-session-id on each compact card", () => {
     const sessions = [makeSession({ id: "sess-aaa-111" }), makeSession({ id: "sess-bbb-222" })];
     const html = ReactDOMServer.renderToStaticMarkup(
-      <RecentTable sessions={sessions} onOpen={() => {}} compact onLongPress={() => {}} />,
+      <RecentTable sessions={sessions} onOpen={() => {}} compact onActionMenu={() => {}} />,
     );
     expect(html).toContain('data-session-id="sess-aaa-111"');
     expect(html).toContain('data-session-id="sess-bbb-222"');
@@ -170,7 +187,7 @@ describe("RecentTable compact onLongPress wiring", () => {
     expect(html).not.toContain("data-session-id");
   });
 
-  it("renders without error when onLongPress is omitted in compact mode", () => {
+  it("renders without error when onActionMenu is omitted in compact mode", () => {
     const sessions = [makeSession()];
     const html = ReactDOMServer.renderToStaticMarkup(
       <RecentTable sessions={sessions} onOpen={() => {}} compact />,
@@ -180,7 +197,7 @@ describe("RecentTable compact onLongPress wiring", () => {
     expect(html).toContain("data-session-id");
   });
 
-  it("renders data-session-id even without onLongPress in compact mode", () => {
+  it("renders data-session-id even without onActionMenu in compact mode", () => {
     const sessions = [makeSession({ id: "card-only" })];
     const html = ReactDOMServer.renderToStaticMarkup(
       <RecentTable sessions={[sessions[0]]} onOpen={() => {}} compact />,

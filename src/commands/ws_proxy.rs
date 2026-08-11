@@ -232,6 +232,67 @@ pub async fn connect_gateway_stream(
     }
 }
 
+/// The dashboard's uvicorn pings every 20s and closes the socket when it
+/// doesn't see a pong within 20s (ws_ping_timeout). On this split sink/stream
+/// relay, tungstenite's automatic pong only flushes when the write half is
+/// polled — and the writer sits idle between RPCs. So on an otherwise-quiet
+/// gateway the queued pong never goes out, uvicorn drops the connection, and
+/// the desktop reconnects every ~20-40s ("网关经常中断，需要重连"). Our own
+/// keepalive ping sits well under that window: it keeps the socket warm and,
+/// by driving the sink, flushes any pending pong.
+const RELAY_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Drain outbound frames onto the relay's write half until the connection is
+/// torn down. Split out of `gateway_ws_open` so the transport-failure path is
+/// unit-testable without a live socket or an `AppHandle`.
+///
+/// Any exit — including a failed send — tears the whole relay down: the write
+/// half dying is the ONLY signal we get when the device leaves the network a
+/// half-open socket was bound to (Wi-Fi off on Android). Without raising
+/// `abort` + `notify` here the reader stays parked in `read.next()` forever,
+/// no `gateway-ws-closed` ever reaches the webview, the shim keeps reporting
+/// OPEN, and nothing reconnects — so the native primary/backup failover never
+/// gets the new connect attempt it needs to switch endpoints.
+async fn run_relay_writer<S>(
+    mut sink: S,
+    mut rx: mpsc::UnboundedReceiver<String>,
+    abort: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+) where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    let mut keepalive = tokio::time::interval(RELAY_KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        if abort.load(Ordering::Relaxed) {
+            break;
+        }
+        tokio::select! {
+            _ = notify.notified() => break,
+            _ = keepalive.tick() => {
+                // Empty payload; uvicorn just needs the frame to keep the
+                // socket alive (and the send flushes any pending pong).
+                if sink.send(Message::Ping(Default::default())).await.is_err() {
+                    break;
+                }
+            }
+            out = rx.recv() => match out {
+                Some(text) => {
+                    if sink.send(Message::text(text)).await.is_err() {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+    // Signal BEFORE closing: `close()` on a dead socket can block on a Close
+    // frame that will never flush, and the reader must be woken either way.
+    abort.store(true, Ordering::Relaxed);
+    notify.notify_waiters();
+    let _ = sink.close().await;
+}
+
 /// Open the official `/api/ws` WebSocket from Rust and start relaying frames.
 ///
 /// Resolves once the handshake completes; the JS shim treats that as `onopen`.
@@ -247,8 +308,8 @@ pub async fn gateway_ws_open(
     shutdown_active(&state)?;
     let stream = connect_gateway_stream(&app, &state).await?;
 
-    let (mut sink, mut read) = stream.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (sink, mut read) = stream.split();
+    let (tx, rx) = mpsc::unbounded_channel::<String>();
     let abort = Arc::new(AtomicBool::new(false));
     let notify = Arc::new(Notify::new());
 
@@ -263,47 +324,7 @@ pub async fn gateway_ws_open(
     }
 
     // Writer task: drains outbound frames; closes the socket on abort / channel drop.
-    {
-        let abort_w = abort.clone();
-        let notify_w = notify.clone();
-        tauri::async_runtime::spawn(async move {
-            // The dashboard's uvicorn pings every 20s and closes the socket when it
-            // doesn't see a pong within 20s (ws_ping_timeout). On this split
-            // sink/stream relay, tungstenite's automatic pong only flushes when the
-            // write half is polled — and the writer sits idle between RPCs. So on an
-            // otherwise-quiet gateway the queued pong never goes out, uvicorn drops
-            // the connection, and the desktop reconnects every ~20-40s ("网关经常
-            // 中断，需要重连"). Send our own keepalive ping well under that window:
-            // it keeps the socket warm and, by driving the sink, flushes any pending
-            // pong. The reader already ignores inbound Ping/Pong frames.
-            let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(10));
-            keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                if abort_w.load(Ordering::Relaxed) {
-                    break;
-                }
-                tokio::select! {
-                    _ = notify_w.notified() => break,
-                    _ = keepalive.tick() => {
-                        // Empty payload; uvicorn just needs the frame to keep the
-                        // socket alive (and the send flushes any pending pong).
-                        if sink.send(Message::Ping(Default::default())).await.is_err() {
-                            break;
-                        }
-                    }
-                    out = rx.recv() => match out {
-                        Some(text) => {
-                            if sink.send(Message::text(text)).await.is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-            }
-            let _ = sink.close().await;
-        });
-    }
+    tauri::async_runtime::spawn(run_relay_writer(sink, rx, abort.clone(), notify.clone()));
 
     // Reader task: relays inbound text frames to the webview; emits closed on end.
     {
@@ -474,4 +495,192 @@ pub async fn gateway_ws_close(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::pin::Pin;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    type SinkPoll = Poll<Result<(), ()>>;
+
+    /// Which outbound frames the fake transport refuses. `Everything` models a
+    /// write half that died with the network (Wi-Fi off on Android); `DataOnly`
+    /// models a socket that still takes keepalive pings but can no longer ship
+    /// RPC frames.
+    #[derive(Clone, Copy)]
+    enum SinkFault {
+        Everything,
+        DataOnly,
+    }
+
+    /// Counters live outside the sink because `run_relay_writer` consumes it.
+    #[derive(Clone)]
+    struct SinkProbe {
+        pings: Arc<AtomicUsize>,
+        data: Arc<AtomicUsize>,
+        closed: Arc<AtomicBool>,
+    }
+
+    impl SinkProbe {
+        fn new() -> Self {
+            Self {
+                pings: Arc::new(AtomicUsize::new(0)),
+                data: Arc::new(AtomicUsize::new(0)),
+                closed: Arc::new(AtomicBool::new(false)),
+            }
+        }
+    }
+
+    struct FaultySink {
+        fault: SinkFault,
+        probe: SinkProbe,
+    }
+
+    impl futures_util::Sink<Message> for FaultySink {
+        type Error = ();
+
+        fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> SinkPoll {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            match item {
+                Message::Ping(_) => {
+                    self.probe.pings.fetch_add(1, Ordering::Relaxed);
+                    match self.fault {
+                        SinkFault::Everything => Err(()),
+                        SinkFault::DataOnly => Ok(()),
+                    }
+                }
+                _ => {
+                    self.probe.data.fetch_add(1, Ordering::Relaxed);
+                    Err(())
+                }
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> SinkPoll {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> SinkPoll {
+            self.probe.closed.store(true, Ordering::Relaxed);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Stand-in for the reader task, which parks on the same `Notify` the relay
+    /// uses to tear both halves down. Completing it proves the reader would wake
+    /// and emit `gateway-ws-closed` instead of staying blocked in `read.next()`
+    /// on a half-open socket.
+    fn spawn_parked_reader(notify: Arc<Notify>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move { notify.notified().await })
+    }
+
+    async fn assert_reader_woken(reader: tokio::task::JoinHandle<()>) {
+        let joined = tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("a dead write half must wake the relay reader");
+        joined.expect("reader task panicked");
+    }
+
+    #[tokio::test]
+    async fn keepalive_failure_aborts_the_relay_and_wakes_the_reader() {
+        let abort = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        // `_tx` is held so `rx.recv()` stays pending: only the keepalive tick,
+        // which `interval` fires immediately, can end this loop.
+        let (_tx, rx) = mpsc::unbounded_channel::<String>();
+        let probe = SinkProbe::new();
+        let sink = FaultySink {
+            fault: SinkFault::Everything,
+            probe: probe.clone(),
+        };
+
+        let reader = spawn_parked_reader(notify.clone());
+        tokio::task::yield_now().await;
+
+        run_relay_writer(sink, rx, abort.clone(), notify.clone()).await;
+
+        assert_eq!(
+            probe.pings.load(Ordering::Relaxed),
+            1,
+            "keepalive must be attempted"
+        );
+        assert!(
+            abort.load(Ordering::Relaxed),
+            "a failed keepalive must abort the relay so the reader stops trusting the socket"
+        );
+        assert!(
+            probe.closed.load(Ordering::Relaxed),
+            "the write half must be closed"
+        );
+        assert_reader_woken(reader).await;
+    }
+
+    #[tokio::test]
+    async fn outbound_frame_failure_aborts_the_relay_and_wakes_the_reader() {
+        let abort = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        // Pings still succeed here, so only the queued RPC frame can end the loop.
+        let probe = SinkProbe::new();
+        let sink = FaultySink {
+            fault: SinkFault::DataOnly,
+            probe: probe.clone(),
+        };
+
+        let reader = spawn_parked_reader(notify.clone());
+        tokio::task::yield_now().await;
+
+        tx.send(r#"{"jsonrpc":"2.0","id":"w1"}"#.to_string())
+            .unwrap();
+        run_relay_writer(sink, rx, abort.clone(), notify.clone()).await;
+
+        assert_eq!(
+            probe.data.load(Ordering::Relaxed),
+            1,
+            "the RPC frame must be attempted"
+        );
+        assert!(
+            abort.load(Ordering::Relaxed),
+            "a failed outbound frame must abort the relay"
+        );
+        assert!(
+            probe.closed.load(Ordering::Relaxed),
+            "the write half must be closed"
+        );
+        assert_reader_woken(reader).await;
+    }
+
+    #[tokio::test]
+    async fn pre_aborted_relay_exits_without_sending_and_closes_the_write_half() {
+        // The existing teardown path (shutdown_active / gateway_ws_close) must
+        // keep working: abort raised before the first poll ends the loop at once.
+        let abort = Arc::new(AtomicBool::new(true));
+        let notify = Arc::new(Notify::new());
+        let (_tx, rx) = mpsc::unbounded_channel::<String>();
+        let probe = SinkProbe::new();
+        let sink = FaultySink {
+            fault: SinkFault::Everything,
+            probe: probe.clone(),
+        };
+
+        run_relay_writer(sink, rx, abort, notify).await;
+
+        assert_eq!(
+            probe.pings.load(Ordering::Relaxed),
+            0,
+            "an aborted relay must not send"
+        );
+        assert!(
+            probe.closed.load(Ordering::Relaxed),
+            "the write half must be closed"
+        );
+    }
 }

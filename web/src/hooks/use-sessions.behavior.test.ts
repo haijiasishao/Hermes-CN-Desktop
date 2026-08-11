@@ -155,7 +155,7 @@ describe("Android History UI refinement", () => {
 
   it("shows a section hint for Android sessions", () => {
     expect(historySource).toContain("最近会话");
-    expect(historySource).toContain("长按会话打开操作菜单");
+    expect(historySource).toContain("点击右侧三个点打开操作菜单");
   });
 
   it("has a coherent empty state for Android when no sessions exist", () => {

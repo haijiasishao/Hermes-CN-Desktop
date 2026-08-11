@@ -914,7 +914,7 @@ function MessageBubble({ message, turnStartedAt, sessionUsage, progressModel, sp
                 <ReasoningBlock text={message.reasoning} streaming={streaming && !message.text} />
               ) : null}
               {message.tools?.length ? <ToolChain tools={message.tools} /> : null}
-              {streaming ? <ProgressBlock progressModel={progressModel} /> : null}
+              {streaming ? <ProgressBlock turnStartedAt={turnStartedAt} sessionUsage={sessionUsage} progressModel={progressModel} /> : null}
             </>
           )}
         </div>

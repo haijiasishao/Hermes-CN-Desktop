@@ -297,16 +297,68 @@
 }
 
 .compactCard {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 16px;
+  padding: 16px 56px 16px 16px;
   border-bottom: 1px solid var(--h-line-soft);
-  cursor: pointer;
+  cursor: default;
   transition: background 0.12s;
   -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
   min-height: 44px;
+}
+
+.compactCardMain {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.compactCardMain:focus-visible {
+  outline: 2px solid var(--h-accent);
+  outline-offset: 4px;
+}
+
+.compactMore {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+  color: var(--h-text-2);
+  cursor: pointer;
+  transform: translateY(-50%);
+  touch-action: manipulation;
+}
+
+.compactMore:hover,
+.compactMore:focus-visible {
+  background: var(--h-bg-chip);
+  color: var(--h-text);
+}
+
+.compactMore:focus-visible {
+  outline: 2px solid var(--h-accent);
+  outline-offset: 2px;
 }
 
 .compactCard:last-child {

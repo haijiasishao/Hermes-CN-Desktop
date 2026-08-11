@@ -139,16 +139,16 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
           store.set(terminateAllStreamsAtom);
         }
       },
+      // Eagerly refresh stored messages so the UI can retire a stale
+      // "思考中" spinner immediately — not after the potentially slow
+      // resume (which may take up to 300 s).
+      onReattachStart: () => {
+        void appQueryClient.invalidateQueries({ queryKey: ["session-messages"] });
+      },
     });
   } finally {
     reattachInFlight = false;
     void invalidateSessionListQueries(appQueryClient);
-    // A mobile WebView can be suspended while the backend finishes a turn.
-    // The socket has no replay buffer, so refresh the REST message snapshot
-    // after resume to recover tool calls/final output that arrived while the
-    // app was backgrounded. Active queries refetch immediately; inactive
-    // cached sessions are merely marked stale.
-    void appQueryClient.invalidateQueries({ queryKey: ["session-messages"] });
   }
 }
 

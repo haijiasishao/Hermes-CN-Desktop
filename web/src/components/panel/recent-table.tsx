@@ -1,10 +1,10 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useState } from "react";
+import { MoreHorizontal } from "lucide-react";
 import { sessionDisplayTitle } from "@/lib/session-title";
 import { formatTokens, relativeTime } from "@/lib/format";
 import { Dot } from "@/components/ui/pill";
 import { getSourceMeta } from "@/lib/source-meta";
 import type { SessionSummary } from "@hermes/protocol";
-import { useLongPress } from "@/hooks/use-long-press";
 import s from "./recent-table.module.css";
 
 const COLLAPSED_ROWS = 5;
@@ -41,10 +41,10 @@ interface RecentTableProps {
   /** Compact card layout for mobile/Android. Omit for desktop table. */
   compact?: boolean;
   /**
-   * Called when a compact card is long-pressed (~500 ms hold without moving).
-   * Only used in compact (mobile/Android) mode.
+   * Opens the row action menu for a compact card. Coordinates are the action
+   * button's client-space anchor so the parent can position its Popover.
    */
-  onLongPress?: (session: SessionSummary, anchorX: number, anchorY: number) => void;
+  onActionMenu?: (session: SessionSummary, anchorX: number, anchorY: number) => void;
 }
 
 // ── Compact card list (Android / mobile) ──
@@ -52,53 +52,17 @@ interface RecentTableProps {
 function CompactCardList({
   sessions,
   onOpen,
-  onLongPress,
+  onActionMenu,
 }: {
   sessions: SessionSummary[];
   onOpen: (session: SessionSummary) => void;
-  onLongPress?: (session: SessionSummary, anchorX: number, anchorY: number) => void;
+  onActionMenu?: (session: SessionSummary, anchorX: number, anchorY: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [page, setPage] = useState(1);
 
-  const onLongPressRef = useRef(onLongPress);
-  onLongPressRef.current = onLongPress;
-
-  const sessionMap = useMemo(
-    () => new Map(sessions.map((s) => [s.id, s])),
-    [sessions],
-  );
-
-  const guardRef = useRef(false);
-
-  const lpHandlers = useLongPress(
-    useCallback(
-      (e: TouchEvent | PointerEvent) => {
-        const el = (e.target as HTMLElement | null)?.closest<HTMLElement>(
-          "[data-session-id]",
-        );
-        if (!el) return;
-        const session = sessionMap.get(el.dataset.sessionId ?? "");
-        if (!session) return;
-        guardRef.current = true;
-        const touchPoint = "touches" in e
-          ? (e.touches[0] ?? e.changedTouches[0])
-          : undefined;
-        const x = touchPoint?.clientX ?? ("clientX" in e ? e.clientX : 0);
-        const y = touchPoint?.clientY ?? ("clientY" in e ? e.clientY : 0);
-        onLongPressRef.current?.(session, x, y);
-      },
-      [sessionMap],
-    ),
-    { delay: 500, moveThreshold: 10 },
-  );
-
   const handleCardClick = useCallback(
     (session: SessionSummary) => {
-      if (guardRef.current) {
-        guardRef.current = false;
-        return;
-      }
       onOpen(session);
     },
     [onOpen],
@@ -137,36 +101,48 @@ function CompactCardList({
             <div
               key={sess.id}
               className={s.compactCard}
-              role="button"
-              tabIndex={0}
               data-session-id={sess.id}
-              onClick={() => handleCardClick(sess)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onOpen(sess);
-                }
-              }}
-              {...(onLongPress ? lpHandlers : {})}
             >
-              <span className={s.compactTitle}>
-                {sessionDisplayTitle(sess)}
-                {(isError || isInterrupted) && " — " + statusLabel}
-              </span>
-              <span className={s.compactMeta}>
-                <span className={s.compactSource}>{meta.label}</span>
-                <span className={s.compactDot}>·</span>
-                <span className={s.compactStatus}>
-                  {(isError || isInterrupted) && (
-                    <Dot tone={isError ? "err" : "warn"} />
-                  )}
-                  {statusLabel}
+              <button
+                type="button"
+                className={s.compactCardMain}
+                onClick={() => handleCardClick(sess)}
+                aria-label={`打开会话：${sessionDisplayTitle(sess)}`}
+              >
+                <span className={s.compactTitle}>
+                  {sessionDisplayTitle(sess)}
+                  {(isError || isInterrupted) && " — " + statusLabel}
                 </span>
-                <span className={s.compactDot}>·</span>
-                <span className={s.compactTime}>
-                  {isActive ? "进行中" : formatEndedAt(sess.ended_at)}
+                <span className={s.compactMeta}>
+                  <span className={s.compactSource}>{meta.label}</span>
+                  <span className={s.compactDot}>·</span>
+                  <span className={s.compactStatus}>
+                    {(isError || isInterrupted) && (
+                      <Dot tone={isError ? "err" : "warn"} />
+                    )}
+                    {statusLabel}
+                  </span>
+                  <span className={s.compactDot}>·</span>
+                  <span className={s.compactTime}>
+                    {isActive ? "进行中" : formatEndedAt(sess.ended_at)}
+                  </span>
                 </span>
-              </span>
+              </button>
+              {onActionMenu ? (
+                <button
+                  type="button"
+                  className={s.compactMore}
+                  data-session-action="true"
+                  aria-label={`会话操作：${sessionDisplayTitle(sess)}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    onActionMenu(sess, rect.right, rect.bottom);
+                  }}
+                >
+                  <MoreHorizontal size={20} aria-hidden="true" />
+                </button>
+              ) : null}
             </div>
           );
         })}
@@ -338,7 +314,7 @@ function DesktopTable({
 
 // ── Exported entry point ──
 
-export function RecentTable({ sessions, onOpen, compact, onLongPress }: RecentTableProps) {
+export function RecentTable({ sessions, onOpen, compact, onActionMenu }: RecentTableProps) {
   if (sessions.length === 0) {
     return (
       <div className={s.wrap}>
@@ -348,7 +324,7 @@ export function RecentTable({ sessions, onOpen, compact, onLongPress }: RecentTa
   }
 
   if (compact) {
-    return <CompactCardList sessions={sessions} onOpen={onOpen} onLongPress={onLongPress} />;
+    return <CompactCardList sessions={sessions} onOpen={onOpen} onActionMenu={onActionMenu} />;
   }
 
   return <DesktopTable sessions={sessions} onOpen={onOpen} />;

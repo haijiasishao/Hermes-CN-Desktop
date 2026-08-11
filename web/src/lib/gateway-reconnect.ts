@@ -33,6 +33,13 @@ export interface ReattachAfterReconnectDeps {
   onResumed: (gatewaySessionId: string, persistentId: string) => void;
   /** Called when resume rejects or yields no session (session gone) so the caller can surface an error. */
   onResumeFailed: (error: unknown) => void;
+  /**
+   * Called immediately at the start of reattach — before the active-session
+   * check and before `session.resume` is issued.  Used to eagerly invalidate
+   * / refresh stored session messages so the UI can retire a stale "思考中"
+   * spinner without waiting for resume (which may take up to 300 s).
+   */
+  onReattachStart?: () => void;
 }
 
 /** Only explicit server-side absence is terminal; timeouts are recoverable. */
@@ -43,6 +50,12 @@ export function isDefinitiveMissingSessionError(error: unknown): boolean {
 }
 
 export async function reattachAfterReconnect(deps: ReattachAfterReconnectDeps): Promise<void> {
+  // Eagerly notify the caller before any active-session gating or resume.
+  // On Android the REST message snapshot is the ONLY way to retire a stale
+  // "思考中" indicator when the backend finished while the app was backgrounded,
+  // so this must fire immediately — not after the (potentially slow) resume.
+  deps.onReattachStart?.();
+
   const activeSessionId = deps.getActiveSessionId();
   // Nothing open to re-pin — a fresh connect with no session is a no-op.
   if (!activeSessionId) return;

@@ -311,7 +311,7 @@ function AndroidHistoryRoute() {
   const archiveSession = useArchiveSession();
   const sessionBranch = useSessionBranch();
 
-  // Long-press action state
+  // Explicit action-menu state for the compact history cards.
   const [actionSession, setActionSession] = useState<SessionSummary | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
 
@@ -362,9 +362,9 @@ function AndroidHistoryRoute() {
     }, []),
   });
 
-  // ── Long-press handler ──
+  // ── Explicit action-menu handler ──
 
-  const handleLongPress = useCallback(
+  const handleOpenActions = useCallback(
     (session: SessionSummary, anchorX: number, anchorY: number) => {
       setActionSession(session);
       setMenuAnchor({ x: anchorX, y: anchorY });
@@ -401,13 +401,13 @@ function AndroidHistoryRoute() {
           </div>
         ) : (
           <>
-            <div className={s.androidSectionHint}>最近会话 · 长按会话打开操作菜单</div>
-            <RecentTable compact sessions={sessions} onOpen={goSession} onLongPress={handleLongPress} />
+            <div className={s.androidSectionHint}>最近会话 · 点击右侧三个点打开操作菜单</div>
+            <RecentTable compact sessions={sessions} onOpen={goSession} onActionMenu={handleOpenActions} />
           </>
         )}
       </div>
 
-      {/* ── Long-press context menu ── */}
+      {/* ── Compact card action menu ── */}
       {actionSession && menuAnchor && (
         <Popover.Root
           open
