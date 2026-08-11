@@ -31,25 +31,47 @@ describe("Auth flow behavior: handlePasswordLogin", () => {
 
   it("guards notify behind apply result: does not notify on apply failure", () => {
     const body = functionBody("handlePasswordLogin", "handleLogout");
-    // The apply result check must come before notify
     const appliedOkCheck = body.indexOf("!applied.ok");
     const notifyIdx = body.indexOf("notifyConnectionAuthRestored");
     expect(appliedOkCheck).toBeGreaterThan(-1);
     expect(appliedOkCheck).toBeLessThan(notifyIdx);
-    // There should be a return after the failure message to prevent notify
     const afterFailCheck = body.slice(appliedOkCheck, notifyIdx);
     expect(afterFailCheck).toContain("return");
   });
 
   it("shows error message when apply fails, not success", () => {
     const body = functionBody("handlePasswordLogin", "handleLogout");
-    // Should have error tone for failure path
     const appliedOkIdx = body.indexOf("!applied.ok");
     if (appliedOkIdx > -1) {
       const failBlock = body.slice(appliedOkIdx, body.indexOf("return", appliedOkIdx) + 10);
       expect(failBlock).toContain('"error"');
       expect(failBlock).not.toContain('"登录成功"');
     }
+  });
+
+  it("uses single-link payload (no backup fields)", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    expect(body).not.toContain("remoteBackupUrl");
+    expect(body).not.toContain("target");
+    expect(body).not.toContain("backup");
+  });
+
+  it("saves config before calling password login", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    const saveIdx = body.indexOf("saveConnectionConfig");
+    const loginIdx = body.indexOf("connectionPasswordLogin({");
+    expect(saveIdx).toBeGreaterThan(-1);
+    expect(loginIdx).toBeGreaterThan(-1);
+    expect(saveIdx).toBeLessThan(loginIdx);
+  });
+
+  it("pwPass is cleared after successful login", () => {
+    const body = functionBody("handlePasswordLogin", "handleLogout");
+    expect(body).toContain('setPwPass("")');
+    const okCheck = body.indexOf("r.ok");
+    const clearPass = body.indexOf('setPwPass("")');
+    expect(okCheck).toBeGreaterThan(-1);
+    expect(clearPass).toBeGreaterThan(okCheck);
   });
 });
 
@@ -68,6 +90,12 @@ describe("Auth flow behavior: handleOauthLogin", () => {
     expect(notifyIdx).toBeGreaterThan(-1);
     expect(applyIdx).toBeLessThan(notifyIdx);
   });
+
+  it("uses single-link payload (no backup fields)", () => {
+    const body = functionBody("handleOauthLogin", "handlePasswordLogin");
+    expect(body).not.toContain("remoteBackupUrl");
+    expect(body).not.toContain("backup");
+  });
 });
 
 describe("URL handling", () => {
@@ -84,95 +112,27 @@ describe("URL handling", () => {
   });
 });
 
-describe("Backup login flow", () => {
-  it("handlePasswordLogin accepts a target parameter (primary or backup)", () => {
-    const body = functionBody("handlePasswordLogin", "handleLogout");
-    expect(body).toContain('target: "primary"');
-    expect(body).toContain('target === "backup"');
+describe("Single-link connection", () => {
+  it("no backup/failover references remain in the source", () => {
+    expect(source).not.toContain("remoteBackupUrl");
+    expect(source).not.toContain("backupTokenInput");
+    expect(source).not.toContain("backupProbeStatus");
+    expect(source).not.toContain("backupAuthProviders");
+    expect(source).not.toContain("backupGated");
+    expect(source).not.toContain("backupNeedsLogin");
+    expect(source).not.toContain("normalizeRemoteUrl");
+    expect(source).not.toContain("failoverActive");
+    expect(source).not.toContain("activeRemote");
+    expect(source).not.toContain("connection-failover");
   });
 
-  it("backup login uses remoteBackupUrl as loginUrl and saves config first", () => {
-    const body = functionBody("handlePasswordLogin", "handleLogout");
-    expect(body).toContain("remoteBackupUrl.trim()");
-    // Must save config before login so persist_backup_login can match URL.
-    expect(body).toContain("saveConnectionConfig");
-  });
-
-  it("backup login also calls applyConnectionConfig to establish failover", () => {
-    const body = functionBody("handlePasswordLogin", "handleLogout");
-    // Both primary and backup logins should call applyConnectionConfig
-    // to establish the live failover state immediately.
-    expect(body).toContain("applyConnectionConfig");
-    expect(body).toContain("applyPayload");
-  });
-
-  it("backup login refreshes config to update remoteBackupSessionSet", () => {
-    const body = functionBody("handlePasswordLogin", "handleLogout");
-    expect(body).toContain("getConnectionConfig");
-  });
-
-  it("backup login saves connection config before calling password login", () => {
-    const body = functionBody("handlePasswordLogin", "handleLogout");
-    // The saveConnectionConfig call must appear before the actual
-    // connectionPasswordLogin invocation (with arguments), not the guard check.
-    const saveIdx = body.indexOf("saveConnectionConfig");
-    const loginIdx = body.indexOf("connectionPasswordLogin({");
-    expect(saveIdx).toBeGreaterThan(-1);
-    expect(loginIdx).toBeGreaterThan(-1);
-    expect(saveIdx).toBeLessThan(loginIdx);
-  });
-
-  it("primary login passes remoteBackupUrl to applyConnectionConfig", () => {
-    const body = functionBody("handlePasswordLogin", "handleLogout");
-    expect(body).toContain("remoteBackupUrl.trim()");
-    expect(body).toContain("applyPayload");
-  });
-
-  it("pwPass is cleared after successful login (inside r.ok branch)", () => {
-    const body = functionBody("handlePasswordLogin", "handleLogout");
-    // setPwPass("") must be called on the success path, before target-specific logic
-    expect(body).toContain('setPwPass("")');
-    // It must appear inside the r.ok block (after the r.ok check)
-    const okCheck = body.indexOf("r.ok");
-    const clearPass = body.indexOf('setPwPass("")');
-    expect(okCheck).toBeGreaterThan(-1);
-    expect(clearPass).toBeGreaterThan(okCheck);
-  });
-});
-
-describe("Backup session validation", () => {
-  it("blocks save when backup URL is set but no backup session exists", () => {
-    expect(source).toContain("backupNeedsLogin");
-    expect(source).toContain("已填写备用地址但尚未登录");
-  });
-
-  it("backupNeedsLogin checks gated, backupUrl, session, and normalized URL match", () => {
-    expect(source).toContain("backupNeedsLogin");
-    expect(source).toContain("normalizeRemoteUrl");
-    expect(source).toContain("remoteBackupUrl");
-    expect(source).toContain("remoteBackupSessionSet");
-  });
-});
-
-describe("Backup probe and auth gate", () => {
-  it("probes the backup URL independently of the primary URL", () => {
-    expect(source).toContain("backupProbeStatus");
-    expect(source).toContain("backupProbeSeq");
-    expect(source).toContain("trimmedBackupUrl");
-    expect(source).toContain("probeConnectionConfig?.(trimmedBackupUrl)");
-  });
-
-  it("keeps backup auth providers separate from primary providers", () => {
-    expect(source).toContain("backupAuthProviders");
-    expect(source).toContain("const backupGated");
-    expect(source).toContain("{backupGated && trimmedBackupUrl &&");
-  });
-
-  it("shows the backup login gate even when primary probe is unavailable", () => {
-    const backupBlock = source.slice(source.indexOf("{backupGated && trimmedBackupUrl &&"));
-    expect(backupBlock).toContain("backupAuthProviders");
-    expect(backupBlock).toContain('handlePasswordLogin(p.name, "backup")');
-    expect(backupBlock).not.toContain("authProviders.map");
+  it("submit payload only sends single-link fields", () => {
+    const submitBody = functionBody("submit", "handleOpenBrowser");
+    expect(submitBody).toContain("remoteUrl");
+    expect(submitBody).toContain("remoteToken");
+    expect(submitBody).toContain("remoteAuthMode");
+    expect(submitBody).not.toContain("remoteBackupUrl");
+    expect(submitBody).not.toContain("remoteBackupToken");
   });
 });
 

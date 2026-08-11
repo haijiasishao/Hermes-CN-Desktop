@@ -43,9 +43,6 @@ pub struct PasswordLoginInput {
     pub provider: String,
     pub username: String,
     pub password: String,
-    /// "primary" (default) or "backup". Determines which session slot to persist to.
-    #[serde(default)]
-    pub target: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,30 +81,6 @@ fn persist_login(base_url: &str, cookies: Vec<PersistedCookie>) {
     }
 }
 
-/// Persist the current session cookies into connection.json as the backup
-/// session for this URL (so a backup login is remembered separately).
-/// Returns an error if the URL does not match the saved backup URL.
-fn persist_backup_login(base_url: &str, cookies: Vec<PersistedCookie>) -> Result<(), AppError> {
-    let mut config = connection::read_config();
-    let is_target = config
-        .remote_backup_url
-        .as_deref()
-        .and_then(|u| connection::normalize_remote_base_url(u).ok())
-        .as_deref()
-        == Some(base_url);
-    if !is_target {
-        return Err(AppError::InvalidRequest(format!(
-            "备用登录 URL ({}) 与已保存的备用地址不匹配，请先保存连接配置",
-            base_url
-        )));
-    }
-    config.remote_backup_session = Some(cookies);
-    if config.remote_auth_mode == connection::RemoteAuthMode::Token {
-        config.remote_auth_mode = connection::RemoteAuthMode::Oauth;
-    }
-    connection::write_config(&config)
-}
-
 /// Verify a freshly-populated session (mint ticket + identity) and persist it.
 async fn finish_login(
     base_url: &str,
@@ -127,30 +100,6 @@ async fn finish_login(
     Ok(identity)
 }
 
-/// Like `finish_login` but targets a specific session slot (primary or backup).
-/// For backup targets, persists to `remote_backup_session` instead of `remote_session`.
-async fn finish_login_for_target(
-    base_url: &str,
-    session: &oauth_session::OauthSession,
-    target: &str,
-) -> Result<AuthIdentity, AppError> {
-    session.mint_ws_ticket().await?;
-    let identity = session.fetch_me().await.unwrap_or(AuthIdentity {
-        user_id: None,
-        email: None,
-        display_name: None,
-        org_id: None,
-        provider: None,
-        expires_at: None,
-    });
-    if target == "backup" {
-        persist_backup_login(base_url, session.export_cookies())?;
-    } else {
-        persist_login(base_url, session.export_cookies());
-    }
-    Ok(identity)
-}
-
 /// Promote an already-connected token-mode remote to the authenticated cookie
 /// session immediately after login. Without this live-state swap, the next
 /// REST request would keep using the old token proxy until a full reconnect.
@@ -164,24 +113,8 @@ fn promote_active_remote_to_oauth(
         return Ok(());
     }
 
-    let norm = connection::normalize_remote_base_url(base_url).ok();
-    let active_matches = connection::normalize_remote_base_url(&inner.api_base_url).ok() == norm;
-
-    // Keep FailoverState in sync even when the freshly authenticated endpoint
-    // is not the currently active endpoint (for example, re-login to primary
-    // while the app is temporarily using backup).
-    if let Some(ref mut failover) = inner.failover {
-        if connection::normalize_remote_base_url(&failover.primary.base_url).ok() == norm {
-            failover.primary.oauth_session = Some(session.clone());
-            failover.primary.session_token = String::new();
-        }
-        if let Some(ref mut backup) = failover.backup {
-            if connection::normalize_remote_base_url(&backup.base_url).ok() == norm {
-                backup.oauth_session = Some(session.clone());
-                backup.session_token = String::new();
-            }
-        }
-    }
+    let active_matches = connection::normalize_remote_base_url(&inner.api_base_url).ok()
+        == connection::normalize_remote_base_url(base_url).ok();
 
     if active_matches {
         inner.gateway_url = dashboard::build_gateway_url(base_url, None);
@@ -190,7 +123,7 @@ fn promote_active_remote_to_oauth(
         inner.dashboard_handle = Some(DashboardHandle::remote_oauth(base_url.to_string()));
     } else {
         log::debug!(
-            "promote_active_remote_to_oauth: updated non-active endpoint {} (active={})",
+            "promote_active_remote_to_oauth: URL {} does not match active {} — skipped",
             base_url,
             inner.api_base_url,
         );
@@ -307,16 +240,6 @@ pub async fn connection_password_login(
     input: PasswordLoginInput,
     state: State<'_, AppState>,
 ) -> Result<OauthLoginResult, AppError> {
-    // Validate target before any network request.
-    let _target_valid = match input.target.as_deref() {
-        Some("primary") | Some("backup") | None => Ok(()),
-        Some(other) => Err(AppError::InvalidRequest(format!(
-            "无效的登录目标: {}（仅支持 primary/backup）",
-            other
-        ))),
-    };
-    _target_valid?;
-
     let base_url = connection::normalize_remote_base_url(&input.remote_url)?;
     let session = oauth_session::session_for(&base_url)?;
     let url = format!("{}/auth/password-login", base_url);
@@ -373,61 +296,9 @@ pub async fn connection_password_login(
         }
     }
 
-    let target = match input.target.as_deref() {
-        Some("primary") | None => "primary",
-        Some("backup") => "backup",
-        Some(other) => {
-            return Ok(OauthLoginResult {
-                ok: false,
-                identity: None,
-                error: Some(format!(
-                    "无效的登录目标: {}（仅支持 primary/backup）",
-                    other
-                )),
-            });
-        }
-    };
-    let finish_result = finish_login_for_target(&base_url, &session, target).await;
-    match finish_result {
+    match finish_login(&base_url, &session).await {
         Ok(identity) => {
-            if target == "primary" {
-                // Primary login: promote to active connection.
-                promote_active_remote_to_oauth(&state, &base_url, session.clone())?;
-            } else {
-                // Backup login: update live failover state so the backup
-                // endpoint carries the new OAuth session.  If the active URL
-                // already points at the backup, also update inner.oauth_session.
-                let mut inner = state.inner.lock()?;
-                if let Some(ref mut failover) = inner.failover {
-                    // Update failover backup endpoint.
-                    if let Some(ref mut backup) = failover.backup {
-                        if connection::normalize_remote_base_url(&backup.base_url).ok()
-                            == connection::normalize_remote_base_url(&base_url).ok()
-                        {
-                            backup.oauth_session = Some(session.clone());
-                            backup.session_token = String::new();
-                            log::info!(
-                                "Updated live failover backup OAuth session after backup login"
-                            );
-                        }
-                    }
-                    // Also sync failover primary if the primary URL matches.
-                    if connection::normalize_remote_base_url(&failover.primary.base_url).ok()
-                        == connection::normalize_remote_base_url(&base_url).ok()
-                    {
-                        failover.primary.oauth_session = Some(session.clone());
-                        failover.primary.session_token = String::new();
-                    }
-                }
-                // If active connection points at this backup URL, promote it.
-                if connection::normalize_remote_base_url(&inner.api_base_url).ok()
-                    == connection::normalize_remote_base_url(&base_url).ok()
-                {
-                    inner.oauth_session = Some(session.clone());
-                    inner.gateway_url = dashboard::build_gateway_url(&base_url, None);
-                    inner.session_token = None;
-                }
-            }
+            promote_active_remote_to_oauth(&state, &base_url, session.clone())?;
             Ok(OauthLoginResult {
                 ok: true,
                 identity: Some(identity),
@@ -444,25 +315,12 @@ pub async fn connection_password_login(
 }
 
 /// Return the logged-in identity for a URL, or `ok:false` if not authenticated.
-/// If the URL matches the configured backup URL, reads backup session cookies.
 #[tauri::command]
 pub async fn connection_auth_me(input: OauthLoginInput) -> Result<OauthLoginResult, AppError> {
     let base_url = connection::normalize_remote_base_url(&input.remote_url)?;
     let session = oauth_session::session_for(&base_url)?;
     let config = connection::read_config();
-    // Determine whether this URL is the primary or backup remote.
-    let is_backup = config
-        .remote_backup_url
-        .as_deref()
-        .and_then(|u| connection::normalize_remote_base_url(u).ok())
-        .as_deref()
-        == Some(base_url.as_str());
-    let cookies = if is_backup {
-        config.remote_backup_session.as_ref()
-    } else {
-        config.remote_session.as_ref()
-    };
-    if let Some(cookies) = cookies {
+    if let Some(cookies) = config.remote_session.as_ref() {
         session.import_cookies(cookies);
     }
     match session.fetch_me().await {
@@ -498,43 +356,28 @@ pub async fn connection_oauth_logout(
     session.clear();
     oauth_session::drop_session(&base_url);
 
-    // Clear persisted session cookies (primary or backup slot, depending on URL).
+    // Clear persisted session cookies when the URL matches the configured remote.
     let mut config = connection::read_config();
-    let norm = connection::normalize_remote_base_url(&base_url).ok();
-    let is_primary = config
+    let is_current = config
         .remote_url
         .as_deref()
         .and_then(|u| connection::normalize_remote_base_url(u).ok())
-        == norm;
-    let is_backup = config
-        .remote_backup_url
-        .as_deref()
-        .and_then(|u| connection::normalize_remote_base_url(u).ok())
-        == norm;
-    if is_primary {
+        == connection::normalize_remote_base_url(&base_url).ok();
+    if is_current {
         config.remote_session = None;
-    }
-    if is_backup {
-        config.remote_backup_session = None;
-    }
-    if is_primary || is_backup {
         let _ = connection::write_config(&config);
     }
 
-    // Clean up live state. Logging out either side invalidates the pair for
-    // automatic switching; otherwise the remaining endpoint could later
-    // switch back into a cleared Arc<OauthSession>.
+    // Clean up live state when logging out the active connection.
     {
         let mut inner = state.inner.lock()?;
-        if is_primary || is_backup {
-            if connection::normalize_remote_base_url(&inner.api_base_url).ok()
+        if is_current
+            && connection::normalize_remote_base_url(&inner.api_base_url).ok()
                 == connection::normalize_remote_base_url(&base_url).ok()
-            {
-                inner.oauth_session = None;
-                inner.session_token = None;
-            }
-            inner.failover = None;
-            log::info!("FailoverState cleared after logout of {}", base_url);
+        {
+            inner.oauth_session = None;
+            inner.session_token = None;
+            log::info!("Cleared OAuth session after logout of {}", base_url);
         }
     }
 
@@ -678,46 +521,8 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    // --- persist_backup_login URL matching ---
-
     #[test]
-    fn persist_backup_login_requires_url_match() {
-        // Simulate the URL comparison logic used by persist_backup_login:
-        // config.remote_backup_url must normalize to base_url.
-        use super::connection;
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("connection.json");
-
-        // Write a config with backup URL.
-        let config = connection::ConnectionConfig {
-            mode: connection::ConnectionMode::Remote,
-            local_url: None,
-            remote_url: Some("http://primary:9119".to_string()),
-            remote_token: None,
-            remote_auth_mode: connection::RemoteAuthMode::Oauth,
-            remote_session: None,
-            remote_backup_url: Some("http://backup:9120".to_string()),
-            remote_backup_token: None,
-            remote_backup_session: None,
-        };
-        connection::write_config_to(&path, &config).unwrap();
-
-        // Read it back and verify the backup URL normalizes correctly.
-        let loaded = connection::read_config_from(&path);
-        let norm =
-            connection::normalize_remote_base_url(loaded.remote_backup_url.as_deref().unwrap())
-                .unwrap();
-        assert_eq!(norm, "http://backup:9120");
-
-        // A different URL should not match.
-        let other = connection::normalize_remote_base_url("http://other:9999").unwrap();
-        assert_ne!(norm, other);
-    }
-
-    #[test]
-    fn backup_session_cookies_round_trip_through_config() {
+    fn primary_session_round_trip_through_config() {
         use super::connection;
         use super::oauth_session::PersistedCookie;
         use tempfile::TempDir;
@@ -725,71 +530,26 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("connection.json");
 
-        let cookies = vec![
-            PersistedCookie {
-                name: "__Host-hermes_session_at".to_string(),
-                value: "at_value_123".to_string(),
-                expires_at_ms: Some(1700000000000),
-            },
-            PersistedCookie {
-                name: "__Host-hermes_session_rt".to_string(),
-                value: "rt_value_456".to_string(),
-                expires_at_ms: Some(1700086400000),
-            },
-        ];
+        let cookies = vec![PersistedCookie {
+            name: "__Host-hermes_session_at".to_string(),
+            value: "at_value_123".to_string(),
+            expires_at_ms: Some(1700000000000),
+        }];
 
         let config = connection::ConnectionConfig {
             mode: connection::ConnectionMode::Remote,
             local_url: None,
-            remote_url: Some("http://primary:9119".to_string()),
+            remote_url: Some("http://host:9119".to_string()),
             remote_token: None,
             remote_auth_mode: connection::RemoteAuthMode::Oauth,
-            remote_session: Some(vec![PersistedCookie {
-                name: "__Host-hermes_session_at".to_string(),
-                value: "primary_at".to_string(),
-                expires_at_ms: None,
-            }]),
-            remote_backup_url: Some("http://backup:9120".to_string()),
-            remote_backup_token: None,
-            remote_backup_session: Some(cookies.clone()),
+            remote_session: Some(cookies.clone()),
         };
         connection::write_config_to(&path, &config).unwrap();
 
         let loaded = connection::read_config_from(&path);
-        let backup_cookies = loaded.remote_backup_session.unwrap();
-        assert_eq!(backup_cookies.len(), 2);
-        assert_eq!(backup_cookies[0].name, "__Host-hermes_session_at");
-        assert_eq!(backup_cookies[0].value, "at_value_123");
-        assert_eq!(backup_cookies[0].expires_at_ms, Some(1700000000000));
-        assert_eq!(backup_cookies[1].name, "__Host-hermes_session_rt");
-        assert_eq!(backup_cookies[1].value, "rt_value_456");
-
-        // Primary session should also survive.
         let primary_cookies = loaded.remote_session.unwrap();
         assert_eq!(primary_cookies.len(), 1);
-        assert_eq!(primary_cookies[0].value, "primary_at");
-    }
-
-    #[test]
-    fn target_validation_accepts_primary_and_backup() {
-        // The target validation logic from connection_password_login.
-        for target in [Some("primary"), Some("backup"), None] {
-            let result: Result<(), String> = match target {
-                Some("primary") | Some("backup") | None => Ok(()),
-                Some(other) => Err(format!("无效的登录目标: {}", other)),
-            };
-            assert!(result.is_ok(), "target={:?} should be valid", target);
-        }
-    }
-
-    #[test]
-    fn target_validation_rejects_unknown() {
-        let target = Some("staging");
-        let result: Result<(), String> = match target {
-            Some("primary") | Some("backup") | None => Ok(()),
-            Some(other) => Err(format!("无效的登录目标: {}", other)),
-        };
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("staging"));
+        assert_eq!(primary_cookies[0].name, "__Host-hermes_session_at");
+        assert_eq!(primary_cookies[0].value, "at_value_123");
     }
 }

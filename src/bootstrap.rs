@@ -23,7 +23,7 @@ use crate::environment;
 use crate::error::AppError;
 #[cfg(feature = "desktop")]
 use crate::process::{dashboard, runtime};
-use crate::state::{AppState, DashboardHandle, FailoverState, RemoteEndpoint};
+use crate::state::{AppState, DashboardHandle};
 
 /// Emit a "runtime-status" event for the frontend overlay to consume.
 /// Phases (in order along the happy path):
@@ -333,95 +333,6 @@ pub async fn finalize_bootstrap(
         (hermes_home, hermes_home_base, profile)
     };
 
-    let failover = if mode == ConnectionMode::Remote && !crate::connection::env_override_active() {
-        let saved = crate::connection::read_config();
-        if let Some(backup_url) = saved.remote_backup_url {
-            if let Ok(norm_backup) = crate::connection::normalize_remote_base_url(&backup_url) {
-                if oauth_session.is_some() {
-                    // OAuth/password mode: seed backup OAuth session from persisted cookies
-                    // and verify it (mint_ws_ticket + authenticated_sessions_probe) before
-                    // allowing it into FailoverState.  An unverified backup endpoint with
-                    // oauth_session: None would silently break failover.
-                    let backup_oauth = saved.remote_backup_session.as_ref().and_then(|cookies| {
-                        if cookies.is_empty() {
-                            return None;
-                        }
-                        let session = crate::oauth_session::session_for(&norm_backup).ok()?;
-                        session.import_cookies(cookies);
-                        Some(session)
-                    });
-                    let verified_backup = if let Some(sess) = backup_oauth {
-                        match sess.mint_ws_ticket().await {
-                            Ok(_) => match sess.authenticated_sessions_probe().await {
-                                Ok(()) => Some(sess),
-                                Err(e) => {
-                                    log::warn!(
-                                        "finalize_bootstrap: backup session REST probe failed ({}), skipping backup endpoint",
-                                        e
-                                    );
-                                    None
-                                }
-                            },
-                            Err(e) => {
-                                log::warn!(
-                                    "finalize_bootstrap: backup session ws-ticket failed ({}), skipping backup endpoint",
-                                    e
-                                );
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    // Only construct FailoverState; never create a backup endpoint
-                    // with oauth_session: None.
-                    match verified_backup {
-                        Some(backup_sess) => Some(FailoverState {
-                            primary: RemoteEndpoint {
-                                base_url: handle.api_base_url.clone(),
-                                session_token: String::new(),
-                                oauth_session: oauth_session.clone(),
-                            },
-                            backup: Some(RemoteEndpoint {
-                                base_url: norm_backup,
-                                session_token: String::new(),
-                                oauth_session: Some(backup_sess),
-                            }),
-                            using_backup: false,
-                        }),
-                        None => None,
-                    }
-                } else if session_token.is_some() {
-                    // Token mode: primary/backup tokens.
-                    Some(FailoverState {
-                        primary: RemoteEndpoint {
-                            base_url: handle.api_base_url.clone(),
-                            session_token: session_token.clone().unwrap_or_default(),
-                            oauth_session: None,
-                        },
-                        backup: Some(RemoteEndpoint {
-                            base_url: norm_backup,
-                            session_token: saved
-                                .remote_backup_token
-                                .or(saved.remote_token)
-                                .unwrap_or_else(|| session_token.clone().unwrap_or_default()),
-                            oauth_session: None,
-                        }),
-                        using_backup: false,
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     {
         let state = app.state::<AppState>();
         let mut inner = state.inner.lock().unwrap();
@@ -439,7 +350,6 @@ pub async fn finalize_bootstrap(
         };
         inner.connection_mode = mode;
         inner.oauth_session = oauth_session;
-        inner.failover = failover;
         inner.dashboard_handle = Some(handle);
     }
 

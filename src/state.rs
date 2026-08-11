@@ -198,37 +198,6 @@ impl Drop for DashboardHandle {
     }
 }
 
-/// Remote endpoint used by the client-side failover state. For token mode,
-/// `session_token` is the bearer token; for OAuth/password mode,
-/// `oauth_session` holds the cookie jar. Neither is ever serialized to the
-/// renderer.
-#[derive(Clone)]
-pub struct RemoteEndpoint {
-    pub base_url: String,
-    /// Token for token-mode endpoints; empty string for OAuth/password mode.
-    pub session_token: String,
-    /// OAuth/cookie session for OAuth/password-mode endpoints; None for token mode.
-    pub oauth_session: Option<std::sync::Arc<crate::oauth_session::OauthSession>>,
-}
-
-/// Runtime state for a primary/backup pair. Both endpoints are expected to
-/// address the same remote Hermes service (for example, two ingress paths).
-pub struct FailoverState {
-    pub primary: RemoteEndpoint,
-    pub backup: Option<RemoteEndpoint>,
-    pub using_backup: bool,
-}
-
-impl FailoverState {
-    fn alternate(&self) -> Option<RemoteEndpoint> {
-        if self.using_backup {
-            Some(self.primary.clone())
-        } else {
-            self.backup.clone()
-        }
-    }
-}
-
 /// Interior mutable state shared across all Tauri commands.
 pub struct AppStateInner {
     pub api_base_url: String,
@@ -268,9 +237,6 @@ pub struct AppStateInner {
     /// Debounce marker for `connection-auth-expired` emits (a burst of 401s
     /// must not storm the UI with re-login banners).
     pub last_auth_expired_emit: Option<std::time::Instant>,
-    /// Primary/backup runtime state for remote connections (both token and
-    /// OAuth/password modes). `None` for managed or local connections.
-    pub failover: Option<FailoverState>,
 }
 
 /// A snapshot of how the currently-connected dashboard authenticates, taken
@@ -291,47 +257,7 @@ impl AppStateInner {
             None => DashboardAuth::Token(self.session_token.clone()),
         }
     }
-
-    /// Switch the active remote endpoint to the other side of the configured
-    /// pair. Returns `(from_url, to_url, using_backup)` when a switch occurred.
-    /// This only changes attach metadata; it never stops a remote process.
-    pub fn activate_other_remote_target(&mut self) -> Option<(String, String, bool)> {
-        if self.connection_mode != crate::connection::ConnectionMode::Remote {
-            return None;
-        }
-        let failover = self.failover.as_mut()?;
-        let target = failover.alternate()?;
-        if target.base_url == self.api_base_url {
-            return None;
-        }
-        let from_url = self.api_base_url.clone();
-        let using_backup = !failover.using_backup;
-        failover.using_backup = using_backup;
-
-        self.api_base_url = target.base_url.clone();
-        if let Some(oauth) = &target.oauth_session {
-            // OAuth/password mode: swap to the target's cookie session.
-            self.gateway_url = crate::android_compat::build_gateway_url(&target.base_url, None);
-            self.session_token = None;
-            self.oauth_session = Some(oauth.clone());
-            self.dashboard_handle = Some(DashboardHandle::remote_oauth(target.base_url.clone()));
-        } else {
-            // Token mode: swap to the target's bearer token.
-            self.gateway_url = crate::android_compat::build_gateway_url(
-                &target.base_url,
-                Some(&target.session_token),
-            );
-            self.session_token = Some(target.session_token.clone());
-            self.oauth_session = None;
-            self.dashboard_handle = Some(DashboardHandle::remote(
-                target.base_url.clone(),
-                target.session_token.clone(),
-            ));
-        }
-        Some((from_url, self.api_base_url.clone(), using_backup))
-    }
 }
-
 /// Thread-safe wrapper. Tauri manages this via `app.manage(AppState::new())`.
 pub struct AppState {
     pub inner: Mutex<AppStateInner>,
@@ -360,7 +286,6 @@ impl AppState {
                 },
                 oauth_session: None,
                 last_auth_expired_emit: None,
-                failover: None,
             }),
         }
     }

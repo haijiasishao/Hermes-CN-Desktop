@@ -86,23 +86,6 @@ fn shutdown_active(state: &State<'_, AppState>) -> Result<(), AppError> {
     Ok(())
 }
 
-fn activate_other_remote_target(state: &AppState) -> Option<(String, String, bool)> {
-    let mut inner = state.inner.lock().ok()?;
-    inner.activate_other_remote_target()
-}
-
-fn emit_remote_failover(app: &tauri::AppHandle, from_url: &str, to_url: &str, using_backup: bool) {
-    let _ = app.emit(
-        "connection-failover",
-        serde_json::json!({
-            "fromUrl": from_url,
-            "toUrl": to_url,
-            "activeRemote": if using_backup { "backup" } else { "primary" },
-            "failoverActive": using_backup,
-        }),
-    );
-}
-
 pub type GatewayWebSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Open the currently configured Core gateway with the desktop-owned auth.
@@ -133,10 +116,6 @@ pub async fn connect_gateway_stream(
                         emit_ws_auth_expired(app, &api_base_url);
                         return Err(err);
                     }
-                    // Non-auth mint error — try failover if Remote.
-                    if is_remote {
-                        return oauth_ws_connect_on_backup(app, state, err).await;
-                    }
                     return Err(err);
                 }
             };
@@ -158,9 +137,6 @@ pub async fn connect_gateway_stream(
                                 emit_ws_auth_expired(app, &api_base_url);
                                 return Err(err);
                             }
-                            if is_remote {
-                                return oauth_ws_connect_on_backup(app, state, err).await;
-                            }
                             return Err(err);
                         }
                     };
@@ -173,10 +149,6 @@ pub async fn connect_gateway_stream(
                                 emit_ws_auth_expired(app, &api_base_url);
                                 return Err(mapped);
                             }
-                            // Second failure — try failover if Remote.
-                            if is_remote {
-                                return oauth_ws_connect_on_backup(app, state, mapped).await;
-                            }
                             Err(mapped)
                         }
                     }
@@ -188,26 +160,24 @@ pub async fn connect_gateway_stream(
             let first_url = build_gateway_url(&api_base_url, token.as_deref());
             match tokio_tungstenite::connect_async(first_url).await {
                 Ok((ws, _resp)) => Ok(ws),
-                // Remote tokens are static; when the first endpoint is
-                // unreachable, try the other configured endpoint exactly once.
                 Err(first_err) if is_remote => {
-                    if let Some((from_url, to_url, using_backup)) =
-                        activate_other_remote_target(state)
-                    {
-                        emit_remote_failover(app, &from_url, &to_url, using_backup);
-                        let (retry_url, retry_token) = {
-                            let inner = state.inner.lock()?;
-                            (inner.api_base_url.clone(), inner.session_token.clone())
-                        };
-                        return tokio_tungstenite::connect_async(build_gateway_url(
-                            &retry_url,
-                            retry_token.as_deref(),
-                        ))
-                        .await
-                        .map(|(ws, _)| ws)
-                        .map_err(|e| AppError::GatewayWs(e.to_string()));
+                    // Connection failed. Try a session token refresh once (the
+                    // dashboard may have restarted and rotated the token).
+                    match fetch_session_token(&api_base_url).await {
+                        Some(fresh) => {
+                            let fresh_url = build_gateway_url(&api_base_url, Some(&fresh));
+                            {
+                                let mut inner = state.inner.lock()?;
+                                inner.session_token = Some(fresh.clone());
+                                inner.gateway_url = fresh_url.clone();
+                            }
+                            tokio_tungstenite::connect_async(fresh_url)
+                                .await
+                                .map(|(ws, _)| ws)
+                                .map_err(|e| AppError::GatewayWs(e.to_string()))
+                        }
+                        None => Err(AppError::GatewayWs(first_err.to_string())),
                     }
-                    Err(AppError::GatewayWs(first_err.to_string()))
                 }
                 Err(first_err) => {
                     // Token may have rotated (dashboard restarted). Refresh once.
@@ -251,8 +221,8 @@ const RELAY_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_
 /// half-open socket was bound to (Wi-Fi off on Android). Without raising
 /// `abort` + `notify` here the reader stays parked in `read.next()` forever,
 /// no `gateway-ws-closed` ever reaches the webview, the shim keeps reporting
-/// OPEN, and nothing reconnects — so the native primary/backup failover never
-/// gets the new connect attempt it needs to switch endpoints.
+/// OPEN, and nothing reconnects — so the frontend never learns the socket
+/// is dead and never starts a fresh reconnect cycle.
 async fn run_relay_writer<S>(
     mut sink: S,
     mut rx: mpsc::UnboundedReceiver<String>,
@@ -431,37 +401,6 @@ fn emit_ws_auth_expired(app: &tauri::AppHandle, base_url: &str) {
         "connection-auth-expired",
         serde_json::json!({ "baseUrl": base_url, "reason": "session_expired", "loginUrl": null }),
     );
-}
-
-/// After a non-auth transport error on the active OAuth endpoint, switch to the
-/// backup endpoint and attempt one mint + connect. Returns the original error
-/// when no failover is configured or the backup has no OAuth session.
-async fn oauth_ws_connect_on_backup(
-    app: &tauri::AppHandle,
-    state: &AppState,
-    original_err: AppError,
-) -> Result<GatewayWebSocket, AppError> {
-    if let Some((from_url, to_url, using_backup)) = activate_other_remote_target(state) {
-        emit_remote_failover(app, &from_url, &to_url, using_backup);
-        let (retry_url, retry_session) = {
-            let inner = state.inner.lock()?;
-            (inner.api_base_url.clone(), inner.oauth_session.clone())
-        };
-        if let Some(retry_session) = retry_session {
-            let ticket = retry_session.mint_ws_ticket().await.map_err(|err| {
-                if let AppError::AuthSessionExpired(_) = &err {
-                    emit_ws_auth_expired(app, &retry_url);
-                }
-                err
-            })?;
-            let url = build_gateway_ws_url_with_ticket(&retry_url, &ticket);
-            return tokio_tungstenite::connect_async(url)
-                .await
-                .map(|(ws, _)| ws)
-                .map_err(map_ws_connect_error);
-        }
-    }
-    Err(original_err)
 }
 
 #[tauri::command]

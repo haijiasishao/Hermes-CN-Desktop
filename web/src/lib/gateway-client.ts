@@ -80,7 +80,6 @@ export class GatewayClient {
   private boundOnlineHandler: (() => void) | null = null;
   private boundVisibilityHandler: (() => void) | null = null;
   private unsubscribeSystemResume: (() => void) | null = null;
-  private unsubscribeFailover: (() => void) | null = null;
   private wakeListenersInstalled = false;
 
   get state() { return this._state; }
@@ -439,21 +438,6 @@ export class GatewayClient {
       );
     }
 
-    // connection-failover: Rust emits this when api_proxy or ws_proxy
-    // switches the active remote endpoint after a transport failure.
-    // On Android Remote, the existing WebSocket may appear OPEN even
-    // though its network path is dead (half-open TCP after Wi-Fi off),
-    // and browser online/visibility events may not fire. Tear it down
-    // and reconnect to pick up the new endpoint from Rust.
-    if (runtime.androidRemoteOnly && desktop?.onConnectionFailover) {
-      this.unsubscribeFailover = desktop.onConnectionFailover(() => {
-        // Only act when the socket looks alive — if it is already
-        // closed/connecting the normal reconnect path handles it.
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          this.handleWake("failover", true);
-        }
-      });
-    }
   }
 
   private removeWakeListeners(): void {
@@ -474,10 +458,6 @@ export class GatewayClient {
     if (this.unsubscribeSystemResume) {
       this.unsubscribeSystemResume();
       this.unsubscribeSystemResume = null;
-    }
-    if (this.unsubscribeFailover) {
-      this.unsubscribeFailover();
-      this.unsubscribeFailover = null;
     }
   }
 

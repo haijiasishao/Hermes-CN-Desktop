@@ -440,7 +440,6 @@ const tauriBridge = {
     provider: string;
     username: string;
     password: string;
-    target?: "primary" | "backup";
   }): Promise<OauthLoginResult> {
     return invokeCommand("connection_password_login", { input });
   },
@@ -653,26 +652,6 @@ const tauriBridge = {
     let disposed = false;
     import("@tauri-apps/api/event")
       .then(({ listen }) => listen("system-resume", handler))
-      .then((fn) => {
-        if (disposed) safeUnlisten(fn);
-        else unlisten = fn;
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      safeUnlisten(unlisten);
-    };
-  },
-
-  /** Listen for the Rust `connection-failover` Tauri event emitted when
-   *  `api_proxy` or `ws_proxy` switches the active remote endpoint after a
-   *  transport failure. GatewayClient uses this on Android Remote to tear down
-   *  a half-open socket and reconnect to the newly-active endpoint. */
-  onConnectionFailover(handler: (payload: unknown) => void): () => void {
-    let unlisten: (() => void) | null = null;
-    let disposed = false;
-    import("@tauri-apps/api/event")
-      .then(({ listen }) => listen("connection-failover", handler))
       .then((fn) => {
         if (disposed) safeUnlisten(fn);
         else unlisten = fn;

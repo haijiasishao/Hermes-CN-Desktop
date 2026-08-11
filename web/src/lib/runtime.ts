@@ -519,8 +519,6 @@ declare global {
         provider: string;
         username: string;
         password: string;
-        /** "primary" (default) or "backup". */
-        target?: "primary" | "backup";
       }): Promise<OauthLoginResult>;
       connectionAuthMe?(remoteUrl: string): Promise<OauthLoginResult>;
       connectionOauthLogout?(remoteUrl: string): Promise<void>;
@@ -561,14 +559,6 @@ declare global {
       onPreviewFileChanged?(handler: (payload: PreviewFileChangedPayload) => void): () => void;
       onFileDrop?(handler: (payload: DesktopFileDropPayload) => void): () => void;
       onSystemResume?(handler: () => void): () => void;
-      /** Listen for Rust connection-failover events (primary→backup
-       *  endpoint switch). Used by GatewayClient on Android Remote to
-       *  tear down a half-open socket and reconnect to the new endpoint. */
-      onConnectionFailover?(handler: (payload: {
-        fromUrl?: string; toUrl?: string;
-        activeRemote?: "primary" | "backup";
-        failoverActive?: boolean;
-      }) => void): () => void;
       /** Native webview page zoom (reflows layout + viewport) for the interface
        *  scale setting. Fire-and-forget; far better than CSS `zoom`, which leaves
        *  viewport units un-scaled and overflows the fixed window. */

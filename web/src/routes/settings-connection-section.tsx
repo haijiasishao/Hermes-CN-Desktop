@@ -48,21 +48,6 @@ function testResultSummary(result: TestConnectionResult): ConnectionMessage {
   return { tone: "error", text: `${detail}　[${parts.join("，")}]` };
 }
 
-/** Lightweight frontend URL normalization for backup-URL comparison. */
-function normalizeRemoteUrl(raw: string): string {
-  try {
-    const u = new URL(raw.trim());
-    u.hash = "";
-    u.search = "";
-    let p = u.pathname.replace(/\/+$/, "");
-    if (!p) p = "/";
-    u.pathname = p;
-    return u.toString().replace(/\/+$/, "");
-  } catch {
-    return raw.trim().toLowerCase().replace(/\/+$/, "");
-  }
-}
-
 export function ConnectionSection({
   showHeading = true,
   externalOnly = false,
@@ -76,18 +61,12 @@ export function ConnectionSection({
   const [loadError, setLoadError] = useState("");
   const mode: ConnectionMode = "remote";
   const [remoteUrl, setRemoteUrl] = useState("");
-  const [remoteBackupUrl, setRemoteBackupUrl] = useState("");
   // The saved token never round-trips; this holds only what the user types.
   const [tokenInput, setTokenInput] = useState("");
-  const [backupTokenInput, setBackupTokenInput] = useState("");
-  const [backupTokenDirty, setBackupTokenDirty] = useState(false);
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>("idle");
-  const [backupProbeStatus, setBackupProbeStatus] = useState<ProbeStatus>("idle");
   const probeSeq = useRef(0);
-  const backupProbeSeq = useRef(0);
   // OAuth gate state (populated when a remote probe reports auth_required).
   const [authProviders, setAuthProviders] = useState<AuthProviderInfo[]>([]);
-  const [backupAuthProviders, setBackupAuthProviders] = useState<AuthProviderInfo[]>([]);
   const [identity, setIdentity] = useState<AuthIdentity | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
   const [pwUser, setPwUser] = useState("");
@@ -106,58 +85,16 @@ export function ConnectionSection({
       .then((view) => {
         setConfig(view);
         setRemoteUrl(view.remoteUrl);
-        setRemoteBackupUrl(view.remoteBackupUrl ?? "");
-        setBackupTokenInput("");
-        setBackupTokenDirty(false);
       })
       .catch((error) => {
         setLoadError(error instanceof Error ? error.message : String(error));
       });
   }, [desktop, externalOnly]);
 
-  useEffect(() => {
-    if (!desktop) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void import("@tauri-apps/api/event").then(async ({ listen }) => {
-      const stop = await listen<{
-        activeRemote?: "primary" | "backup";
-        failoverActive?: boolean;
-        toUrl?: string;
-      }>("connection-failover", (event) => {
-        const payload = event.payload;
-        const activeRemote = payload.activeRemote ?? "backup";
-        setConfig((previous) =>
-          previous
-            ? {
-                ...previous,
-                activeRemote,
-                failoverActive: payload.failoverActive ?? activeRemote === "backup",
-              }
-            : previous,
-        );
-        setMessage({
-          tone: "ok",
-          text:
-            activeRemote === "backup"
-              ? `主连接不可用，已自动切换至备用地址${payload.toUrl ? `：${payload.toUrl}` : ""}`
-              : "备用连接不可用，已回试主地址",
-        });
-      });
-      if (disposed) stop();
-      else unlisten = stop;
-    }).catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [desktop]);
-
   const envOverride = config?.envOverride ?? false;
   const busy = saving || applying;
   const disabled = !supported || envOverride || busy || (externalOnly && !config);
   const trimmedRemoteUrl = remoteUrl.trim();
-  const trimmedBackupUrl = remoteBackupUrl.trim();
   const effectiveMode = config?.effectiveMode ?? "remote";
 
   // Debounced as-you-type reachability probe for remote URLs, sequence-guarded
@@ -192,46 +129,8 @@ export function ConnectionSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, trimmedRemoteUrl, envOverride]);
 
-  // Probe the backup independently. The primary may be offline while the
-  // backup is reachable and protected by Basic/OAuth auth; its auth gate must
-  // not depend on the primary probe result.
-  useEffect(() => {
-    const seq = ++backupProbeSeq.current;
-    if (mode !== "remote" || envOverride || !/^https?:\/\//i.test(trimmedBackupUrl)) {
-      setBackupProbeStatus("idle");
-      setBackupAuthProviders([]);
-      return;
-    }
-    setBackupProbeStatus("probing");
-    const timer = window.setTimeout(() => {
-      desktop
-        ?.probeConnectionConfig?.(trimmedBackupUrl)
-        .then((result) => {
-          if (seq !== backupProbeSeq.current) return;
-          if (!result.reachable) {
-            setBackupProbeStatus("unreachable");
-            setBackupAuthProviders([]);
-          } else if (result.authRequired) {
-            setBackupProbeStatus("authRequired");
-            setBackupAuthProviders(result.authProviders ?? []);
-          } else {
-            setBackupProbeStatus("reachable");
-            setBackupAuthProviders([]);
-          }
-        })
-        .catch(() => {
-          if (seq !== backupProbeSeq.current) return;
-          setBackupProbeStatus("unreachable");
-          setBackupAuthProviders([]);
-        });
-    }, PROBE_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, trimmedBackupUrl, envOverride]);
-
   // A remote that enforces a login gate uses OAuth/cookie auth, not a token.
   const gated = mode === "remote" && probeStatus === "authRequired";
-  const backupGated = mode === "remote" && backupProbeStatus === "authRequired";
 
   // When the URL changes, drop any shown identity (it belonged to the old
   // gateway); if the new gateway is gated and we have a saved session, restore.
@@ -263,7 +162,6 @@ export function ConnectionSection({
           mode: "remote",
           remoteUrl: trimmedRemoteUrl,
           remoteAuthMode: "oauth",
-          remoteBackupUrl: remoteBackupUrl.trim() || undefined,
         });
         setConfig(saved);
       }
@@ -275,14 +173,13 @@ export function ConnectionSection({
             mode: "remote",
             remoteUrl: trimmedRemoteUrl,
             remoteAuthMode: "oauth",
-            remoteBackupUrl: remoteBackupUrl.trim() || undefined,
           });
           if (!applied.ok) {
             setMessage({ tone: "error", text: applied.error ?? "OAuth 连接应用失败" });
             return;
           }
         }
-        // Refresh config so persisted session/backup state is reflected.
+        // Refresh config so the persisted session state is reflected.
         if (desktop.getConnectionConfig) {
           try {
             const view = await desktop.getConnectionConfig();
@@ -301,22 +198,18 @@ export function ConnectionSection({
     }
   };
 
-  const handlePasswordLogin = async (provider: string, target: "primary" | "backup" = "primary"): Promise<void> => {
+  const handlePasswordLogin = async (provider: string): Promise<void> => {
     if (!desktop?.connectionPasswordLogin) return;
     setLoggingIn(true);
     setMessage(null);
-    const loginUrl = target === "backup" ? remoteBackupUrl.trim() : trimmedRemoteUrl;
 
-    // Save both origins before either login so the native command can persist
-    // HttpOnly cookies into the correct primary/backup slot. Passwords are
-    // deliberately not part of this payload.
+    // Save config before login so the native command can persist HttpOnly cookies.
     if (desktop.saveConnectionConfig) {
       try {
         const saved = await desktop.saveConnectionConfig({
           mode: "remote",
           remoteUrl: trimmedRemoteUrl,
           remoteAuthMode: "oauth",
-          remoteBackupUrl: remoteBackupUrl.trim() || undefined,
         });
         setConfig(saved);
       } catch {
@@ -328,45 +221,27 @@ export function ConnectionSection({
 
     try {
       const r = await desktop.connectionPasswordLogin({
-        remoteUrl: loginUrl,
+        remoteUrl: trimmedRemoteUrl,
         provider,
         username: pwUser,
         password: pwPass,
-        target,
       });
       if (r.ok) {
-        if (target === "primary") setIdentity(r.identity ?? null);
         setPwPass("");
-        // After a successful login, apply the full config (both primary and
-        // backup URLs) so the live failover state is established immediately
-        // without requiring a restart.
-        const applyPayload = {
-          mode: "remote" as const,
-          remoteUrl: trimmedRemoteUrl,
-          remoteAuthMode: "oauth" as const,
-          remoteBackupUrl: remoteBackupUrl.trim() || undefined,
-        };
+        setIdentity(r.identity ?? null);
         if (desktop.applyConnectionConfig) {
-          const applied = await desktop.applyConnectionConfig(applyPayload);
+          const applied = await desktop.applyConnectionConfig({
+            mode: "remote",
+            remoteUrl: trimmedRemoteUrl,
+            remoteAuthMode: "oauth",
+          });
           if (!applied.ok) {
-            setMessage({ tone: "error", text: applied.error ?? "OAuth 连接应用失败" });
+            setMessage({ tone: "error", text: applied.error ?? "登录成功但连接应用失败" });
             return;
           }
         }
-        if (target === "backup") {
-          // Refresh config view so remoteBackupSessionSet updates immediately.
-          if (desktop.getConnectionConfig) {
-            try {
-              const view = await desktop.getConnectionConfig();
-              setConfig(view);
-            } catch {}
-          }
-          setMessage({ tone: "ok", text: "备用地址登录成功，已建立主备连接" });
-          notifyConnectionAuthRestored();
-        } else {
-          setMessage({ tone: "ok", text: "登录成功" });
-          notifyConnectionAuthRestored();
-        }
+        setMessage({ tone: "ok", text: "登录成功" });
+        notifyConnectionAuthRestored();
       } else {
         setMessage({ tone: "error", text: r.error ?? "登录失败" });
       }
@@ -389,11 +264,6 @@ export function ConnectionSection({
   const remoteReady = gated
     ? Boolean(identity) // oauth: must be logged in
     : Boolean(trimmedRemoteUrl && (tokenInput.trim() || config?.remoteTokenSet));
-  const backupNeedsLogin =
-    backupGated
-    && Boolean(trimmedBackupUrl)
-    && (!config?.remoteBackupSessionSet
-      || normalizeRemoteUrl(remoteBackupUrl) !== normalizeRemoteUrl(config?.remoteBackupUrl ?? ""));
   const canSubmit = remoteReady;
   const identityLabel = identity
     ? identity.displayName || identity.email || identity.userId || "已登录"
@@ -409,8 +279,6 @@ export function ConnectionSection({
         remoteUrl: trimmedRemoteUrl,
         remoteToken: !gated ? tokenInput || undefined : undefined,
         remoteAuthMode: gated ? "oauth" : "token",
-        remoteBackupUrl: remoteBackupUrl.trim(),
-        remoteBackupToken: backupTokenDirty ? backupTokenInput : undefined,
       });
       setMessage(testResultSummary(result));
     } catch (error) {
@@ -430,13 +298,6 @@ export function ConnectionSection({
       });
       return;
     }
-    if (backupNeedsLogin) {
-      setMessage({
-        tone: "error",
-        text: "已填写备用地址但尚未登录，请先登录备用地址后再保存",
-      });
-      return;
-    }
     setMessage(null);
     const setBusy = apply ? setApplying : setSaving;
     setBusy(true);
@@ -446,17 +307,11 @@ export function ConnectionSection({
         remoteUrl: trimmedRemoteUrl,
         remoteToken: !gated ? tokenInput || undefined : undefined,
         remoteAuthMode: gated ? ("oauth" as const) : ("token" as const),
-        remoteBackupUrl: remoteBackupUrl.trim(),
-        remoteBackupToken: backupTokenDirty ? backupTokenInput : undefined,
       };
       if (apply) {
         const result = await desktop!.applyConnectionConfig!(payload);
         if (result.ok) {
-          const appliedToBackup = Boolean(result.apiBaseUrl && result.apiBaseUrl !== trimmedRemoteUrl);
-          setMessage({
-            tone: "ok",
-            text: appliedToBackup ? "主地址不可用，已切换至备用地址并连接" : "已切换，正在重新加载界面…",
-          });
+          setMessage({ tone: "ok", text: "已切换，正在重新加载界面…" });
           if (onApplied) {
             await onApplied(mode);
             return;
@@ -468,10 +323,7 @@ export function ConnectionSection({
       } else {
         const view = await desktop!.saveConnectionConfig!(payload);
         setConfig(view);
-        setRemoteBackupUrl(view.remoteBackupUrl ?? "");
         setTokenInput("");
-        setBackupTokenInput("");
-        setBackupTokenDirty(false);
         setMessage({ tone: "ok", text: "已保存，下次启动应用时生效" });
       }
     } catch (error) {
@@ -585,7 +437,7 @@ export function ConnectionSection({
           <div>
             <div style={{ fontWeight: 600 }}>当前会话由环境变量强制为远程模式（{config?.remoteUrl}）。</div>
             <div style={{ marginTop: 4 }}>
-              取消设置 <code>HERMES_DESKTOP_REMOTE_URL</code> 和 <code>HERMES_DESKTOP_REMOTE_TOKEN</code>{" "}
+              取消设置 <code>HERMES_ANDROID_REMOTE_URL</code>（或 <code>HERMES_DESKTOP_REMOTE_URL</code>）和对应的 <code>_TOKEN</code>{" "}
               后才能在此修改连接。
             </div>
           </div>
@@ -593,13 +445,6 @@ export function ConnectionSection({
       )}
 
       <>
-          {config?.remoteBackupConfigured && (
-            <Alert className={s.connResult} tone={config.failoverActive ? "ok" : "info"} size="sm">
-              {config.failoverActive
-                ? `主地址不可用，当前已自动切换至备用地址：${config.remoteBackupUrl}`
-                : `已配置备用地址：${config.remoteBackupUrl}；主连接失败时将自动切换`}
-            </Alert>
-          )}
           <div className={`${s.row} ${s.connRow}`}>
             <div className={s.rowLeft}>
               <div className={s.rowLabel}>远程地址</div>
@@ -717,7 +562,7 @@ export function ConnectionSection({
                             type="button"
                             variant="solid"
                             tone="accent"
-                            onClick={() => void handlePasswordLogin(p.name, "primary")}
+                            onClick={() => void handlePasswordLogin(p.name)}
                             disabled={disabled || !pwUser || !pwPass}
                             loading={loggingIn}
                           >
@@ -734,117 +579,6 @@ export function ConnectionSection({
             </div>
           )}
 
-          <div className={`${s.row} ${s.connRow}`}>
-            <div className={s.rowLeft}>
-              <div className={s.rowLabel}>备用远程地址</div>
-              <div className={s.rowSub}>
-                可选。主地址连接失败时自动切换到同一远程 Hermes；留空表示不启用主备。
-                {backupGated && " 备用地址需单独登录以获取独立会话。"}
-              </div>
-              {backupProbeStatus !== "idle" && (
-                <div
-                  className={s.connProbe}
-                  data-tone={backupProbeStatus === "reachable" ? "ok" : backupProbeStatus === "probing" ? undefined : "error"}
-                  aria-live="polite"
-                >
-                  {backupProbeStatus === "probing" && <LoadingIndicator size="xs" />}
-                  {backupProbeStatus === "reachable" && <CheckCircle2 size={12} />}
-                  {(backupProbeStatus === "unreachable" || backupProbeStatus === "authRequired") && <XCircle size={12} />}
-                  {backupProbeStatus === "probing" && "正在检测备用连接方式…"}
-                  {backupProbeStatus === "reachable" && "备用后端可达"}
-                  {backupProbeStatus === "unreachable" && "备用地址暂时无法连接"}
-                  {backupProbeStatus === "authRequired" && "备用后端需要登录，请填写下方用户名和密码"}
-                </div>
-              )}
-            </div>
-            <div className={s.rowRight}>
-              <Input
-                mono
-                className={s.connControl}
-                value={remoteBackupUrl}
-                placeholder="https://backup.example.com/hermes"
-                disabled={disabled}
-                onChange={(e) => setRemoteBackupUrl(e.target.value)}
-                spellCheck={false}
-              />
-            </div>
-          </div>
-
-          {!gated && (
-            <div className={`${s.row} ${s.connRow}`}>
-              <div className={s.rowLeft}>
-                <div className={s.rowLabel}>备用会话令牌</div>
-                <div className={s.rowSub}>
-                  可选。留空表示复用主令牌；已保存的备用令牌留空不改，清空后保存即可恢复复用主令牌。
-                </div>
-              </div>
-              <div className={s.rowRight}>
-                <Input
-                  type="password"
-                  className={s.connControl}
-                  value={backupTokenInput}
-                  placeholder={config?.remoteBackupTokenSet ? "已保存，留空保持不变" : "留空复用主令牌"}
-                  disabled={disabled}
-                  onChange={(e) => {
-                    setBackupTokenInput(e.target.value);
-                    setBackupTokenDirty(true);
-                  }}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-            </div>
-          )}
-          {backupGated && trimmedBackupUrl && (
-            <div className={`${s.row} ${s.connRow}`}>
-              <div className={s.rowLeft}>
-                <div className={s.rowLabel}>备用地址登录</div>
-                <div className={s.rowSub}>
-                  {config?.remoteBackupSessionSet ? "备用会话已保存。" : "使用与备用地址对应的用户名/密码登录。"}
-                </div>
-              </div>
-              <div className={s.rowRight}>
-                {backupAuthProviders
-                  .filter((p) => p.supportsPassword)
-                  .map((p) => (
-                    <div key={p.name} className={s.pwRow}>
-                      <Input
-                        className={s.connControl}
-                        value={pwUser}
-                        placeholder={`${p.displayName} 用户名`}
-                        disabled={disabled || loggingIn}
-                        onChange={(e) => setPwUser(e.target.value)}
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                      <Input
-                        type="password"
-                        className={s.connControl}
-                        value={pwPass}
-                        placeholder="密码"
-                        disabled={disabled || loggingIn}
-                        onChange={(e) => setPwPass(e.target.value)}
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        tone="accent"
-                        onClick={() => void handlePasswordLogin(p.name, "backup")}
-                        disabled={disabled || !pwUser || !pwPass}
-                        loading={loggingIn}
-                      >
-                        登录备用
-                      </Button>
-                    </div>
-                  ))}
-                {backupAuthProviders.length === 0 && (
-                  <div className={s.rowSub}>备用网关未注册密码登录方式，请检查网关配置。</div>
-                )}
-              </div>
-            </div>
-          )}
       </>
 
       <div className={s.connFooter}>

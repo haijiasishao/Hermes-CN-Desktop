@@ -584,10 +584,6 @@ export interface ConnectionConfigInput {
   remoteToken?: string;
   /** "token" (default) or "oauth". Absent keeps the saved mode. */
   remoteAuthMode?: RemoteAuthMode;
-  /** Optional token-authenticated backup URL; empty clears it. */
-  remoteBackupUrl?: string;
-  /** Optional backup token; empty clears it and reuses the primary token. */
-  remoteBackupToken?: string;
 }
 
 export interface ConnectionConfigView {
@@ -602,21 +598,7 @@ export interface ConnectionConfigView {
   remoteAuthMode: RemoteAuthMode;
   /** True when a persisted OAuth cookie session exists for the remote. */
   remoteSessionSet: boolean;
-  /** Whether a token-authenticated backup endpoint is configured. */
-  remoteBackupConfigured: boolean;
-  /** Normalized backup URL, empty when not configured. */
-  remoteBackupUrl: string;
-  /** True when a distinct backup token is saved. */
-  remoteBackupTokenSet: boolean;
-  /** Preview only; never the backup token itself. */
-  remoteBackupTokenPreview?: string | null;
-  /** True when a persisted OAuth cookie session exists for the backup origin. */
-  remoteBackupSessionSet: boolean;
-  /** Currently active remote endpoint: primary or backup. */
-  activeRemote: "primary" | "backup";
-  /** True after an automatic switch to backup. */
-  failoverActive: boolean;
-  /** True when HERMES_DESKTOP_REMOTE_URL forces the connection; UI read-only. */
+  /** True when HERMES_ANDROID_REMOTE_URL (or _DESKTOP_ fallback) forces the connection; UI read-only. */
   envOverride: boolean;
   /** What the running desktop is actually attached to right now. */
   effectiveMode: ConnectionMode;
