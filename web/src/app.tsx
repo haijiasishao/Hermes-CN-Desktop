@@ -42,6 +42,16 @@ import { GuideRoute } from "@/routes/guide";
 import { OfflineShell } from "@/routes/offline-shell";
 import { runtime } from "@/lib/runtime";
 import { getAndroidRemoteRouteRedirect } from "@/lib/android-remote-route-policy";
+import { useGateway } from "@/hooks/use-gateway";
+
+// Persistent headless host: keeps at least one GatewayEvent subscription alive
+// across route navigation so reconnect/session-recovery never tears down when
+// the last route-level useGateway caller unmounts (e.g. navigating from
+// /tasks/:id to /notifications while a task is running).
+function GatewayLifecycleHost() {
+  useGateway();
+  return null;
+}
 
 function NewTaskRedirect() {
   const { search } = useLocation();
@@ -127,6 +137,7 @@ function BackendApp() {
       <DesktopUpdateNotifier />
       <ConnectionAuthBanner />
       <CommandPalette />
+      <GatewayLifecycleHost />
     </>
   );
 }

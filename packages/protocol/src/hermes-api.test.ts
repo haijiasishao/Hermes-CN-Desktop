@@ -1133,3 +1133,41 @@ describe("MessagesResponse: upstream null pagination regression", () => {
     expect(parsed.pagination?.has_more).toBeUndefined();
   });
 });
+
+// Android Remote: GET /api/sessions returns archived as numeric 0 or 1
+// (SQLite boolean) instead of true/false.  Both SessionSummary and
+// SearchResult reuse the same protocol field, so parsing previously failed
+// with "expected boolean, received number".  This regression test proves
+// that numeric 0/1 should be accepted and normalized to booleans while
+// unrelated numeric values remain rejected.
+describe("SessionSummary: numeric archived field regression (Android Remote)", () => {
+  /** Minimal valid SessionDetail payload with all required fields. */
+  function baseSession(archived: number) {
+    return {
+      id: "20260811_210222_7b4fc5",
+      model: "gpt-4",
+      title: "Test session",
+      started_at: 1723401742,
+      ended_at: null,
+      message_count: 5,
+      input_tokens: 1200,
+      output_tokens: 340,
+      estimated_cost_usd: 0.019,
+      archived,
+    };
+  }
+
+  it("accepts archived=0 and normalizes to boolean false", () => {
+    const parsed = SessionDetail.parse(baseSession(0));
+    expect(parsed.archived).toBe(false);
+  });
+
+  it("accepts archived=1 and normalizes to boolean true", () => {
+    const parsed = SessionDetail.parse(baseSession(1));
+    expect(parsed.archived).toBe(true);
+  });
+
+  it("rejects unrelated numeric archived values", () => {
+    expect(() => SessionDetail.parse(baseSession(2))).toThrow();
+  });
+});

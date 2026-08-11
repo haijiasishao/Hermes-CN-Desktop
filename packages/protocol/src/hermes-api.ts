@@ -10,6 +10,14 @@ const NullishString = z.string().nullish().transform((value) => value ?? undefin
 const NullishNumber = z.number().nullish().transform((value) => value ?? undefined);
 const NullishBoolean = z.boolean().nullish().transform((value) => value ?? undefined);
 
+// Android Remote (and some SQLite-backed endpoints) return archived as
+// numeric 0 / 1 instead of booleans. Accept only 0 and 1 here and normalize
+// them to false / true so downstream consumers keep the boolean contract.
+// Preserve explicit booleans, omit when absent, and reject unrelated numbers.
+const NormalizedArchivedField = z
+  .custom<unknown>((value) => value === undefined || value === true || value === false || value === 0 || value === 1)
+  .transform((value) => (value === 1 ? true : value === 0 ? false : (value as boolean | undefined)));
+
 function stringifyMessageContent(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (value == null) return null;
@@ -193,7 +201,7 @@ export const SessionSummary = z.object({
   // Desktop-only UI state injected by the Rust proxy when a request carries
   // ?include_archived=true. Absent on the default (active) list — the proxy
   // strips archived sessions there. See src/session_archive.rs.
-  archived: z.boolean().optional(),
+  archived: NormalizedArchivedField,
 });
 export type SessionSummary = z.infer<typeof SessionSummary>;
 
@@ -501,7 +509,7 @@ export const SearchResult = z.object({
   model: NullishString,
   session_started: NullishNumber,
   // Desktop-only; see SessionSummary.archived.
-  archived: z.boolean().optional(),
+  archived: NormalizedArchivedField,
 });
 export type SearchResult = z.infer<typeof SearchResult>;
 
