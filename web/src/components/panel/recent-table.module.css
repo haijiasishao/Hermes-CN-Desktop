@@ -341,9 +341,9 @@
   width: 44px;
   height: 44px;
   padding: 0;
-  border: 1px solid var(--h-line);
+  border: none;
   border-radius: 0;
-  background: var(--h-bg-pane);
+  background: transparent;
   color: var(--h-text-2);
   cursor: pointer;
   transform: translateY(-50%);
@@ -352,7 +352,7 @@
 
 .compactMore:hover,
 .compactMore:focus-visible {
-  background: var(--h-bg-chip);
+  background: transparent;
   color: var(--h-text);
 }
 

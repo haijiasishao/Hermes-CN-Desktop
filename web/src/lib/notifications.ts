@@ -8,8 +8,14 @@
 // decideNotification / shouldPlayFallbackSound 是纯函数，便于 vitest 全矩阵
 // 覆盖；所有副作用都 fire-and-forget 且错误吞掉，绝不影响聊天主流程。
 
-import type { GatewayEvent, SessionsResponse } from "@hermes/protocol";
+import type {
+  GatewayEvent,
+  HermesUIMessage,
+  MessagesResponse,
+  SessionsResponse,
+} from "@hermes/protocol";
 import type { ChatSessionRuntime } from "@/stores/chat";
+import { messagesResponseToHermesUIMessages } from "@/components/chat/message-adapter";
 import { readNotificationSettings, type NotificationSettings } from "@/stores/ui";
 import type { DesktopNotifyResult } from "@/lib/runtime";
 import { resolvePersistentSessionId } from "@/lib/session-map";
@@ -89,7 +95,8 @@ export function decideNotification(input: {
     if (prevRuntime?.pendingApprovals.some((item) => item.requestId === requestId)) {
       return null;
     }
-    const dedupeKey = `approval:${sessionId}:${requestId}`;
+    const persistentSessionId = resolvePersistentSessionId(sessionId) ?? sessionId;
+    const dedupeKey = `approval:${persistentSessionId}:${requestId}`;
     if (alreadyNotified(dedupeKey)) return null;
     const detail = firstNonEmptyString([payload.command, payload.reason, payload.description]);
     return {
@@ -107,7 +114,8 @@ export function decideNotification(input: {
     // 只有一次「在场」的 complete。
     const activeId = prevRuntime?.activeAssistantId;
     if (!activeId || prevRuntime?.interrupted) return null;
-    const dedupeKey = `complete:${sessionId}:${activeId}`;
+    const persistentSessionId = resolvePersistentSessionId(sessionId) ?? sessionId;
+    const dedupeKey = `complete:${persistentSessionId}:${activeId}`;
     if (alreadyNotified(dedupeKey)) return null;
     if (payload.status === "error") {
       const detail = firstNonEmptyString([
@@ -268,6 +276,89 @@ export function notifyFromGatewayEvent(
       })
       .then((result) => {
         if (result && shouldPlayFallbackSound(settings, result)) playChime();
+      })
+      .catch(() => {});
+  } catch {
+    // 通知永远不能影响聊天主流程。
+  }
+}
+
+// ── Reconnect-snapshot notification ─────────────────────────────────
+//
+// When the app is backgrounded (especially on Android) the WebSocket drops
+// and the server's message.complete event is lost.  On reconnect,
+// session.resume has nothing to re-pin (turn already ended), so the normal
+// notifyFromGatewayEvent path never fires.
+//
+// This helper is called from the reconnect handler after the REST
+// session-messages snapshot has been refreshed.  If the snapshot shows a
+// completed or errored assistant turn that the local runtime still thinks
+// is in-flight, we fire the notification here.  The dedupe key is
+// identical to what notifyFromGatewayEvent would produce, so a later real
+// message.complete (if one ever arrives) is silently deduplicated.
+
+function hasStoredFinalContent(message: HermesUIMessage): boolean {
+  if (message.status === "error") return true;
+  return message.parts.some(
+    (part) =>
+      (part.type === "text" && part.text.trim().length > 0) ||
+      part.type === "image",
+  );
+}
+
+export function notifyFromReconnectSnapshot(
+  sessionId: string,
+  runtime: ChatSessionRuntime,
+  messagesResponse: MessagesResponse | null | undefined,
+): void {
+  try {
+    const bridge = window.hermesDesktop;
+    if (typeof bridge?.desktopNotify !== "function") return;
+    const activeId = runtime.activeAssistantId;
+    if (!activeId || runtime.interrupted || runtime.turnStartedAt === undefined) return;
+
+    const settings = readNotificationSettings();
+    if (!settings.onComplete || (!settings.system && !settings.sound)) return;
+
+    const storedMessages = messagesResponseToHermesUIMessages(messagesResponse ?? undefined);
+    const latestAssistant = [...storedMessages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    if (!latestAssistant) return;
+    if (latestAssistant.status !== "complete" && latestAssistant.status !== "error") return;
+    if (latestAssistant.createdAt < runtime.turnStartedAt) return;
+    if (!hasStoredFinalContent(latestAssistant)) return;
+
+    const persistentSessionId = resolvePersistentSessionId(sessionId) ?? sessionId;
+    const dedupeKey = `complete:${persistentSessionId}:${activeId}`;
+    if (hasNotified(dedupeKey)) return;
+
+    const isError = latestAssistant.status === "error";
+    const errorText = latestAssistant.parts
+      .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+      .map((part) => part.text.trim())
+      .find(Boolean);
+    const body = isError
+      ? truncate(errorText || "任务执行失败，请回来查看详情", MAX_BODY_CHARS)
+      : lastUserPromptSummary(runtime, SUMMARY_CHARS) ?? "会话回复已就绪";
+    const catchupSettings = { ...settings, onlyBackground: false };
+
+    markNotified(dedupeKey);
+    void bridge
+      .desktopNotify({
+        kind: isError ? "error" : "complete",
+        title: isError ? "任务出错" : "任务完成",
+        body: bodyWithSessionTitle(body, sessionId),
+        showSystemNotification: settings.system,
+        withSound: settings.sound,
+        // This is a catch-up notification for work that completed while the
+        // app was backgrounded; do not suppress it merely because reattach
+        // itself is now running in the foreground.
+        respectFocus: false,
+        requestAttention: true,
+      })
+      .then((result) => {
+        if (result && shouldPlayFallbackSound(catchupSettings, result)) playChime();
       })
       .catch(() => {});
   } catch {

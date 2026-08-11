@@ -82,9 +82,12 @@ export function ConnectionSection({
   const [backupTokenInput, setBackupTokenInput] = useState("");
   const [backupTokenDirty, setBackupTokenDirty] = useState(false);
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>("idle");
+  const [backupProbeStatus, setBackupProbeStatus] = useState<ProbeStatus>("idle");
   const probeSeq = useRef(0);
+  const backupProbeSeq = useRef(0);
   // OAuth gate state (populated when a remote probe reports auth_required).
   const [authProviders, setAuthProviders] = useState<AuthProviderInfo[]>([]);
+  const [backupAuthProviders, setBackupAuthProviders] = useState<AuthProviderInfo[]>([]);
   const [identity, setIdentity] = useState<AuthIdentity | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
   const [pwUser, setPwUser] = useState("");
@@ -154,6 +157,7 @@ export function ConnectionSection({
   const busy = saving || applying;
   const disabled = !supported || envOverride || busy || (externalOnly && !config);
   const trimmedRemoteUrl = remoteUrl.trim();
+  const trimmedBackupUrl = remoteBackupUrl.trim();
   const effectiveMode = config?.effectiveMode ?? "remote";
 
   // Debounced as-you-type reachability probe for remote URLs, sequence-guarded
@@ -188,8 +192,46 @@ export function ConnectionSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, trimmedRemoteUrl, envOverride]);
 
+  // Probe the backup independently. The primary may be offline while the
+  // backup is reachable and protected by Basic/OAuth auth; its auth gate must
+  // not depend on the primary probe result.
+  useEffect(() => {
+    const seq = ++backupProbeSeq.current;
+    if (mode !== "remote" || envOverride || !/^https?:\/\//i.test(trimmedBackupUrl)) {
+      setBackupProbeStatus("idle");
+      setBackupAuthProviders([]);
+      return;
+    }
+    setBackupProbeStatus("probing");
+    const timer = window.setTimeout(() => {
+      desktop
+        ?.probeConnectionConfig?.(trimmedBackupUrl)
+        .then((result) => {
+          if (seq !== backupProbeSeq.current) return;
+          if (!result.reachable) {
+            setBackupProbeStatus("unreachable");
+            setBackupAuthProviders([]);
+          } else if (result.authRequired) {
+            setBackupProbeStatus("authRequired");
+            setBackupAuthProviders(result.authProviders ?? []);
+          } else {
+            setBackupProbeStatus("reachable");
+            setBackupAuthProviders([]);
+          }
+        })
+        .catch(() => {
+          if (seq !== backupProbeSeq.current) return;
+          setBackupProbeStatus("unreachable");
+          setBackupAuthProviders([]);
+        });
+    }, PROBE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, trimmedBackupUrl, envOverride]);
+
   // A remote that enforces a login gate uses OAuth/cookie auth, not a token.
   const gated = mode === "remote" && probeStatus === "authRequired";
+  const backupGated = mode === "remote" && backupProbeStatus === "authRequired";
 
   // When the URL changes, drop any shown identity (it belonged to the old
   // gateway); if the new gateway is gated and we have a saved session, restore.
@@ -347,8 +389,9 @@ export function ConnectionSection({
   const remoteReady = gated
     ? Boolean(identity) // oauth: must be logged in
     : Boolean(trimmedRemoteUrl && (tokenInput.trim() || config?.remoteTokenSet));
-  const backupNeedsLogin = gated
-    && Boolean(remoteBackupUrl.trim())
+  const backupNeedsLogin =
+    backupGated
+    && Boolean(trimmedBackupUrl)
     && (!config?.remoteBackupSessionSet
       || normalizeRemoteUrl(remoteBackupUrl) !== normalizeRemoteUrl(config?.remoteBackupUrl ?? ""));
   const canSubmit = remoteReady;
@@ -696,8 +739,23 @@ export function ConnectionSection({
               <div className={s.rowLabel}>备用远程地址</div>
               <div className={s.rowSub}>
                 可选。主地址连接失败时自动切换到同一远程 Hermes；留空表示不启用主备。
-                {gated && " 备用地址需单独登录以获取独立会话。"}
+                {backupGated && " 备用地址需单独登录以获取独立会话。"}
               </div>
+              {backupProbeStatus !== "idle" && (
+                <div
+                  className={s.connProbe}
+                  data-tone={backupProbeStatus === "reachable" ? "ok" : backupProbeStatus === "probing" ? undefined : "error"}
+                  aria-live="polite"
+                >
+                  {backupProbeStatus === "probing" && <LoadingIndicator size="xs" />}
+                  {backupProbeStatus === "reachable" && <CheckCircle2 size={12} />}
+                  {(backupProbeStatus === "unreachable" || backupProbeStatus === "authRequired") && <XCircle size={12} />}
+                  {backupProbeStatus === "probing" && "正在检测备用连接方式…"}
+                  {backupProbeStatus === "reachable" && "备用后端可达"}
+                  {backupProbeStatus === "unreachable" && "备用地址暂时无法连接"}
+                  {backupProbeStatus === "authRequired" && "备用后端需要登录，请填写下方用户名和密码"}
+                </div>
+              )}
             </div>
             <div className={s.rowRight}>
               <Input
@@ -737,23 +795,23 @@ export function ConnectionSection({
               </div>
             </div>
           )}
-          {gated && remoteBackupUrl.trim() && (
+          {backupGated && trimmedBackupUrl && (
             <div className={`${s.row} ${s.connRow}`}>
               <div className={s.rowLeft}>
                 <div className={s.rowLabel}>备用地址登录</div>
                 <div className={s.rowSub}>
-                  {config?.remoteBackupSessionSet ? "备用会话已保存。" : "使用与主地址相同的用户名/密码分别登录备用地址。"}
+                  {config?.remoteBackupSessionSet ? "备用会话已保存。" : "使用与备用地址对应的用户名/密码登录。"}
                 </div>
               </div>
               <div className={s.rowRight}>
-                {authProviders
+                {backupAuthProviders
                   .filter((p) => p.supportsPassword)
                   .map((p) => (
                     <div key={p.name} className={s.pwRow}>
                       <Input
                         className={s.connControl}
                         value={pwUser}
-                        placeholder="用户名"
+                        placeholder={`${p.displayName} 用户名`}
                         disabled={disabled || loggingIn}
                         onChange={(e) => setPwUser(e.target.value)}
                         autoComplete="off"
@@ -781,8 +839,8 @@ export function ConnectionSection({
                       </Button>
                     </div>
                   ))}
-                {authProviders.length === 0 && (
-                  <div className={s.rowSub}>网关未注册任何登录方式，请检查网关配置。</div>
+                {backupAuthProviders.length === 0 && (
+                  <div className={s.rowSub}>备用网关未注册密码登录方式，请检查网关配置。</div>
                 )}
               </div>
             </div>

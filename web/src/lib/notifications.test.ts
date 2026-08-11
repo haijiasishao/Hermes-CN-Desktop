@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GatewayEvent, HermesUIMessage } from "@hermes/protocol";
+import type { GatewayEvent, HermesUIMessage, MessagesResponse } from "@hermes/protocol";
 import type { ChatSessionRuntime } from "@/stores/chat";
 import type { NotificationSettings } from "@/stores/ui";
 
@@ -427,6 +427,41 @@ describe("notifyFromGatewayEvent", () => {
     });
   });
 
+  it("notifies the native bridge when an active turn completes", async () => {
+    const { notifyFromGatewayEvent } = await loadNotifications();
+    const desktopNotify = vi
+      .fn()
+      .mockResolvedValue({ delivered: true, focused: false, attentionRequested: true });
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    notifyFromGatewayEvent(
+      completeEvent({ status: "complete" }),
+      runtimeWith({
+        activeAssistantId: "live-assistant-1",
+        messages: [userMessage("后台任务")],
+      }),
+    );
+    await flushAsync();
+
+    expect(desktopNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "complete",
+        title: "任务完成",
+        respectFocus: true,
+      }),
+    );
+  });
+
+  it("does not notify a completion event when no turn is active", async () => {
+    const { notifyFromGatewayEvent } = await loadNotifications();
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    notifyFromGatewayEvent(completeEvent({ status: "complete" }), runtimeWith());
+    await flushAsync();
+
+    expect(desktopNotify).not.toHaveBeenCalled();
+  });
   it("does not notify twice for a replayed event", async () => {
     const { notifyFromGatewayEvent } = await loadNotifications();
     const desktopNotify = vi
@@ -501,5 +536,234 @@ describe("notifyFromGatewayEvent", () => {
     expect(desktopNotify).toHaveBeenCalledWith(
       expect.objectContaining({ body: "「重构登录」 · rm -rf build" }),
     );
+  });
+});
+
+// ── Reconnect snapshot notification ──────────────────────────────────
+// When Android backgrounds the app during an active turn, the WebSocket
+// drops and the server's message.complete is lost. On reconnect the REST
+// snapshot shows the turn is done but the gateway never replays the event.
+// notifyFromReconnectSnapshot detects this and fires a synthetic notification.
+
+describe("notifyFromReconnectSnapshot", () => {
+  it("fires notification when REST shows completed turn with active assistant id", async () => {
+    const { notifyFromReconnectSnapshot } = await loadNotifications();
+    const desktopNotify = vi
+      .fn()
+      .mockResolvedValue({ delivered: true, focused: false, attentionRequested: false });
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 50,
+      activeAssistantId: "live-assistant-100",
+      messages: [userMessage("帮我写代码")],
+    });
+
+    const restData: MessagesResponse = {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        { id: "u1", sessionId: "s1", role: "user", createdAt: 0, status: "complete", parts: [{ type: "text", text: "帮我写代码" }] },
+        { id: "a1", sessionId: "s1", role: "assistant", createdAt: 100, status: "complete", parts: [{ type: "text", text: "好的" }] },
+      ],
+    };
+
+    notifyFromReconnectSnapshot("s1", runtime, restData);
+    await flushAsync();
+
+    expect(desktopNotify).toHaveBeenCalledTimes(1);
+    expect(desktopNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "complete",
+        title: "任务完成",
+        respectFocus: false,
+      }),
+    );
+  });
+
+  it("does not fire when no active assistant id (no in-flight turn)", async () => {
+    const { notifyFromReconnectSnapshot } = await loadNotifications();
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      activeAssistantId: undefined,
+    });
+
+    notifyFromReconnectSnapshot("s1", runtime, { session_id: "s1", messages: [], ui_messages: [] });
+    await flushAsync();
+
+    expect(desktopNotify).not.toHaveBeenCalled();
+  });
+
+  it("does not fire when REST turn is still streaming", async () => {
+    const { notifyFromReconnectSnapshot } = await loadNotifications();
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 50,
+      activeAssistantId: "live-assistant-100",
+    });
+
+    const restData: MessagesResponse = {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        { id: "a1", sessionId: "s1", role: "assistant", createdAt: 100, status: "streaming", parts: [{ type: "text", text: "正在..." }] },
+      ],
+    };
+
+    notifyFromReconnectSnapshot("s1", runtime, restData);
+    await flushAsync();
+
+    expect(desktopNotify).not.toHaveBeenCalled();
+  });
+
+  it("does not notify for a completed assistant message from before the active turn", async () => {
+    const { notifyFromReconnectSnapshot } = await loadNotifications();
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 200,
+      activeAssistantId: "live-assistant-100",
+    });
+    const restData: MessagesResponse = {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        {
+          id: "a1",
+          sessionId: "s1",
+          role: "assistant",
+          createdAt: 100,
+          status: "complete",
+          parts: [{ type: "text", text: "上一轮已完成" }],
+        },
+      ],
+    };
+
+    notifyFromReconnectSnapshot("s1", runtime, restData);
+    await flushAsync();
+
+    expect(desktopNotify).not.toHaveBeenCalled();
+  });
+
+  it("fires error notification when REST shows errored turn", async () => {
+    const { notifyFromReconnectSnapshot } = await loadNotifications();
+    const desktopNotify = vi
+      .fn()
+      .mockResolvedValue({ delivered: true, focused: false, attentionRequested: false });
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 50,
+      activeAssistantId: "live-assistant-100",
+    });
+
+    const restData: MessagesResponse = {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        { id: "a1", sessionId: "s1", role: "assistant", createdAt: 100, status: "error", parts: [{ type: "text", text: "失败" }] },
+      ],
+    };
+
+    notifyFromReconnectSnapshot("s1", runtime, restData);
+    await flushAsync();
+
+    expect(desktopNotify).toHaveBeenCalledTimes(1);
+    expect(desktopNotify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "error", title: "任务出错" }),
+    );
+  });
+
+  it("does not double-notify when real message.complete arrives after synthetic", async () => {
+    const { notifyFromGatewayEvent, notifyFromReconnectSnapshot } = await loadNotifications();
+    const desktopNotify = vi
+      .fn()
+      .mockResolvedValue({ delivered: true, focused: false, attentionRequested: false });
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 50,
+      activeAssistantId: "live-assistant-100",
+      messages: [userMessage("帮我写代码")],
+    });
+
+    // Synthetic fires first (from reconnect snapshot)
+    const restData: MessagesResponse = {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        { id: "a1", sessionId: "s1", role: "assistant", createdAt: 100, status: "complete", parts: [{ type: "text", text: "好的" }] },
+      ],
+    };
+    notifyFromReconnectSnapshot("s1", runtime, restData);
+    await flushAsync();
+    expect(desktopNotify).toHaveBeenCalledTimes(1);
+
+    // Real message.complete arrives later — should be deduped
+    notifyFromGatewayEvent(completeEvent(), runtime);
+    await flushAsync();
+    expect(desktopNotify).toHaveBeenCalledTimes(1); // still 1, not 2
+  });
+
+  it("is a no-op when onComplete is disabled", async () => {
+    const { notifyFromReconnectSnapshot } = await loadNotifications({
+      "hermes.notify-on-complete": false,
+    });
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 50,
+      activeAssistantId: "live-assistant-100",
+    });
+
+    notifyFromReconnectSnapshot("s1", runtime, {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        { id: "a1", sessionId: "s1", role: "assistant", createdAt: 100, status: "complete", parts: [] },
+      ],
+    });
+    await flushAsync();
+
+    expect(desktopNotify).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when both system and sound are off", async () => {
+    const { notifyFromReconnectSnapshot } = await loadNotifications({
+      "hermes.notify-system": false,
+      "hermes.notify-sound": false,
+    });
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 50,
+      activeAssistantId: "live-assistant-100",
+    });
+
+    notifyFromReconnectSnapshot("s1", runtime, {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        { id: "a1", sessionId: "s1", role: "assistant", createdAt: 100, status: "complete", parts: [] },
+      ],
+    });
+    await flushAsync();
+
+    expect(desktopNotify).not.toHaveBeenCalled();
   });
 });

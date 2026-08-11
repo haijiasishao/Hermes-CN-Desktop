@@ -424,11 +424,26 @@
   .panel {
     position: fixed;
     inset: 0;
-    width: 100vw;
-    height: 100vh;
-    max-height: none;
+    /* The desktop resize hook leaves an inline pixel width on the element.
+       `width: 100vw` can under-fill Android WebView's visual viewport, so
+       let the fixed left/right insets determine the actual width. */
+    width: auto !important;
+    max-width: none;
+    height: 100dvh;
+    min-height: 0;
+    box-sizing: border-box;
     border-radius: 0;
     z-index: 40;
+  }
+
+  .header {
+    padding-top: max(24px, calc(12px + var(--h-safe-top, 0px)));
+  }
+
+  .close {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
   }
 
   .row {

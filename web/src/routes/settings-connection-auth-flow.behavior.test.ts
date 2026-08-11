@@ -154,6 +154,28 @@ describe("Backup session validation", () => {
   });
 });
 
+describe("Backup probe and auth gate", () => {
+  it("probes the backup URL independently of the primary URL", () => {
+    expect(source).toContain("backupProbeStatus");
+    expect(source).toContain("backupProbeSeq");
+    expect(source).toContain("trimmedBackupUrl");
+    expect(source).toContain("probeConnectionConfig?.(trimmedBackupUrl)");
+  });
+
+  it("keeps backup auth providers separate from primary providers", () => {
+    expect(source).toContain("backupAuthProviders");
+    expect(source).toContain("const backupGated");
+    expect(source).toContain("{backupGated && trimmedBackupUrl &&");
+  });
+
+  it("shows the backup login gate even when primary probe is unavailable", () => {
+    const backupBlock = source.slice(source.indexOf("{backupGated && trimmedBackupUrl &&"));
+    expect(backupBlock).toContain("backupAuthProviders");
+    expect(backupBlock).toContain('handlePasswordLogin(p.name, "backup")');
+    expect(backupBlock).not.toContain("authProviders.map");
+  });
+});
+
 describe("QuickStart removal", () => {
   const panelSource = readFileSync(
     resolve(import.meta.dirname ?? __dirname, "panel.tsx"),

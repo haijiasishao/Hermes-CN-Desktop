@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+
 import { getDefaultStore, useAtomValue, useSetAtom } from "jotai";
 import {
   FileAttachResult,
@@ -37,6 +38,9 @@ import {
   resolvePersistentSessionId,
 } from "@/lib/session-map";
 import { mirrorSessionWorkspaceMapping } from "@/lib/workspaces";
+import { notifyFromReconnectSnapshot } from "@/lib/notifications";
+import { runtime } from "@/lib/runtime";
+import { fetchSessionMessages } from "@/hooks/use-sessions";
 import { humanizeGatewayError, parseGatewayResult } from "@/lib/gateway-result";
 import {
   branchRuntimeMessages,
@@ -144,6 +148,29 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
       // resume (which may take up to 300 s).
       onReattachStart: () => {
         void appQueryClient.invalidateQueries({ queryKey: ["session-messages"] });
+
+        // Android WebView can lose the final message.complete event while the
+        // app is backgrounded. The REST snapshot is authoritative for a turn
+        // that finished during that gap, so inspect the authenticated message
+        // endpoint once while the local runtime still marks the turn active.
+        // Desktop keeps its existing reconnect path unchanged.
+        if (!runtime.androidRemoteOnly) return;
+        const sessionId = store.get(gwSessionIdAtom);
+        if (!sessionId) return;
+        const activeRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
+        if (!activeRuntime?.activeAssistantId) return;
+        const persistentId = resolvePersistentSessionId(sessionId) ?? sessionId;
+
+        void fetchSessionMessages(persistentId)
+          .then((messages) => {
+            const currentRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
+            if (!currentRuntime?.activeAssistantId) return;
+            notifyFromReconnectSnapshot(sessionId, currentRuntime, messages);
+          })
+          .catch(() => {
+            // Reconnect/REST errors remain on the normal recovery path; a
+            // missing snapshot must never affect session.resume or chat state.
+          });
       },
     });
   } finally {
