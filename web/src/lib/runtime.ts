@@ -182,6 +182,18 @@ export interface ExportDebugBundleResult {
   warnings: string[];
 }
 
+export interface SaveDebugBundleInput {
+  sourcePath: string;
+  fileName?: string;
+}
+
+export interface SaveDebugBundleResult {
+  ok: boolean;
+  canceled?: boolean;
+  bytes?: number;
+  uri?: string;
+}
+
 export interface DesktopNotifyInput {
   kind: "approval" | "complete" | "error" | "test";
   title: string;
@@ -489,6 +501,7 @@ declare global {
       exportLogSnapshot?(input: ExportLogSnapshotInput): Promise<ExportLogSnapshotResult>;
       exportSessionJson?(input: ExportSessionJsonInput): Promise<ExportSessionJsonResult>;
       exportDebugBundle?(input?: ExportDebugBundleInput): Promise<ExportDebugBundleResult>;
+      saveDebugBundle?(input: SaveDebugBundleInput): Promise<SaveDebugBundleResult>;
       environmentCheck?(): Promise<EnvironmentCheckResult>;
       codingAgentsCheck?(): Promise<CodingAgentsCheckResult>;
       checkDesktopUpdate?(): Promise<DesktopUpdateManifestFetchResult>;

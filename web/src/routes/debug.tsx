@@ -34,6 +34,7 @@ function buildRendererDiagnostics(): Record<string, unknown> {
     bridge: typeof window !== "undefined" ? {
       windowType: window.hermesDesktop?.windowType ?? null,
       hasExportDebugBundle: Boolean(window.hermesDesktop?.exportDebugBundle),
+      hasSaveDebugBundle: Boolean(window.hermesDesktop?.saveDebugBundle),
       hasRequest: Boolean(window.hermesDesktop?.request),
       hasRuntimeInfo: Boolean(window.hermesDesktop?.getRuntimeInfo),
     } : null,
@@ -55,13 +56,17 @@ export function DebugRoute() {
   const [exporting, setExporting] = useState(false);
   const [exportState, setExportState] = useState<ExportState>(null);
   const canExport = typeof window !== "undefined" && Boolean(window.hermesDesktop?.exportDebugBundle);
+  const androidRemoteOnly = runtime.androidRemoteOnly;
 
   const exportSubText = useMemo(() => {
+    if (canExport && androidRemoteOnly) {
+      return "会生成已脱敏的 debug ZIP，并打开 Android 系统文件保存窗口。请选择 Downloads 或其他可访问位置保存，应用缓存路径不会作为用户文件位置展示。";
+    }
     if (canExport) {
       return "会打包前端 Debug 快照、桌面 runtime 诊断、已脱敏配置摘要，以及 HERMES_HOME 和 gateway runtime 下的日志文件。导出后会自动打开 zip 所在文件夹。";
     }
     return "当前不是 Tauri 桌面环境，无法直接生成本地 debug zip。";
-  }, [canExport]);
+  }, [androidRemoteOnly, canExport]);
 
   const handleExport = async () => {
     if (!window.hermesDesktop?.exportDebugBundle) return;
@@ -72,6 +77,29 @@ export function DebugRoute() {
         frontendDebug: debugBus.snapshot(),
         rendererDiagnostics: buildRendererDiagnostics(),
       });
+      if (androidRemoteOnly) {
+        const saveDebugBundle = window.hermesDesktop.saveDebugBundle;
+        if (!saveDebugBundle) {
+          throw new Error("当前 Android 包未提供系统文件保存能力");
+        }
+        const saved = await saveDebugBundle({
+          sourcePath: result.zipPath,
+          fileName: result.zipPath.split(/[\\/]/).pop() || "hermes-debug.zip",
+        });
+        if (saved.canceled) {
+          setExportState({ tone: "normal", message: "已取消保存，本次 debug 包未导出到系统文件位置。" });
+          return;
+        }
+        if (!saved.ok) {
+          throw new Error("Android 系统文件位置写入失败");
+        }
+        const warningText = result.warnings.length > 0 ? `，另有 ${result.warnings.length} 条提示` : "";
+        setExportState({
+          tone: "normal",
+          message: `已保存 ${formatBytes(saved.bytes ?? result.sizeBytes)} 的 debug 包，共 ${result.includedFiles} 个文件${warningText}。请在刚才选择的系统文件位置查找。`,
+        });
+        return;
+      }
       const warningText = result.warnings.length > 0 ? `，另有 ${result.warnings.length} 条提示` : "";
       setExportState({
         tone: "normal",
@@ -106,7 +134,10 @@ export function DebugRoute() {
             {exporting ? <LoadingIndicator size="xs" /> : <FileArchive size={12} />}
             导出 debug 包
           </button>
-          <span><FolderOpen size={12} /> 导出后自动打开所在文件夹</span>
+          <span>
+            <FolderOpen size={12} />
+            {androidRemoteOnly ? "保存到 Android 系统文件位置" : "导出后自动打开所在文件夹"}
+          </span>
         </div>
       </div>
       <DebugSection showHeading={false} />

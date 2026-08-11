@@ -56,7 +56,8 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        .plugin(commands::debug_export::init());
     #[cfg(any(feature = "desktop", feature = "android"))]
     let builder = builder.plugin(tauri_plugin_notification::init());
     let app = builder
@@ -180,6 +181,7 @@ pub fn run() {
             // Logging/debug
             commands::log_export::export_log_snapshot,
             commands::debug_bundle::export_debug_bundle,
+            commands::debug_export::save_debug_bundle,
             // Devtools toggle (for debugging)
             commands::devtools::toggle_devtools,
         ])

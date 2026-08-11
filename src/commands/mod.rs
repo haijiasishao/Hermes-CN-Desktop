@@ -4,6 +4,7 @@ pub mod api_proxy;
 pub mod connection;
 pub mod connection_auth;
 pub mod debug_bundle;
+pub mod debug_export;
 pub mod devtools;
 pub mod gateway;
 pub mod log_export;

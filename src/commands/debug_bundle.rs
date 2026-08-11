@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{Manager, State};
 use zip::write::SimpleFileOptions;
 
 use crate::android_compat as runtime;
@@ -120,17 +120,20 @@ struct DebugStateSnapshot {
 
 #[tauri::command]
 pub async fn export_debug_bundle(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     input: Option<ExportDebugBundleInput>,
 ) -> AppResult<ExportDebugBundleResult> {
     let snapshot = capture_debug_state(&state)?;
     let input = input.unwrap_or_default();
+    let output_dir = debug_output_dir(&app)?;
 
     #[cfg_attr(not(feature = "desktop"), allow(unused_mut))]
-    let mut result =
-        tauri::async_runtime::spawn_blocking(move || build_debug_bundle(snapshot, input))
-            .await
-            .map_err(|e| AppError::Internal(format!("Debug bundle task failed: {e}")))??;
+    let mut result = tauri::async_runtime::spawn_blocking(move || {
+        build_debug_bundle(snapshot, input, output_dir)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Debug bundle task failed: {e}")))??;
 
     #[cfg(feature = "desktop")]
     if let Err(err) = open::that(&result.directory_path) {
@@ -294,8 +297,8 @@ fn capture_debug_state(state: &State<'_, AppState>) -> AppResult<DebugStateSnaps
 fn build_debug_bundle(
     snapshot: DebugStateSnapshot,
     input: ExportDebugBundleInput,
+    output_dir: PathBuf,
 ) -> AppResult<ExportDebugBundleResult> {
-    let output_dir = debug_output_dir();
     fs::create_dir_all(&output_dir)?;
     let zip_path = unique_debug_zip_path(&output_dir, snapshot.generated_at_unix_ms);
     let file = File::create(&zip_path)?;
@@ -659,12 +662,25 @@ fn selected_environment() -> Value {
     Value::Object(vars)
 }
 
-fn debug_output_dir() -> PathBuf {
-    dirs::download_dir()
-        .or_else(dirs::document_dir)
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Hermes Debug Reports")
+fn debug_output_dir(app: &tauri::AppHandle) -> AppResult<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        return Ok(app
+            .path()
+            .app_cache_dir()
+            .map_err(|err| AppError::FileError(format!("无法获取 Android 应用缓存目录: {err}")))?
+            .join("hermes-debug-reports"));
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(dirs::download_dir()
+            .or_else(dirs::document_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Hermes Debug Reports"))
+    }
 }
 
 fn unique_debug_zip_path(output_dir: &Path, unix_ms: u128) -> PathBuf {

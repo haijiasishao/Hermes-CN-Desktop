@@ -63,6 +63,8 @@ import type {
   ReadWorkspaceFileInput,
   ExportDebugBundleInput,
   ExportDebugBundleResult,
+  SaveDebugBundleInput,
+  SaveDebugBundleResult,
   ExternalTerminalResult,
   TerminalEventPayload,
   TerminalOpenExternalInput,
@@ -331,6 +333,10 @@ const tauriBridge = {
   async exportDebugBundle(input?: ExportDebugBundleInput): Promise<ExportDebugBundleResult> {
     const inv = await ensureInvoke();
     return inv("export_debug_bundle", { input: input ?? null });
+  },
+
+  async saveDebugBundle(input: SaveDebugBundleInput): Promise<SaveDebugBundleResult> {
+    return invokeCommand("save_debug_bundle", { input });
   },
 
   async environmentCheck(): Promise<EnvironmentCheckResult> {
