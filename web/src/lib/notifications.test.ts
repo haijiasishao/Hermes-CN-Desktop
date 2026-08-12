@@ -8,8 +8,15 @@ async function loadNotifications(seed: Record<string, unknown> = {}) {
   const uiStore = await import("@/lib/ui-store");
   uiStore.__resetUiStoreForTests(seed);
   const queryClientModule = await import("@/lib/query-client");
+  const debugBusModule = await import("@/lib/debug-bus");
+  debugBusModule.debugBus.clear();
   const mod = await import("./notifications");
-  return { ...mod, uiStore, queryClient: queryClientModule.queryClient };
+  return {
+    ...mod,
+    uiStore,
+    queryClient: queryClientModule.queryClient,
+    debugBus: debugBusModule.debugBus,
+  };
 }
 
 function settings(overrides: Partial<NotificationSettings> = {}): NotificationSettings {
@@ -57,6 +64,13 @@ function completeEvent(
   sessionId: string | undefined = "s1",
 ): GatewayEvent {
   return { type: "message.complete", session_id: sessionId, payload } as GatewayEvent;
+}
+
+function androidWindow(desktopNotify: unknown): Record<string, unknown> {
+  return {
+    __HERMES_RUNTIME__: { androidRemoteOnly: true },
+    hermesDesktop: { desktopNotify },
+  };
 }
 
 const never = () => false;
@@ -567,11 +581,11 @@ describe("notifyFromGatewayEvent", () => {
 
 describe("notifyFromReconnectSnapshot", () => {
   it("fires notification when REST shows completed turn with active assistant id", async () => {
-    const { notifyFromReconnectSnapshot } = await loadNotifications();
+    const { notifyFromReconnectSnapshot, debugBus } = await loadNotifications();
     const desktopNotify = vi
       .fn()
-      .mockResolvedValue({ delivered: true, focused: false, attentionRequested: false });
-    (globalThis as any).window = { hermesDesktop: { desktopNotify } };
+      .mockResolvedValue({ delivered: true, focused: false, visible: true, attentionRequested: false });
+    (globalThis as any).window = androidWindow(desktopNotify);
 
     const runtime = runtimeWith({
       streamStatus: "connecting",
@@ -600,6 +614,50 @@ describe("notifyFromReconnectSnapshot", () => {
         respectFocus: false,
       }),
     );
+    const entries = debugBus.snapshot();
+    expect(entries.map((entry) => entry.summary)).toEqual(
+      expect.arrayContaining([
+        "notification.reconnect-snapshot.started",
+        "notification.reconnect-snapshot.matched",
+        "notification.native.result",
+      ]),
+    );
+    const matched = entries.find(
+      (entry) => entry.summary === "notification.reconnect-snapshot.matched",
+    );
+    expect(matched?.payload).toMatchObject({
+      sessionId: "s1",
+      activeAssistantId: "live-assistant-100",
+      assistantStatus: "complete",
+    });
+    const nativeResult = entries.find((entry) => entry.summary === "notification.native.result");
+    expect(nativeResult?.payload).toMatchObject({
+      source: "reconnect-snapshot",
+      delivered: true,
+      focused: false,
+      visible: true,
+      error: null,
+    });
+    expect(JSON.stringify(matched?.payload)).not.toContain("好的");
+  });
+
+  it("records the exact skip reason when no active assistant turn exists", async () => {
+    const { notifyFromReconnectSnapshot, debugBus } = await loadNotifications();
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = androidWindow(desktopNotify);
+
+    notifyFromReconnectSnapshot("s1", runtimeWith({ turnStartedAt: 50 }), {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [],
+    });
+    await flushAsync();
+
+    const skipped = debugBus
+      .snapshot()
+      .find((entry) => entry.summary === "notification.reconnect-snapshot.skipped");
+    expect(skipped?.payload).toMatchObject({ reason: "no_active_assistant" });
+    expect(desktopNotify).not.toHaveBeenCalled();
   });
 
   it("does not fire when no active assistant id (no in-flight turn)", async () => {

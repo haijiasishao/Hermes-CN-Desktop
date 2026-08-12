@@ -20,6 +20,7 @@ import { readNotificationSettings, type NotificationSettings } from "@/stores/ui
 import { resolvePersistentSessionId } from "@/lib/session-map";
 import { queryClient } from "@/lib/query-client";
 import { runtime, type DesktopNotifyResult } from "@/lib/runtime";
+import { recordNotificationDebug } from "@/lib/notification-debug";
 
 export interface NotificationAction {
   dedupeKey: string;
@@ -254,6 +255,7 @@ export function playChime(): void {
 
 function notificationDiagnostic(message: string, details?: Record<string, unknown>): void {
   if (!runtime.androidRemoteOnly || typeof console === "undefined") return;
+  recordNotificationDebug("diagnostic", { message, ...(details ?? {}) }, "warn");
   try {
     console.warn("[Hermes notification]", message, details ?? {});
   } catch {
@@ -267,6 +269,18 @@ function commitOrReleaseNotification(
   result: DesktopNotifyResult | undefined,
   source: "gateway-event" | "reconnect-snapshot",
 ): void {
+  recordNotificationDebug(
+    "native.result",
+    {
+      source,
+      delivered: Boolean(result?.delivered),
+      focused: Boolean(result?.focused),
+      visible: Boolean(result?.visible),
+      attentionRequested: Boolean(result?.attentionRequested),
+      error: result?.error ?? null,
+    },
+    result && !result.delivered && !(result.focused && settings.onlyBackground) ? "warn" : "info",
+  );
   // A focused window with only-background enabled is an intentional suppression,
   // not a transport failure. All other `delivered:false` results remain retryable
   // so a reconnect snapshot can recover after a transient Android IPC failure.
@@ -283,6 +297,52 @@ function commitOrReleaseNotification(
   }
 }
 
+function notificationSettingsDebug(settings: NotificationSettings): Record<string, boolean> {
+  return {
+    system: settings.system,
+    sound: settings.sound,
+    onComplete: settings.onComplete,
+    onApproval: settings.onApproval,
+    onlyBackground: settings.onlyBackground,
+  };
+}
+
+function decisionSkipReason(
+  event: GatewayEvent,
+  prevRuntime: ChatSessionRuntime | undefined,
+  settings: NotificationSettings,
+): string {
+  if (!settings.system && !settings.sound) return "channels_disabled";
+  if (!event.session_id) return "missing_session_id";
+  const payload = payloadOf(event);
+  if (event.type === "approval.request") {
+    if (!settings.onApproval) return "approval_disabled";
+    const requestId = payload.request_id;
+    if (typeof requestId !== "string" && typeof requestId !== "number") {
+      return "missing_request_id";
+    }
+    if (prevRuntime?.pendingApprovals.some((item) => item.requestId === String(requestId))) {
+      return "approval_already_pending";
+    }
+    const persistentSessionId = resolvePersistentSessionId(event.session_id) ?? event.session_id;
+    if (hasNotified(`approval:${persistentSessionId}:${String(requestId)}`)) {
+      return "already_notified";
+    }
+    return "not_actionable";
+  }
+  if (event.type === "message.complete") {
+    if (!settings.onComplete) return "complete_disabled";
+    if (!prevRuntime?.activeAssistantId) return "no_active_assistant";
+    if (prevRuntime.interrupted) return "interrupted";
+    const persistentSessionId = resolvePersistentSessionId(event.session_id) ?? event.session_id;
+    if (hasNotified(`complete:${persistentSessionId}:${prevRuntime.activeAssistantId}`)) {
+      return "already_notified";
+    }
+    return "not_actionable";
+  }
+  return "unsupported_event";
+}
+
 // ── 触发器（副作用入口，错误全吞）──────────────────────────────────────
 
 export function notifyFromGatewayEvent(
@@ -291,24 +351,57 @@ export function notifyFromGatewayEvent(
 ): void {
   let dispatchedDedupeKey: string | undefined;
   try {
+    const settings = readNotificationSettings();
+    const relevantEvent = event.type === "message.complete" || event.type === "approval.request";
+    if (relevantEvent) {
+      recordNotificationDebug("gateway-event.received", {
+        eventType: event.type,
+        sessionId: event.session_id ?? null,
+        hasActiveAssistant: Boolean(prevRuntime?.activeAssistantId),
+        interrupted: Boolean(prevRuntime?.interrupted),
+        settings: notificationSettingsDebug(settings),
+      });
+    }
     const bridge = window.hermesDesktop;
     if (typeof bridge?.desktopNotify !== "function") {
       notificationDiagnostic("desktop notification bridge is unavailable", {
         source: "gateway-event",
         eventType: event.type,
       });
+      if (relevantEvent) {
+        recordNotificationDebug("gateway-event.skipped", {
+          reason: "bridge_unavailable",
+          eventType: event.type,
+          sessionId: event.session_id ?? null,
+        });
+      }
       return;
     }
-    const settings = readNotificationSettings();
     const action = decideNotification({
       event,
       prevRuntime,
       settings,
       alreadyNotified: hasNotified,
     });
-    if (!action || !event.session_id) return;
+    if (!action || !event.session_id) {
+      if (relevantEvent) {
+        recordNotificationDebug("gateway-event.skipped", {
+          reason: decisionSkipReason(event, prevRuntime, settings),
+          eventType: event.type,
+          sessionId: event.session_id ?? null,
+        });
+      }
+      return;
+    }
     dispatchedDedupeKey = action.dedupeKey;
     markNotified(action.dedupeKey);
+    recordNotificationDebug("gateway-event.dispatch", {
+      eventType: event.type,
+      sessionId: event.session_id,
+      kind: action.kind,
+      hasActiveAssistant: Boolean(prevRuntime?.activeAssistantId),
+      settings: notificationSettingsDebug(settings),
+    });
     void bridge
       .desktopNotify({
         kind: action.kind,
@@ -370,20 +463,84 @@ export function notifyFromReconnectSnapshot(
 ): void {
   let dispatchedDedupeKey: string | undefined;
   try {
+    recordNotificationDebug("reconnect-snapshot.started", {
+      sessionId,
+      activeAssistantId: runtime.activeAssistantId ?? null,
+      interrupted: Boolean(runtime.interrupted),
+      hasTurnStartedAt: runtime.turnStartedAt !== undefined,
+      responsePresent: Boolean(messagesResponse),
+    });
     const bridge = window.hermesDesktop;
     if (typeof bridge?.desktopNotify !== "function") {
       notificationDiagnostic("desktop notification bridge is unavailable", {
         source: "reconnect-snapshot",
       });
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "bridge_unavailable",
+        sessionId,
+      });
       return;
     }
     const activeId = runtime.activeAssistantId;
-    if (!activeId || runtime.interrupted || runtime.turnStartedAt === undefined) return;
+    if (!activeId) {
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "no_active_assistant",
+        sessionId,
+      });
+      return;
+    }
+    if (runtime.interrupted) {
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "interrupted",
+        sessionId,
+        activeAssistantId: activeId,
+      });
+      return;
+    }
+    if (runtime.turnStartedAt === undefined) {
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "missing_turn_started_at",
+        sessionId,
+        activeAssistantId: activeId,
+      });
+      return;
+    }
 
     const settings = readNotificationSettings();
-    if (!settings.onComplete || (!settings.system && !settings.sound)) return;
+    if (!settings.onComplete) {
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "complete_disabled",
+        sessionId,
+        activeAssistantId: activeId,
+        settings: notificationSettingsDebug(settings),
+      });
+      return;
+    }
+    if (!settings.system && !settings.sound) {
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "channels_disabled",
+        sessionId,
+        activeAssistantId: activeId,
+        settings: notificationSettingsDebug(settings),
+      });
+      return;
+    }
 
     const storedMessages = messagesResponseToHermesUIMessages(messagesResponse ?? undefined);
+    const assistantMessages = storedMessages.filter((message) => message.role === "assistant");
+    const completedAssistantMessages = assistantMessages.filter(
+      (message) => message.status === "complete" || message.status === "error",
+    );
+    recordNotificationDebug("reconnect-snapshot.loaded", {
+      sessionId,
+      activeAssistantId: activeId,
+      storedMessageCount: storedMessages.length,
+      assistantCount: assistantMessages.length,
+      completedAssistantCount: completedAssistantMessages.length,
+      latestAssistantStatus: assistantMessages.at(-1)?.status ?? null,
+      latestAssistantCreatedAt: assistantMessages.at(-1)?.createdAt ?? null,
+      turnStartedAt: runtime.turnStartedAt,
+    });
     const latestAssistant = [...storedMessages]
       .reverse()
       .find(
@@ -393,11 +550,40 @@ export function notifyFromReconnectSnapshot(
           message.createdAt >= runtime.turnStartedAt! &&
           hasStoredFinalContent(message),
       );
-    if (!latestAssistant) return;
+    if (!latestAssistant) {
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "no_matching_final_assistant",
+        sessionId,
+        activeAssistantId: activeId,
+        storedMessageCount: storedMessages.length,
+        assistantCount: assistantMessages.length,
+        completedAssistantCount: completedAssistantMessages.length,
+        turnStartedAt: runtime.turnStartedAt,
+      });
+      return;
+    }
 
     const persistentSessionId = resolvePersistentSessionId(sessionId) ?? sessionId;
     const dedupeKey = `complete:${persistentSessionId}:${activeId}`;
-    if (hasNotified(dedupeKey)) return;
+    if (hasNotified(dedupeKey)) {
+      recordNotificationDebug("reconnect-snapshot.skipped", {
+        reason: "already_notified",
+        sessionId,
+        persistentSessionId,
+        activeAssistantId: activeId,
+        assistantId: latestAssistant.id,
+      });
+      return;
+    }
+
+    recordNotificationDebug("reconnect-snapshot.matched", {
+      sessionId,
+      persistentSessionId,
+      activeAssistantId: activeId,
+      assistantId: latestAssistant.id,
+      assistantStatus: latestAssistant.status,
+      assistantCreatedAt: latestAssistant.createdAt,
+    });
 
     const isError = latestAssistant.status === "error";
     const errorText = latestAssistant.parts
@@ -411,6 +597,15 @@ export function notifyFromReconnectSnapshot(
 
     dispatchedDedupeKey = dedupeKey;
     markNotified(dedupeKey);
+    recordNotificationDebug("reconnect-snapshot.dispatch", {
+      sessionId,
+      persistentSessionId,
+      activeAssistantId: activeId,
+      assistantId: latestAssistant.id,
+      kind: isError ? "error" : "complete",
+      settings: notificationSettingsDebug(settings),
+      respectFocus: false,
+    });
     void bridge
       .desktopNotify({
         kind: isError ? "error" : "complete",

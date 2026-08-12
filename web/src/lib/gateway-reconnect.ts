@@ -22,6 +22,17 @@ export interface ReconnectResumeResult {
   resumed?: string;
 }
 
+export interface ReattachDiagnostic {
+  stage:
+    | "reattach.started"
+    | "reattach.no_active_session"
+    | "reattach.active_session"
+    | "reattach.resume_requested"
+    | "reattach.resumed"
+    | "reattach.failed";
+  details?: Record<string, unknown>;
+}
+
 export interface ReattachAfterReconnectDeps {
   /** The currently active gateway session id, or null/undefined if none is open. */
   getActiveSessionId: () => string | null | undefined;
@@ -33,6 +44,8 @@ export interface ReattachAfterReconnectDeps {
   onResumed: (gatewaySessionId: string, persistentId: string) => void;
   /** Called when resume rejects or yields no session (session gone) so the caller can surface an error. */
   onResumeFailed: (error: unknown) => void;
+  /** Optional non-fatal lifecycle diagnostics for Android debug bundles. */
+  onDiagnostic?: (event: ReattachDiagnostic) => void;
   /**
    * Called at the start of reattach — before the active-session check and
    * before `session.resume` is issued. The promise is awaited so a completed
@@ -49,7 +62,19 @@ export function isDefinitiveMissingSessionError(error: unknown): boolean {
     || /(?:not found|does not exist|unknown|gone|reaped).*(?:session|conversation)/i.test(message);
 }
 
+function reportDiagnostic(
+  deps: ReattachAfterReconnectDeps,
+  event: ReattachDiagnostic,
+): void {
+  try {
+    deps.onDiagnostic?.(event);
+  } catch {
+    // Diagnostics must never alter reconnect behavior.
+  }
+}
+
 export async function reattachAfterReconnect(deps: ReattachAfterReconnectDeps): Promise<void> {
+  reportDiagnostic(deps, { stage: "reattach.started" });
   // Notify the caller before any active-session gating or resume. Awaiting the
   // callback prevents a completed background turn from racing session.resume.
   // On Android the REST message snapshot is the ONLY way to retire a stale
@@ -59,17 +84,50 @@ export async function reattachAfterReconnect(deps: ReattachAfterReconnectDeps): 
 
   const activeSessionId = deps.getActiveSessionId();
   // Nothing open to re-pin — a fresh connect with no session is a no-op.
-  if (!activeSessionId) return;
+  if (!activeSessionId) {
+    reportDiagnostic(deps, { stage: "reattach.no_active_session" });
+    return;
+  }
 
   const persistentId = deps.resolvePersistentId(activeSessionId);
+  reportDiagnostic(deps, {
+    stage: "reattach.active_session",
+    details: {
+      gatewaySessionId: activeSessionId,
+      persistentSessionId: persistentId,
+    },
+  });
+  reportDiagnostic(deps, {
+    stage: "reattach.resume_requested",
+    details: { persistentSessionId: persistentId },
+  });
   try {
     const result = await deps.resume(persistentId);
     if (!result?.session_id) {
-      deps.onResumeFailed(new Error("session.resume returned no session_id"));
+      const error = new Error("session.resume returned no session_id");
+      reportDiagnostic(deps, {
+        stage: "reattach.failed",
+        details: { persistentSessionId: persistentId, error: error.message },
+      });
+      deps.onResumeFailed(error);
       return;
     }
     deps.onResumed(result.session_id, result.resumed ?? persistentId);
+    reportDiagnostic(deps, {
+      stage: "reattach.resumed",
+      details: {
+        gatewaySessionId: result.session_id,
+        persistentSessionId: result.resumed ?? persistentId,
+      },
+    });
   } catch (error) {
+    reportDiagnostic(deps, {
+      stage: "reattach.failed",
+      details: {
+        persistentSessionId: persistentId,
+        error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      },
+    });
     deps.onResumeFailed(error);
   }
 }

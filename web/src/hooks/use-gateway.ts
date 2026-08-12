@@ -25,6 +25,7 @@ import { getGatewayClient } from "@/lib/gateway-client";
 import {
   isDefinitiveMissingSessionError,
   reattachAfterReconnect,
+  type ReattachDiagnostic,
 } from "@/lib/gateway-reconnect";
 import {
   getCachedModelOptions,
@@ -43,6 +44,7 @@ import { mirrorSessionWorkspaceMapping } from "@/lib/workspaces";
 import { notifyFromReconnectSnapshot } from "@/lib/notifications";
 import { messagesResponseToHermesUIMessages } from "@/components/chat/message-adapter";
 import { runtime } from "@/lib/runtime";
+import { recordNotificationDebug } from "@/lib/notification-debug";
 import { fetchSessionMessages } from "@/hooks/use-sessions";
 import { humanizeGatewayError, parseGatewayResult } from "@/lib/gateway-result";
 import {
@@ -130,6 +132,9 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
     await reattachAfterReconnect({
       getActiveSessionId: () => store.get(gwSessionIdAtom),
       resolvePersistentId: (id) => resolvePersistentSessionId(id) ?? id,
+      onDiagnostic: (event: ReattachDiagnostic) => {
+        recordNotificationDebug(event.stage, event.details, event.stage === "reattach.failed" ? "error" : "info");
+      },
       resume: async (persistentId) =>
         SessionResumeResult.parse(
           // Resuming can rebuild the agent server-side (minutes-scale, runs in
@@ -186,15 +191,47 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
         // Desktop keeps its existing reconnect path unchanged.
         if (!runtime.androidRemoteOnly) return;
         const sessionId = store.get(gwSessionIdAtom);
-        if (!sessionId) return;
+        if (!sessionId) {
+          recordNotificationDebug("reattach.snapshot.skipped", {
+            reason: "no_gateway_session",
+          });
+          return;
+        }
         const activeRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
-        if (!activeRuntime?.activeAssistantId) return;
+        if (!activeRuntime?.activeAssistantId) {
+          recordNotificationDebug("reattach.snapshot.skipped", {
+            reason: "no_active_assistant",
+            gatewaySessionId: sessionId,
+          });
+          return;
+        }
         const persistentId = resolvePersistentSessionId(sessionId) ?? sessionId;
+        recordNotificationDebug("reattach.snapshot.started", {
+          gatewaySessionId: sessionId,
+          persistentSessionId: persistentId,
+          activeAssistantId: activeRuntime.activeAssistantId,
+          interrupted: Boolean(activeRuntime.interrupted),
+          hasTurnStartedAt: activeRuntime.turnStartedAt !== undefined,
+        });
 
         return fetchReattachSnapshot(persistentId)
           .then((messages) => {
+            recordNotificationDebug("reattach.snapshot.loaded", {
+              gatewaySessionId: sessionId,
+              persistentSessionId: persistentId,
+              responsePresent: Boolean(messages),
+              messageCount: Array.isArray(messages?.messages) ? messages.messages.length : 0,
+              uiMessageCount: Array.isArray(messages?.ui_messages) ? messages.ui_messages.length : 0,
+            });
             const currentRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
-            if (!currentRuntime?.activeAssistantId) return;
+            if (!currentRuntime?.activeAssistantId) {
+              recordNotificationDebug("reattach.snapshot.skipped", {
+                reason: "turn_no_longer_active",
+                gatewaySessionId: sessionId,
+                persistentSessionId: persistentId,
+              });
+              return;
+            }
 
             notifyFromReconnectSnapshot(sessionId, currentRuntime, messages);
             store.set(recoverCompletedTurnFromStoredMessagesAtom, {
@@ -212,9 +249,33 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
               if (store.get(gwSessionIdAtom) === sessionId) {
                 store.set(gwSessionIdAtom, null);
               }
+              recordNotificationDebug("reattach.snapshot.reconciled", {
+                gatewaySessionId: sessionId,
+                persistentSessionId: persistentId,
+                recovered: true,
+              });
+            } else {
+              recordNotificationDebug("reattach.snapshot.reconciled", {
+                gatewaySessionId: sessionId,
+                persistentSessionId: persistentId,
+                recovered: false,
+              });
             }
           })
-          .catch(() => {
+          .catch((error: unknown) => {
+            recordNotificationDebug(
+              "reattach.snapshot.failed",
+              {
+                gatewaySessionId: sessionId,
+                persistentSessionId: persistentId,
+                error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+                aborted:
+                  typeof DOMException !== "undefined" &&
+                  error instanceof DOMException &&
+                  error.name === "AbortError",
+              },
+              "error",
+            );
             // Reconnect/REST errors remain on the normal recovery path; a
             // missing snapshot must never affect session.resume or chat state.
           });

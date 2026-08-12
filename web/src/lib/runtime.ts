@@ -212,6 +212,8 @@ export interface DesktopNotifyResult {
   delivered: boolean;
   /** 调用时主窗口是否在前台。 */
   focused: boolean;
+  /** 调用时主窗口是否可见。 */
+  visible: boolean;
   attentionRequested: boolean;
   /** 系统通知发送失败原因（非致命）。 */
   error?: string;

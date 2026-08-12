@@ -47,6 +47,8 @@ pub struct DesktopNotifyResult {
     pub delivered: bool,
     /// 调用时主窗口是否在前台（前端据此决定要不要补播提示音）。
     pub focused: bool,
+    /// 调用时主窗口是否可见。
+    pub visible: bool,
     pub attention_requested: bool,
     /// 系统通知发送失败的原因（非致命，不走 Err）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,7 +224,7 @@ fn notify_blocking(
     input: &DesktopNotifyInput,
 ) -> DesktopNotifyResult {
     let window = app.get_webview_window(MAIN_WINDOW_LABEL);
-    let foreground = window
+    let (focused, visible, foreground) = window
         .as_ref()
         .map(|w| {
             // On a Tauri query error, bias every signal toward "not
@@ -231,24 +233,28 @@ fn notify_blocking(
             // feature exists to prevent, a redundant toast is harmless.
             let focused = w.is_focused().unwrap_or(false);
             let visible = w.is_visible().unwrap_or(false);
-            #[cfg(target_os = "android")]
-            {
-                // Android activities do not have a desktop-style minimized
-                // state; querying it can fail and incorrectly mark every
-                // foreground activity as background.
-                is_foreground(focused, false, visible)
-            }
-            #[cfg(not(target_os = "android"))]
-            {
-                is_foreground(focused, w.is_minimized().unwrap_or(true), visible)
-            }
+            let foreground = {
+                #[cfg(target_os = "android")]
+                {
+                    // Android activities do not have a desktop-style minimized
+                    // state; querying it can fail and incorrectly mark every
+                    // foreground activity as background.
+                    is_foreground(focused, false, visible)
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    is_foreground(focused, w.is_minimized().unwrap_or(true), visible)
+                }
+            };
+            (focused, visible, foreground)
         })
-        .unwrap_or(false);
+        .unwrap_or((false, false, false));
 
     if should_suppress(input.respect_focus, foreground) {
         return DesktopNotifyResult {
             delivered: false,
             focused: foreground,
+            visible,
             attention_requested: false,
             error: None,
         };
@@ -320,6 +326,7 @@ fn notify_blocking(
     DesktopNotifyResult {
         delivered,
         focused: foreground,
+        visible,
         attention_requested,
         error,
     }
@@ -439,6 +446,7 @@ mod tests {
         let ok = DesktopNotifyResult {
             delivered: true,
             focused: false,
+            visible: true,
             attention_requested: true,
             error: None,
         };
@@ -447,6 +455,7 @@ mod tests {
             serde_json::json!({
                 "delivered": true,
                 "focused": false,
+                "visible": true,
                 "attentionRequested": true,
             })
         );
@@ -454,6 +463,7 @@ mod tests {
         let failed = DesktopNotifyResult {
             delivered: false,
             focused: false,
+            visible: false,
             attention_requested: false,
             error: Some("denied".to_string()),
         };

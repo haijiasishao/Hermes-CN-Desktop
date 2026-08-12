@@ -38,11 +38,20 @@ describe("reattachAfterReconnect", () => {
   });
 
   it("resumes the resolved persistent id and reports the new gateway id", async () => {
-    const { deps, resume, onResumed, onResumeFailed } = makeDeps();
+    const diagnostics: string[] = [];
+    const { deps, resume, onResumed, onResumeFailed } = makeDeps({
+      onDiagnostic: (event) => diagnostics.push(event.stage),
+    });
     await reattachAfterReconnect(deps);
     expect(resume).toHaveBeenCalledWith("sess-1");
     expect(onResumed).toHaveBeenCalledWith("gw-sess-1", "sess-1");
     expect(onResumeFailed).not.toHaveBeenCalled();
+    expect(diagnostics).toEqual([
+      "reattach.started",
+      "reattach.active_session",
+      "reattach.resume_requested",
+      "reattach.resumed",
+    ]);
   });
 
   it("prefers the server-reported resumed persistent id when present", async () => {
@@ -54,7 +63,9 @@ describe("reattachAfterReconnect", () => {
   });
 
   it("escalates to onResumeFailed when resume rejects (session gone)", async () => {
+    const diagnostics: string[] = [];
     const { deps, onResumed, onResumeFailed } = makeDeps({
+      onDiagnostic: (event) => diagnostics.push(event.stage),
       resume: vi.fn(async () => {
         throw new Error("Session not found");
       }),
@@ -62,6 +73,12 @@ describe("reattachAfterReconnect", () => {
     await reattachAfterReconnect(deps);
     expect(onResumed).not.toHaveBeenCalled();
     expect(onResumeFailed).toHaveBeenCalledTimes(1);
+    expect(diagnostics).toEqual([
+      "reattach.started",
+      "reattach.active_session",
+      "reattach.resume_requested",
+      "reattach.failed",
+    ]);
   });
 
   it("escalates to onResumeFailed when resume returns no session_id", async () => {

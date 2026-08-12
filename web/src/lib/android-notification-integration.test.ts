@@ -64,6 +64,16 @@ describe("Android native notification integration", () => {
     const unsupportedEntries = match![1];
     expect(unsupportedEntries).not.toContain('"desktopNotify"');
   });
+
+  it("exports structured reconnect and native delivery diagnostics", () => {
+    const notify = read("src/commands/notify.rs");
+    expect(notify).toContain("pub visible: bool");
+    const runtime = read("web/src/lib/runtime.ts");
+    expect(runtime).toContain("visible: boolean");
+    const notifications = read("web/src/lib/notifications.ts");
+    expect(notifications).toContain('recordNotificationDebug("reconnect-snapshot.loaded"');
+    expect(notifications).toContain('"native.result"');
+  });
 });
 
 describe("Android visible app name", () => {
