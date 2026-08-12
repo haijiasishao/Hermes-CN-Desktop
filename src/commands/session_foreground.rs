@@ -14,7 +14,7 @@ use crate::state::{
 const HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 
 #[cfg(target_os = "android")]
-struct SessionForegroundPluginHandle(tauri::plugin::PluginHandle<tauri::Wry>);
+struct SessionForegroundPluginHandle<R: Runtime>(tauri::plugin::PluginHandle<R>);
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("session-foreground")
@@ -80,10 +80,10 @@ pub const fn heartbeat_interval_ms() -> u64 {
 async fn plugin(app: &AppHandle, input: PluginInput) -> AppResult<()> {
     #[cfg(target_os = "android")]
     {
-        let handle = app.state::<SessionForegroundPluginHandle>();
+        let handle = app.state::<SessionForegroundPluginHandle<tauri::Wry>>();
         handle
             .0
-            .run_mobile_plugin_async("sessionForeground", input)
+            .run_mobile_plugin_async::<()>("sessionForeground", input)
             .await
             .map_err(|error| {
                 AppError::Internal(format!("foreground diagnostic plugin: {error}"))

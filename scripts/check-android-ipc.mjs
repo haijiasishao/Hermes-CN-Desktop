@@ -310,6 +310,16 @@ for (const command of ["session_foreground_start", "session_foreground_stop"]) {
     process.exit(1);
   }
 }
+for (const required of [
+  "struct SessionForegroundPluginHandle<R: Runtime>(tauri::plugin::PluginHandle<R>);",
+  "app.state::<SessionForegroundPluginHandle<tauri::Wry>>()",
+  ".run_mobile_plugin_async::<()>(",
+]) {
+  if (!foregroundRust.includes(required)) {
+    console.error(`Foreground Rust runtime contract regressed: ${required}`);
+    process.exit(1);
+  }
+}
 if (/log::(?:debug|info|warn|error)!\([^\n]*(?:token|cookie|prompt|response|url)/i.test(foregroundRust)) {
   console.error("Foreground diagnostic logging may expose sensitive data");
   process.exit(1);
