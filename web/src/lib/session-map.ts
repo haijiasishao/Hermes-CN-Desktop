@@ -71,6 +71,22 @@ export function rememberSessionMapping(gatewaySessionId: string, persistentSessi
   writeMap(map);
 }
 
+/** Record the persistent id announced by a gateway `session.info` event. */
+export function rememberGatewaySessionInfo(
+  gatewaySessionId: string | undefined,
+  payload: unknown,
+): void {
+  const gatewayId = cleanSessionId(gatewaySessionId);
+  if (!gatewayId || !payload || typeof payload !== "object" || Array.isArray(payload)) return;
+
+  const storedSessionId = (payload as Record<string, unknown>).stored_session_id;
+  if (typeof storedSessionId !== "string") return;
+  const persistentId = cleanSessionId(storedSessionId);
+  if (!persistentId) return;
+
+  rememberSessionMapping(gatewayId, persistentId);
+}
+
 export function rememberActivePersistentSessionId(persistentSessionId: string | undefined) {
   const cleaned = cleanSessionId(persistentSessionId);
   if (!cleaned) return;

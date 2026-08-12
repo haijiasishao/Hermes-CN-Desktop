@@ -5,6 +5,7 @@ import {
   forgetSessionMapping,
   forgetSessionMappingsForPersistentSession,
   getActivePersistentSessionId,
+  rememberGatewaySessionInfo,
   rememberSessionMapping,
   rememberActivePersistentSessionId,
   resolveGatewaySessionId,
@@ -26,6 +27,20 @@ describe("session-map", () => {
     rememberSessionMapping("gw-1", "20260426_000000_abcd");
     expect(resolvePersistentSessionId("gw-1")).toBe("20260426_000000_abcd");
     expect(resolvePersistentSessionId("already-persistent")).toBe("already-persistent");
+  });
+
+  it("records the persistent id from a session.info payload", () => {
+    rememberGatewaySessionInfo("gw-info", { stored_session_id: "sess-info" });
+
+    expect(resolvePersistentSessionId("gw-info")).toBe("sess-info");
+  });
+
+  it("ignores malformed session.info payloads", () => {
+    rememberGatewaySessionInfo("gw-info", null);
+    rememberGatewaySessionInfo("gw-info", { stored_session_id: "   " });
+    rememberGatewaySessionInfo(undefined, { stored_session_id: "sess-info" });
+
+    expect(resolvePersistentSessionId("gw-info")).toBe("gw-info");
   });
 
   it("resolves persistent session ids back to active gateway ids", () => {

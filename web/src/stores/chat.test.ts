@@ -1,6 +1,8 @@
 import { createStore } from "jotai/vanilla";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HermesMessagePart, HermesUIMessage } from "@hermes/protocol";
+import { resolvePersistentSessionId } from "@/lib/session-map";
+import { __resetUiStoreForTests } from "@/lib/ui-store";
 import {
   applyGatewayEventAtom,
   chatRuntimeBySessionAtom,
@@ -15,6 +17,31 @@ import {
   startPromptAtom,
   terminateAllStreamsAtom,
 } from "./chat";
+
+describe("session.info session mapping", () => {
+  beforeEach(() => {
+    __resetUiStoreForTests();
+  });
+
+  afterEach(() => {
+    __resetUiStoreForTests();
+  });
+
+  it("records the persistent session id before reducing the gateway event", () => {
+    const store = createStore();
+
+    store.set(chatRuntimeBySessionAtom, {
+      "gw-info": createEmptyChatRuntime(),
+    });
+    store.set(applyGatewayEventAtom, {
+      type: "session.info",
+      session_id: "gw-info",
+      payload: { stored_session_id: "sess-info" },
+    });
+
+    expect(resolvePersistentSessionId("gw-info")).toBe("sess-info");
+  });
+});
 
 function assistantMessage(runtime: ReturnType<typeof createEmptyChatRuntime>): HermesUIMessage {
   const message = runtime.messages.find((item) => item.role === "assistant");

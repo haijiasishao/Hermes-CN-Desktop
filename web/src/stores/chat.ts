@@ -16,7 +16,7 @@ import {
   imagePartFromSource,
 } from "@/lib/message-images";
 import { notifyFromGatewayEvent } from "@/lib/notifications";
-import { resolvePersistentSessionId } from "@/lib/session-map";
+import { rememberGatewaySessionInfo, resolvePersistentSessionId } from "@/lib/session-map";
 import { recordUiTurnStats, stableTextHash } from "@/lib/ui-store";
 import { routeCliDelegationGatewayEventAtom } from "@/stores/cli-delegations";
 import { routeSubagentGatewayEventAtom } from "@/stores/subagents";
@@ -1283,6 +1283,9 @@ function persistCompletedTurnStats(runtime: ChatSessionRuntime, event: GatewayEv
 
 export const applyGatewayEventAtom = atom(null, (get, set, event: GatewayEvent) => {
   if (!event.session_id) return;
+  if (event.type === "session.info") {
+    rememberGatewaySessionInfo(event.session_id, event.payload);
+  }
   // 通知决策需要 reduce 前的快照（pendingApprovals / activeAssistantId 是
   // 防重放依据），在 set 之外读取——jotai 不承诺 updater 恰好执行一次。
   // 副作用本身 fire-and-forget，绝不影响 reducer。
