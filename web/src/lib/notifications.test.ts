@@ -466,6 +466,48 @@ describe("notifyFromGatewayEvent", () => {
     );
   });
 
+  it("records Android native foreground diagnostics without message text", async () => {
+    const { notifyFromGatewayEvent, debugBus } = await loadNotifications();
+    const desktopNotify = vi.fn().mockResolvedValue({
+      delivered: false,
+      focused: true,
+      visible: false,
+      rawFocused: true,
+      rawVisible: false,
+      effectiveForeground: true,
+      attentionRequested: false,
+    });
+    (globalThis as any).window = androidWindow(desktopNotify);
+
+    notifyFromGatewayEvent(
+      completeEvent({ status: "complete" }),
+      runtimeWith({
+        activeAssistantId: "live-assistant-1",
+        messages: [userMessage("后台任务")],
+      }),
+    );
+    await flushAsync();
+
+    const nativeResult = debugBus
+      .snapshot()
+      .find((entry) => entry.summary === "notification.native.result");
+    expect(nativeResult?.payload).toMatchObject({
+      source: "gateway-event",
+      respectFocus: true,
+      delivered: false,
+      focused: true,
+      visible: false,
+      rawFocused: true,
+      rawVisible: false,
+      effectiveForeground: true,
+      documentVisibilityState: "unavailable",
+      documentHasFocus: null,
+      attentionRequested: false,
+      error: null,
+    });
+    expect(JSON.stringify(nativeResult?.payload)).not.toContain("后台任务");
+  });
+
   it("does not notify a completion event when no turn is active", async () => {
     const { notifyFromGatewayEvent } = await loadNotifications();
     const desktopNotify = vi.fn();

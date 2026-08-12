@@ -1,6 +1,7 @@
 import { readUiValue, writeUiValue } from "@/lib/ui-store";
 
 const STORAGE_KEY = "hermes:gateway-session-map";
+const ACTIVE_PERSISTENT_STORAGE_KEY = "hermes:active-persistent-session";
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 200;
 
@@ -10,6 +11,11 @@ interface SessionEntry {
 }
 
 type SessionMap = Record<string, SessionEntry>;
+
+function cleanSessionId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
 
 function readMap(): SessionMap {
   const parsed = readUiValue<unknown>(STORAGE_KEY, {});
@@ -63,6 +69,33 @@ export function rememberSessionMapping(gatewaySessionId: string, persistentSessi
   const map = pruneExpired(readMap());
   map[gatewaySessionId] = { persistentId: persistentSessionId, ts: Date.now() };
   writeMap(map);
+}
+
+export function rememberActivePersistentSessionId(persistentSessionId: string | undefined) {
+  const cleaned = cleanSessionId(persistentSessionId);
+  if (!cleaned) return;
+  writeUiValue(ACTIVE_PERSISTENT_STORAGE_KEY, {
+    persistentId: cleaned,
+    ts: Date.now(),
+  });
+}
+
+export function getActivePersistentSessionId(): string | undefined {
+  const entry = readUiValue<unknown>(ACTIVE_PERSISTENT_STORAGE_KEY, null);
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+  const record = entry as Record<string, unknown>;
+  if (typeof record.persistentId !== "string" || !record.persistentId.trim()) return undefined;
+  if (typeof record.ts !== "number" || !Number.isFinite(record.ts)) return undefined;
+  if (Date.now() - record.ts > MAX_AGE_MS) return undefined;
+  return record.persistentId.trim();
+}
+
+export function clearActivePersistentSessionId(persistentSessionId?: string) {
+  const current = getActivePersistentSessionId();
+  if (!current) return;
+  const cleaned = cleanSessionId(persistentSessionId);
+  if (cleaned && cleaned !== current) return;
+  writeUiValue(ACTIVE_PERSISTENT_STORAGE_KEY, null);
 }
 
 export function forgetSessionMapping(gatewaySessionId: string | undefined) {

@@ -34,11 +34,15 @@ import {
 import { buildGatewayModelConfigValue } from "@/lib/provider-id";
 import type { ReasoningEffort } from "@/lib/reasoning-effort";
 import {
+  clearActivePersistentSessionId,
   forgetSessionMapping,
   forgetSessionMappingsForPersistentSession,
+  getActivePersistentSessionId,
+  rememberActivePersistentSessionId,
   rememberSessionMapping,
   resolveGatewaySessionId,
   resolvePersistentSessionId,
+  resolveSessionIdAliases,
 } from "@/lib/session-map";
 import { mirrorSessionWorkspaceMapping } from "@/lib/workspaces";
 import { notifyFromReconnectSnapshot } from "@/lib/notifications";
@@ -131,7 +135,18 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
   try {
     await reattachAfterReconnect({
       getActiveSessionId: () => store.get(gwSessionIdAtom),
+      getActivePersistentSessionId,
       resolvePersistentId: (id) => resolvePersistentSessionId(id) ?? id,
+      resolveRuntimeSessionId: (persistentId, gatewaySessionId) => {
+        const runtimeBySession = store.get(chatRuntimeBySessionAtom);
+        for (const candidate of resolveSessionIdAliases(gatewaySessionId || persistentId, { includeExpired: true })) {
+          if (runtimeBySession[candidate]) return candidate;
+        }
+        for (const candidate of resolveSessionIdAliases(persistentId, { includeExpired: true })) {
+          if (runtimeBySession[candidate]) return candidate;
+        }
+        return gatewaySessionId || persistentId;
+      },
       onDiagnostic: (event: ReattachDiagnostic) => {
         recordNotificationDebug(event.stage, event.details, event.stage === "reattach.failed" ? "error" : "info");
       },
@@ -147,17 +162,21 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
             { timeoutMs: 300_000 },
           ),
         ),
-      onResumed: (gatewaySessionId, persistentId) => {
+      onResumed: (gatewaySessionId, persistentId, previousRuntimeSessionId) => {
         const previousGatewaySessionId = store.get(gwSessionIdAtom);
-        if (previousGatewaySessionId && previousGatewaySessionId !== gatewaySessionId) {
+        const rekeyFromSessionId = previousRuntimeSessionId || previousGatewaySessionId;
+        if (rekeyFromSessionId && rekeyFromSessionId !== gatewaySessionId) {
           store.set(rekeyChatSessionRuntimeAtom, {
-            fromSessionId: previousGatewaySessionId,
+            fromSessionId: rekeyFromSessionId,
             toSessionId: gatewaySessionId,
           });
+        }
+        if (previousGatewaySessionId && previousGatewaySessionId !== gatewaySessionId) {
           forgetSessionMapping(previousGatewaySessionId);
         }
         store.set(gwSessionIdAtom, gatewaySessionId);
         rememberSessionMapping(gatewaySessionId, persistentId);
+        rememberActivePersistentSessionId(persistentId);
       },
       onResumeFailed: (error) => {
         // A timeout or temporarily wedged backend does not mean the persistent
@@ -166,18 +185,21 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
         // server-side "session missing" response is terminal.
         if (isDefinitiveMissingSessionError(error)) {
           const failedGatewaySessionId = store.get(gwSessionIdAtom);
+          const failedPersistentSessionId = failedGatewaySessionId
+            ? resolvePersistentSessionId(failedGatewaySessionId)
+            : getActivePersistentSessionId();
           // The gateway may have already retired a completed session while the
           // Android WebView was backgrounded. Do not leave its ephemeral id in
           // the active store/map: the next prompt would send to that dead id
           // and surface `session not found` again.
           if (failedGatewaySessionId) {
-            const failedPersistentSessionId = resolvePersistentSessionId(failedGatewaySessionId);
             forgetSessionMapping(failedGatewaySessionId);
-            forgetSessionMappingsForPersistentSession(failedPersistentSessionId);
             if (store.get(gwSessionIdAtom) === failedGatewaySessionId) {
               store.set(gwSessionIdAtom, null);
             }
           }
+          forgetSessionMappingsForPersistentSession(failedPersistentSessionId);
+          clearActivePersistentSessionId(failedPersistentSessionId);
           store.set(terminateAllStreamsAtom);
         }
       },
@@ -185,30 +207,36 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
       // "思考中" spinner before deciding whether a live session still needs
       // resume. The Android REST snapshot is awaited by reattachAfterReconnect;
       // this avoids racing a completed background turn with session.resume.
-      onReattachStart: () => {
+      onReattachStart: (context) => {
         void appQueryClient.invalidateQueries({ queryKey: ["session-messages"] });
 
         // Desktop keeps its existing reconnect path unchanged.
         if (!runtime.androidRemoteOnly) return;
-        const sessionId = store.get(gwSessionIdAtom);
-        if (!sessionId) {
+        const gatewaySessionId = context?.gatewaySessionId ?? store.get(gwSessionIdAtom);
+        const persistentId = context?.persistentSessionId ?? getActivePersistentSessionId();
+        const runtimeSessionId = context?.runtimeSessionId ?? gatewaySessionId ?? persistentId;
+        if (!persistentId || !runtimeSessionId) {
           recordNotificationDebug("reattach.snapshot.skipped", {
             reason: "no_gateway_session",
+            gatewaySessionId: gatewaySessionId ?? null,
+            persistentSessionId: persistentId ?? null,
           });
           return;
         }
-        const activeRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
+        const activeRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
         if (!activeRuntime?.activeAssistantId) {
           recordNotificationDebug("reattach.snapshot.skipped", {
             reason: "no_active_assistant",
-            gatewaySessionId: sessionId,
+            gatewaySessionId: gatewaySessionId ?? null,
+            persistentSessionId: persistentId,
+            runtimeSessionId,
           });
           return;
         }
-        const persistentId = resolvePersistentSessionId(sessionId) ?? sessionId;
         recordNotificationDebug("reattach.snapshot.started", {
-          gatewaySessionId: sessionId,
+          gatewaySessionId: gatewaySessionId ?? null,
           persistentSessionId: persistentId,
+          runtimeSessionId,
           activeAssistantId: activeRuntime.activeAssistantId,
           interrupted: Boolean(activeRuntime.interrupted),
           hasTurnStartedAt: activeRuntime.turnStartedAt !== undefined,
@@ -217,57 +245,64 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
         return fetchReattachSnapshot(persistentId)
           .then((messages) => {
             recordNotificationDebug("reattach.snapshot.loaded", {
-              gatewaySessionId: sessionId,
+              gatewaySessionId: gatewaySessionId ?? null,
               persistentSessionId: persistentId,
+              runtimeSessionId,
               responsePresent: Boolean(messages),
               messageCount: Array.isArray(messages?.messages) ? messages.messages.length : 0,
               uiMessageCount: Array.isArray(messages?.ui_messages) ? messages.ui_messages.length : 0,
             });
-            const currentRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
+            const currentRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
             if (!currentRuntime?.activeAssistantId) {
               recordNotificationDebug("reattach.snapshot.skipped", {
                 reason: "turn_no_longer_active",
-                gatewaySessionId: sessionId,
+                gatewaySessionId: gatewaySessionId ?? null,
                 persistentSessionId: persistentId,
+                runtimeSessionId,
               });
               return;
             }
 
-            notifyFromReconnectSnapshot(sessionId, currentRuntime, messages);
+            notifyFromReconnectSnapshot(runtimeSessionId, currentRuntime, messages);
             store.set(recoverCompletedTurnFromStoredMessagesAtom, {
-              sessionId,
+              sessionId: runtimeSessionId,
               storedMessages: messagesResponseToHermesUIMessages(messages),
             });
 
             // A completed turn no longer has a live gateway session to resume.
             // Clear the stale ephemeral id so the next prompt resolves/resumes
             // from the persistent task id instead of sending to a dead socket.
-            const recoveredRuntime = store.get(chatRuntimeBySessionAtom)[sessionId];
+            const recoveredRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
             if (!recoveredRuntime?.activeAssistantId) {
               forgetSessionMappingsForPersistentSession(persistentId);
-              forgetSessionMapping(sessionId);
-              if (store.get(gwSessionIdAtom) === sessionId) {
+              forgetSessionMapping(gatewaySessionId ?? undefined);
+              if (store.get(gwSessionIdAtom) === gatewaySessionId) {
                 store.set(gwSessionIdAtom, null);
               }
               recordNotificationDebug("reattach.snapshot.reconciled", {
-                gatewaySessionId: sessionId,
+                gatewaySessionId: gatewaySessionId ?? null,
                 persistentSessionId: persistentId,
+                runtimeSessionId,
                 recovered: true,
               });
+              return "completed";
             } else {
               recordNotificationDebug("reattach.snapshot.reconciled", {
-                gatewaySessionId: sessionId,
+                gatewaySessionId: gatewaySessionId ?? null,
                 persistentSessionId: persistentId,
+                runtimeSessionId,
                 recovered: false,
               });
+              return "active";
             }
           })
           .catch((error: unknown) => {
             recordNotificationDebug(
               "reattach.snapshot.failed",
               {
-                gatewaySessionId: sessionId,
+                gatewaySessionId: gatewaySessionId ?? null,
                 persistentSessionId: persistentId,
+                runtimeSessionId,
                 error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
                 aborted:
                   typeof DOMException !== "undefined" &&
@@ -393,6 +428,7 @@ async function rememberPersistentSessionKey(gatewaySessionId: string) {
     );
     if (result.session_key) {
       rememberSessionMapping(gatewaySessionId, result.session_key);
+      rememberActivePersistentSessionId(result.session_key);
       mirrorSessionWorkspaceMapping(gatewaySessionId, result.session_key);
     }
   } catch {}
@@ -460,8 +496,11 @@ export function useGateway() {
   // runtime, and remember it as the persistent key. Shared by createSession's
   // default activation path and the composer's draft-prewarm reuse, so a
   // pre-created draft is adopted with the exact same state as a fresh create.
-  const adoptCreatedSession = useCallback((sessionId: string) => {
+  const adoptCreatedSession = useCallback((sessionId: string, persistentSessionId?: string) => {
     setGwSessionId(sessionId);
+    rememberActivePersistentSessionId(
+      persistentSessionId?.trim() || resolvePersistentSessionId(sessionId) || sessionId,
+    );
     resetChatSession(sessionId);
     void rememberPersistentSessionKey(sessionId);
     void invalidateSessionListQueries(queryClient);
@@ -476,8 +515,10 @@ export function useGateway() {
       ),
       "session.create",
     );
+    const storedSessionId = result.stored_session_id?.trim() || result.session_id;
+    rememberSessionMapping(result.session_id, storedSessionId);
     if (options?.activate !== false) {
-      adoptCreatedSession(result.session_id);
+      adoptCreatedSession(result.session_id, storedSessionId);
     }
     return result.session_id;
   }, [adoptCreatedSession, ensureSubscribed]);
@@ -501,6 +542,7 @@ export function useGateway() {
     const storedSessionId = result.stored_session_id?.trim() || result.session_id;
 
     rememberSessionMapping(result.session_id, storedSessionId);
+    rememberActivePersistentSessionId(storedSessionId);
     setGwSessionId(result.session_id);
     setRuntimeBySession((state) => ({
       ...state,
@@ -528,6 +570,7 @@ export function useGateway() {
     (sessionId: string, text: string, now?: number, images?: ImageEntry[]) => {
       ensureSubscribed();
       ensureChatSession(sessionId);
+      rememberActivePersistentSessionId(resolvePersistentSessionId(sessionId) ?? sessionId);
       startPrompt({ sessionId, text, now, images });
     },
     [ensureChatSession, ensureSubscribed, startPrompt],
@@ -553,6 +596,7 @@ export function useGateway() {
     setGwSessionId(result.session_id);
     resetChatSession(result.session_id);
     rememberSessionMapping(result.session_id, resumed);
+    rememberActivePersistentSessionId(resumed);
     mirrorSessionWorkspaceMapping(result.session_id, resumed);
     // Compression rotated the conversation onto a new continuation: the backend
     // followed the chain and resumed a different persistent id than we asked
@@ -576,6 +620,7 @@ export function useGateway() {
     ) => {
       ensureSubscribed();
       ensureChatSession(sessionId);
+      rememberActivePersistentSessionId(resolvePersistentSessionId(sessionId) ?? sessionId);
       if (!options?.skipOptimisticStart) {
         startPrompt({
           sessionId,
@@ -962,6 +1007,7 @@ export function useGateway() {
       );
       if (result.session_key) {
         rememberSessionMapping(sessionId, result.session_key);
+        rememberActivePersistentSessionId(result.session_key);
         mirrorSessionWorkspaceMapping(sessionId, result.session_key);
       }
       await Promise.all([

@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetUiStoreForTests, readUiValue, writeUiValue } from "./ui-store";
 import {
+  clearActivePersistentSessionId,
   forgetSessionMapping,
   forgetSessionMappingsForPersistentSession,
+  getActivePersistentSessionId,
   rememberSessionMapping,
+  rememberActivePersistentSessionId,
   resolveGatewaySessionId,
   resolvePersistentSessionId,
   resolveSessionIdAliases,
@@ -124,6 +127,29 @@ describe("session-map", () => {
   it("returns undefined for undefined input", () => {
     expect(resolvePersistentSessionId(undefined)).toBeUndefined();
     expect(resolveGatewaySessionId(undefined)).toBeUndefined();
+  });
+
+  it("stores the active persistent session independently from gateway aliases", () => {
+    rememberActivePersistentSessionId("sess-active");
+    forgetSessionMappingsForPersistentSession("sess-active");
+
+    expect(getActivePersistentSessionId()).toBe("sess-active");
+  });
+
+  it("expires and clears malformed active persistent sessions", () => {
+    rememberActivePersistentSessionId("sess-old");
+    const raw = readUiValue<{ persistentId: string; ts: number }>(
+      "hermes:active-persistent-session",
+      { persistentId: "", ts: 0 },
+    );
+    raw.ts = Date.now() - 25 * 60 * 60 * 1000;
+    writeUiValue("hermes:active-persistent-session", raw);
+
+    expect(getActivePersistentSessionId()).toBeUndefined();
+
+    rememberActivePersistentSessionId("sess-live");
+    clearActivePersistentSessionId("sess-live");
+    expect(getActivePersistentSessionId()).toBeUndefined();
   });
 
   it("resolves to the most recent gateway id when several map to one session", () => {

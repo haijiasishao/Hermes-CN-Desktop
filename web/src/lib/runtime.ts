@@ -210,10 +210,16 @@ export interface DesktopNotifyInput {
 export interface DesktopNotifyResult {
   /** 系统通知已实际发出。 */
   delivered: boolean;
-  /** 调用时主窗口是否在前台。 */
+  /** 平台调整后的有效前台判定；旧原生桥也使用此字段。 */
   focused: boolean;
-  /** 调用时主窗口是否可见。 */
+  /** 原始 is_visible() 查询结果；Android WebView 上可能不可靠。 */
   visible: boolean;
+  /** 原始 is_focused() 查询结果。旧原生桥可能缺失。 */
+  rawFocused?: boolean;
+  /** 原始 is_visible() 查询结果。旧原生桥可能缺失。 */
+  rawVisible?: boolean;
+  /** 平台调整后的有效前台判定。旧原生桥可能缺失。 */
+  effectiveForeground?: boolean;
   attentionRequested: boolean;
   /** 系统通知发送失败原因（非致命）。 */
   error?: string;

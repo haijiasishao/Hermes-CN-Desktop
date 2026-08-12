@@ -45,10 +45,19 @@ pub struct DesktopNotifyInput {
 pub struct DesktopNotifyResult {
     /// 系统通知已实际发出。
     pub delivered: bool,
-    /// 调用时主窗口是否在前台（前端据此决定要不要补播提示音）。
+    /// 平台调整后的有效前台判定（与 effective_foreground 相同）。
+    /// 前端 shouldPlayFallbackSound 以此字段决定是否补播提示音。
+    /// 在 Android 上等于 raw_focused（因为 is_visible() 不可靠）；
+    /// 在桌面端等于 focused && !minimized && visible。
     pub focused: bool,
-    /// 调用时主窗口是否可见。
+    /// raw is_visible() 原始查询结果（Android WebView 上此值不可靠，可能恒为 false）。
     pub visible: bool,
+    /// raw is_focused() 原始查询结果（调用前台判定前的原始信号）。
+    pub raw_focused: bool,
+    /// raw is_visible() 原始查询结果（同 visible 字段；冗余命名便于前端诊断区分语义）。
+    pub raw_visible: bool,
+    /// 平台调整后的有效前台判定（与 focused 字段相同；明确命名避免歧义）。
+    pub effective_foreground: bool,
     pub attention_requested: bool,
     /// 系统通知发送失败的原因（非致命，不走 Err）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,6 +123,37 @@ fn sanitize_text(input: &str, max_chars: usize) -> String {
 
 fn is_foreground(focused: bool, minimized: bool, visible: bool) -> bool {
     focused && !minimized && visible
+}
+
+/// Platform-aware foreground determination.
+///
+/// On Android, `is_visible()` from the Tauri WebView API is unreliable: it returns
+/// `false` even when the Activity is fully in the foreground and the WebView has
+/// focus. `is_focused()` IS reliable on Android (tracks Activity foreground / focus
+/// state correctly), so we use it alone.
+///
+/// On desktop (macOS / Windows / Linux), both signals are reliable and the classic
+/// `focused && !minimized && visible` rule applies.
+///
+/// `is_android` is a compile-time constant injected by callers so this function
+/// is a plain pure function that can be unit-tested on any host.
+pub(crate) fn compute_foreground(
+    focused: bool,
+    minimized: bool,
+    visible: bool,
+    is_android: bool,
+) -> bool {
+    if is_android {
+        // Boundary: we rely on Tauri's is_focused() which tracks the Android
+        // Activity focus state. If the app is fully backgrounded (Activity stopped),
+        // is_focused() returns false. If the app is in the foreground with the
+        // WebView active, is_focused() returns true. We cannot further distinguish
+        // "screen off but Activity still technically resumed" via this API alone;
+        // that edge case is acceptable since screen-off usually triggers is_focused()=false.
+        focused
+    } else {
+        is_foreground(focused, minimized, visible)
+    }
 }
 
 fn should_suppress(respect_focus: bool, foreground: bool) -> bool {
@@ -236,14 +276,15 @@ fn notify_blocking(
             let foreground = {
                 #[cfg(target_os = "android")]
                 {
-                    // Android activities do not have a desktop-style minimized
-                    // state; querying it can fail and incorrectly mark every
-                    // foreground activity as background.
-                    is_foreground(focused, false, visible)
+                    // On Android, is_visible() is unreliable on WebView activities
+                    // and returns false even when the Activity is fully in the foreground.
+                    // Pass is_android=true to compute_foreground so it uses only
+                    // is_focused() as the authoritative foreground signal.
+                    compute_foreground(focused, false, visible, true)
                 }
                 #[cfg(not(target_os = "android"))]
                 {
-                    is_foreground(focused, w.is_minimized().unwrap_or(true), visible)
+                    compute_foreground(focused, w.is_minimized().unwrap_or(true), visible, false)
                 }
             };
             (focused, visible, foreground)
@@ -255,6 +296,9 @@ fn notify_blocking(
             delivered: false,
             focused: foreground,
             visible,
+            raw_focused: focused,
+            raw_visible: visible,
+            effective_foreground: foreground,
             attention_requested: false,
             error: None,
         };
@@ -327,6 +371,9 @@ fn notify_blocking(
         delivered,
         focused: foreground,
         visible,
+        raw_focused: focused,
+        raw_visible: visible,
+        effective_foreground: foreground,
         attention_requested,
         error,
     }
@@ -447,15 +494,22 @@ mod tests {
             delivered: true,
             focused: false,
             visible: true,
+            raw_focused: false,
+            raw_visible: true,
+            effective_foreground: false,
             attention_requested: true,
             error: None,
         };
+        let value = serde_json::to_value(&ok).unwrap();
         assert_eq!(
-            serde_json::to_value(&ok).unwrap(),
+            value,
             serde_json::json!({
                 "delivered": true,
                 "focused": false,
                 "visible": true,
+                "rawFocused": false,
+                "rawVisible": true,
+                "effectiveForeground": false,
                 "attentionRequested": true,
             })
         );
@@ -464,6 +518,9 @@ mod tests {
             delivered: false,
             focused: false,
             visible: false,
+            raw_focused: false,
+            raw_visible: false,
+            effective_foreground: false,
             attention_requested: false,
             error: Some("denied".to_string()),
         };
@@ -471,5 +528,87 @@ mod tests {
             serde_json::to_value(&failed).unwrap()["error"],
             serde_json::json!("denied")
         );
+    }
+
+    // ── compute_foreground ──────────────────────────────────────────────────
+
+    #[test]
+    fn compute_foreground_android_focused_true_is_foreground_regardless_of_visible() {
+        // THE KEY FIX: on Android, is_visible() returns false even when the Activity
+        // is in the foreground. compute_foreground(is_android=true) must NOT require
+        // visible=true — it uses only focused (is_focused()) as the authoritative signal.
+        //
+        // Before fix: is_foreground(focused=true, minimized=false, visible=false) = false
+        //   → foreground=false → should_suppress(respectFocus=true, false)=false → notification fires
+        // After fix: compute_foreground(focused=true, ..., is_android=true) = true
+        //   → foreground=true → should_suppress(true, true)=true → notification suppressed ✓
+        assert!(
+            compute_foreground(true, false, false, true),
+            "Android: focused=true + visible=false must be treated as foreground \
+             (is_visible() is unreliable on Android WebView)"
+        );
+        assert!(
+            compute_foreground(true, false, true, true),
+            "Android: focused=true + visible=true is also foreground"
+        );
+        assert!(
+            !compute_foreground(false, false, true, true),
+            "Android: focused=false must be background regardless of visible"
+        );
+        assert!(
+            !compute_foreground(false, false, false, true),
+            "Android: focused=false + visible=false is background"
+        );
+    }
+
+    #[test]
+    fn compute_foreground_desktop_preserves_existing_three_signal_rule() {
+        // Desktop behaviour must be unchanged: focused && !minimized && visible.
+        assert!(
+            compute_foreground(true, false, true, false),
+            "focused+visible+not-minimized"
+        );
+        assert!(
+            !compute_foreground(false, false, true, false),
+            "not-focused"
+        );
+        assert!(!compute_foreground(true, true, true, false), "minimized");
+        assert!(
+            !compute_foreground(true, false, false, false),
+            "not-visible"
+        );
+    }
+
+    #[test]
+    fn android_foreground_suppresses_notification_when_respect_focus_true() {
+        // Integration check: with the fix in place, an Android window that is
+        // focused (but is_visible()=false) + respectFocus=true must suppress.
+        let android_foreground = compute_foreground(true, false, false, true);
+        assert!(android_foreground);
+        assert!(should_suppress(true, android_foreground));
+    }
+
+    #[test]
+    fn result_raw_diagnostic_fields_serialized_independently() {
+        // Raw fields allow the frontend to log the exact platform signals that
+        // led to the foreground determination, independently of the effective value.
+        let result = DesktopNotifyResult {
+            delivered: false,
+            focused: true,  // effective foreground = true (Android: focused=true)
+            visible: false, // raw_visible = false (Android is_visible() bug)
+            raw_focused: true,
+            raw_visible: false,
+            effective_foreground: true,
+            attention_requested: false,
+            error: None,
+        };
+        let v = serde_json::to_value(&result).unwrap();
+        assert_eq!(v["focused"], true, "focused = effective foreground");
+        assert_eq!(v["visible"], false, "visible = raw is_visible()");
+        assert_eq!(v["rawFocused"], true);
+        assert_eq!(v["rawVisible"], false);
+        assert_eq!(v["effectiveForeground"], true);
+        // error absent when None
+        assert!(v.get("error").is_none() || v["error"].is_null());
     }
 }

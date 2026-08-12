@@ -547,7 +547,7 @@ describe("chat runtime reducer", () => {
     expect(second.pendingApprovals.map((item) => item.requestId)).toEqual(["r1", "r2"]);
   });
 
-  it("gateway.disconnected resets streaming sessions to error", () => {
+  it("gateway.disconnected keeps streaming sessions recoverable", () => {
     const streaming = reduceGatewayEvent(
       createEmptyChatRuntime(1),
       { type: "message.start", session_id: "s1" },
@@ -560,12 +560,14 @@ describe("chat runtime reducer", () => {
       { type: "gateway.disconnected", payload: { message: "connection lost" } },
       20,
     );
-    expect(disconnected.streamStatus).toBe("error");
-    expect(disconnected.statusMessage).toBe("连接已断开");
-    expect(assistantMessage(disconnected).status).toBe("error");
+    expect(disconnected.streamStatus).toBe("connecting");
+    expect(disconnected.statusMessage).toBe("连接中断，正在重连…");
+    expect(disconnected.statusKind).toBe("info");
+    expect(disconnected.activeAssistantId).toBe(streaming.activeAssistantId);
+    expect(assistantMessage(disconnected).status).toBe("streaming");
   });
 
-  it("gateway.disconnected marks live tool parts as errored", () => {
+  it("gateway.disconnected leaves live tool parts recoverable", () => {
     let runtime = reduceGatewayEvent(
       createEmptyChatRuntime(1),
       {
@@ -591,9 +593,11 @@ describe("chat runtime reducer", () => {
       20,
     );
 
-    expect(assistantMessage(disconnected).parts).toEqual([
-      expect.objectContaining({ type: "tool", toolCallId: "read-1", state: "error" }),
-    ]);
+    expect(assistantMessage(disconnected).parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "tool", toolCallId: "read-1", state: "running" }),
+      ]),
+    );
   });
 
   it("gateway.disconnected leaves idle sessions unchanged", () => {
@@ -660,12 +664,12 @@ describe("full conversation lifecycle", () => {
       type: "gateway.disconnected",
       payload: { message: "connection lost" },
     }, 30);
-    expect(rt.streamStatus).toBe("error");
-    expect(assistantMessage(rt).status).toBe("error");
+    expect(rt.streamStatus).toBe("connecting");
+    expect(assistantMessage(rt).status).toBe("streaming");
 
     rt = reduceGatewayEvent(rt, { type: "message.start", session_id: "s1" }, 40);
     expect(rt.streamStatus).toBe("streaming");
-    expect(rt.activeAssistantId).toBe("live-assistant-40");
+    expect(rt.activeAssistantId).toBe(firstAssistantId);
 
     rt = reduceGatewayEvent(rt, {
       type: "message.complete",
@@ -674,7 +678,7 @@ describe("full conversation lifecycle", () => {
     }, 50);
     expect(rt.streamStatus).toBe("complete");
     expect(rt.messages.map((message) => message.id)).toContain(firstAssistantId);
-    expect(assistantMessage({ ...rt, messages: rt.messages.slice(1) }).parts).toEqual([
+    expect(assistantMessage(rt).parts).toEqual([
       { type: "text", text: "恢复后的回复" },
     ]);
   });

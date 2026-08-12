@@ -942,21 +942,12 @@ function reduceGatewayEventInner(
 
     case "gateway.disconnected": {
       if (!isStreamingStatus(runtime.streamStatus)) return runtime;
-      const id = runtime.activeAssistantId;
-      const next = id
-        ? updateMessage(runtime, id, (message) => ({
-            ...message,
-            status: "error",
-            parts: terminateRunningTools(withoutProgressParts(message.parts)),
-          }))
-        : runtime;
       return {
-        ...next,
-        streamStatus: "error",
-        statusMessage: "连接已断开",
-        statusKind: "error",
+        ...runtime,
+        streamStatus: "connecting",
+        statusMessage: "连接中断，正在重连…",
+        statusKind: "info",
         statusUpdatedAt: now,
-        activeAssistantId: undefined,
         updatedAt: now,
       };
     }

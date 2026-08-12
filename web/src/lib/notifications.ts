@@ -263,19 +263,39 @@ function notificationDiagnostic(message: string, details?: Record<string, unknow
   }
 }
 
+function documentNotificationState(): {
+  documentVisibilityState: string;
+  documentHasFocus: boolean | null;
+} {
+  if (typeof document === "undefined") {
+    return { documentVisibilityState: "unavailable", documentHasFocus: null };
+  }
+  return {
+    documentVisibilityState:
+      typeof document.visibilityState === "string" ? document.visibilityState : "unknown",
+    documentHasFocus: typeof document.hasFocus === "function" ? document.hasFocus() : null,
+  };
+}
+
 function commitOrReleaseNotification(
   dedupeKey: string,
   settings: NotificationSettings,
   result: DesktopNotifyResult | undefined,
   source: "gateway-event" | "reconnect-snapshot",
+  respectFocus: boolean,
 ): void {
   recordNotificationDebug(
     "native.result",
     {
       source,
+      respectFocus,
+      ...documentNotificationState(),
       delivered: Boolean(result?.delivered),
       focused: Boolean(result?.focused),
       visible: Boolean(result?.visible),
+      rawFocused: result?.rawFocused ?? null,
+      rawVisible: result?.rawVisible ?? null,
+      effectiveForeground: result?.effectiveForeground ?? null,
       attentionRequested: Boolean(result?.attentionRequested),
       error: result?.error ?? null,
     },
@@ -413,7 +433,13 @@ export function notifyFromGatewayEvent(
         requestAttention: true,
       })
       .then((result) => {
-        commitOrReleaseNotification(action.dedupeKey, settings, result, "gateway-event");
+        commitOrReleaseNotification(
+          action.dedupeKey,
+          settings,
+          result,
+          "gateway-event",
+          settings.onlyBackground,
+        );
         if (result && shouldPlayFallbackSound(settings, result)) playChime();
       })
       .catch((error: unknown) => {
@@ -620,7 +646,7 @@ export function notifyFromReconnectSnapshot(
         requestAttention: true,
       })
       .then((result) => {
-        commitOrReleaseNotification(dedupeKey, settings, result, "reconnect-snapshot");
+        commitOrReleaseNotification(dedupeKey, settings, result, "reconnect-snapshot", false);
         if (result && shouldPlayFallbackSound(catchupSettings, result)) playChime();
       })
       .catch((error: unknown) => {

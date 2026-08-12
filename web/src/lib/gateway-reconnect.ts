@@ -22,6 +22,14 @@ export interface ReconnectResumeResult {
   resumed?: string;
 }
 
+export interface ReattachSessionContext {
+  gatewaySessionId: string | null;
+  persistentSessionId: string;
+  runtimeSessionId: string;
+}
+
+export type ReattachStartResult = "active" | "completed" | void;
+
 export interface ReattachDiagnostic {
   stage:
     | "reattach.started"
@@ -36,12 +44,16 @@ export interface ReattachDiagnostic {
 export interface ReattachAfterReconnectDeps {
   /** The currently active gateway session id, or null/undefined if none is open. */
   getActiveSessionId: () => string | null | undefined;
+  /** Last known active persistent session id, stored independently from gateway aliases. */
+  getActivePersistentSessionId?: () => string | null | undefined;
   /** Map a (possibly stale) gateway session id to its persistent session id. */
   resolvePersistentId: (sessionId: string) => string;
+  /** Locate the local runtime bucket for a persistent session when the gateway id was lost. */
+  resolveRuntimeSessionId?: (persistentId: string, gatewaySessionId?: string | null) => string | null | undefined;
   /** Issue `session.resume` for the given persistent id. */
   resume: (persistentId: string) => Promise<ReconnectResumeResult>;
   /** Called on success with the (possibly new) gateway id + the persistent id. */
-  onResumed: (gatewaySessionId: string, persistentId: string) => void;
+  onResumed: (gatewaySessionId: string, persistentId: string, previousRuntimeSessionId?: string) => void;
   /** Called when resume rejects or yields no session (session gone) so the caller can surface an error. */
   onResumeFailed: (error: unknown) => void;
   /** Optional non-fatal lifecycle diagnostics for Android debug bundles. */
@@ -52,7 +64,7 @@ export interface ReattachAfterReconnectDeps {
    * Android background turn can retire its stale local runtime before we
    * decide whether a live session still needs to be resumed.
    */
-  onReattachStart?: () => void | Promise<void>;
+  onReattachStart?: (context: ReattachSessionContext | null) => ReattachStartResult | Promise<ReattachStartResult>;
 }
 
 /** Only explicit server-side absence is terminal; timeouts are recoverable. */
@@ -75,26 +87,71 @@ function reportDiagnostic(
 
 export async function reattachAfterReconnect(deps: ReattachAfterReconnectDeps): Promise<void> {
   reportDiagnostic(deps, { stage: "reattach.started" });
-  // Notify the caller before any active-session gating or resume. Awaiting the
+  const activeSessionId = deps.getActiveSessionId();
+  const activePersistentId = deps.getActivePersistentSessionId?.() || undefined;
+  const persistentId = activeSessionId
+    ? deps.resolvePersistentId(activeSessionId)
+    : activePersistentId;
+  const runtimeSessionId = persistentId
+    ? deps.resolveRuntimeSessionId?.(persistentId, activeSessionId) || activeSessionId || persistentId
+    : undefined;
+  const context = persistentId && runtimeSessionId
+    ? {
+      gatewaySessionId: activeSessionId ?? null,
+      persistentSessionId: persistentId,
+      runtimeSessionId,
+    }
+    : null;
+
+  // Notify the caller before active-session gating or resume. Awaiting the
   // callback prevents a completed background turn from racing session.resume.
   // On Android the REST message snapshot is the ONLY way to retire a stale
   // "思考中" indicator when the backend finished while the app was backgrounded,
   // so this must fire immediately — not after the (potentially slow) resume.
-  await deps.onReattachStart?.();
+  const startResult = await deps.onReattachStart?.(context);
 
-  const activeSessionId = deps.getActiveSessionId();
   // Nothing open to re-pin — a fresh connect with no session is a no-op.
-  if (!activeSessionId) {
-    reportDiagnostic(deps, { stage: "reattach.no_active_session" });
+  if (!persistentId || !runtimeSessionId) {
+    reportDiagnostic(deps, {
+      stage: "reattach.no_active_session",
+      details: {
+        gatewaySessionId: activeSessionId ?? null,
+        persistentSessionId: activePersistentId ?? null,
+      },
+    });
+    return;
+  }
+  if (startResult === "completed") {
+    reportDiagnostic(deps, {
+      stage: "reattach.no_active_session",
+      details: {
+        reason: "snapshot_completed",
+        gatewaySessionId: activeSessionId ?? null,
+        persistentSessionId: persistentId,
+        runtimeSessionId,
+      },
+    });
+    return;
+  }
+  if (activeSessionId && !deps.getActiveSessionId() && !activePersistentId) {
+    reportDiagnostic(deps, {
+      stage: "reattach.no_active_session",
+      details: {
+        reason: "active_gateway_cleared",
+        gatewaySessionId: activeSessionId,
+        persistentSessionId: persistentId,
+        runtimeSessionId,
+      },
+    });
     return;
   }
 
-  const persistentId = deps.resolvePersistentId(activeSessionId);
   reportDiagnostic(deps, {
     stage: "reattach.active_session",
     details: {
-      gatewaySessionId: activeSessionId,
+      gatewaySessionId: activeSessionId ?? null,
       persistentSessionId: persistentId,
+      runtimeSessionId,
     },
   });
   reportDiagnostic(deps, {
@@ -112,7 +169,7 @@ export async function reattachAfterReconnect(deps: ReattachAfterReconnectDeps): 
       deps.onResumeFailed(error);
       return;
     }
-    deps.onResumed(result.session_id, result.resumed ?? persistentId);
+    deps.onResumed(result.session_id, result.resumed ?? persistentId, runtimeSessionId);
     reportDiagnostic(deps, {
       stage: "reattach.resumed",
       details: {

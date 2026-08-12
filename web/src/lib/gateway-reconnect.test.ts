@@ -44,7 +44,7 @@ describe("reattachAfterReconnect", () => {
     });
     await reattachAfterReconnect(deps);
     expect(resume).toHaveBeenCalledWith("sess-1");
-    expect(onResumed).toHaveBeenCalledWith("gw-sess-1", "sess-1");
+    expect(onResumed).toHaveBeenCalledWith("gw-sess-1", "sess-1", "gw-old");
     expect(onResumeFailed).not.toHaveBeenCalled();
     expect(diagnostics).toEqual([
       "reattach.started",
@@ -59,7 +59,7 @@ describe("reattachAfterReconnect", () => {
       resume: vi.fn(async () => ({ session_id: "gw-new", resumed: "sess-canonical" })),
     });
     await reattachAfterReconnect(deps);
-    expect(onResumed).toHaveBeenCalledWith("gw-new", "sess-canonical");
+    expect(onResumed).toHaveBeenCalledWith("gw-new", "sess-canonical", "gw-old");
   });
 
   it("escalates to onResumeFailed when resume rejects (session gone)", async () => {
@@ -182,6 +182,28 @@ describe("reattachAfterReconnect stored-message refresh", () => {
 
     expect(onReattachStart).toHaveBeenCalledTimes(1);
     expect(resume).not.toHaveBeenCalled();
+  });
+
+  it("uses a saved persistent session when the gateway id was already cleared", async () => {
+    const diagnostics: Array<{ stage: string; details?: Record<string, unknown> }> = [];
+    const { deps, resume, onResumed } = makeDeps({
+      getActiveSessionId: () => null,
+      getActivePersistentSessionId: () => "sess-active",
+      resolveRuntimeSessionId: () => "gw-lost",
+      onReattachStart: vi.fn(async () => "active" as const),
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+
+    await reattachAfterReconnect(deps);
+
+    expect(resume).toHaveBeenCalledWith("sess-active");
+    expect(onResumed).toHaveBeenCalledWith("gw-sess-active", "sess-active", "gw-lost");
+    expect(diagnostics.map((event) => event.stage)).toContain("reattach.active_session");
+    expect(diagnostics.find((event) => event.stage === "reattach.active_session")?.details).toMatchObject({
+      gatewaySessionId: null,
+      persistentSessionId: "sess-active",
+      runtimeSessionId: "gw-lost",
+    });
   });
 
   it("still refreshes when resume rejects", async () => {
