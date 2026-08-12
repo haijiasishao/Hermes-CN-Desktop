@@ -168,6 +168,16 @@ export interface UiEventInput {
   appVersion?: string;
 }
 
+export interface AndroidSessionForegroundInput {
+  persistentSessionId: string;
+  title: string;
+  state: "starting" | "thinking" | "working";
+  heartbeatSequence: number;
+  timestampMs: number;
+}
+
+export interface AndroidSessionForegroundResult { ok: boolean; supported: boolean }
+
 export interface ExportDebugBundleInput {
   frontendDebug?: unknown;
   rendererDiagnostics?: Record<string, unknown>;
@@ -565,6 +575,8 @@ declare global {
       uiStoreRecordEvent?(input: UiEventInput): Promise<boolean>;
       desktopNotify?(input: DesktopNotifyInput): Promise<DesktopNotifyResult>;
       notificationPermission?(input: NotificationPermissionInput): Promise<NotificationPermissionResult>;
+      sessionForegroundStart?(input: AndroidSessionForegroundInput): Promise<AndroidSessionForegroundResult>;
+      sessionForegroundStop?(input: { persistentSessionId: string }): Promise<AndroidSessionForegroundResult>;
       terminalStart?(input: TerminalStartInput): Promise<TerminalStartResult>;
       terminalOpenExternal?(input: TerminalOpenExternalInput): Promise<ExternalTerminalResult>;
       terminalWrite?(input: { terminalId: string; data: string }): Promise<boolean>;

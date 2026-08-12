@@ -16,6 +16,7 @@ import {
   rememberSessionWorkspace,
   rememberWorkspaceProject,
 } from "@/lib/workspaces";
+import { startAndroidSessionForeground, stopAndroidSessionForeground } from "@/lib/android-session-foreground";
 
 interface CreateAndSendOptions {
   createSession?: (options?: { cwd?: string }) => Promise<string>;
@@ -75,6 +76,15 @@ export function useCreateAndSendSession() {
 
     void (async () => {
       try {
+        await startAndroidSessionForeground({
+          persistentSessionId: sessionId,
+          // Phase 0 deliberately uses a fixed diagnostic title; prompt-derived
+          // session titles must never reach a notification surface.
+          title: "后台链路诊断",
+          state: "starting",
+          heartbeatSequence: 0,
+          timestampMs: submittedAt,
+        });
         if (payload.modelSelection?.model) {
           // Composer selection is the user's explicit source of truth.  Do not
           // skip this just because /api/model/info already reports the same
@@ -121,6 +131,7 @@ export function useCreateAndSendSession() {
           skipOptimisticStart: true,
         });
       } catch (err) {
+        void stopAndroidSessionForeground(sessionId);
         console.error("Failed to submit session:", err);
         failPrompt(sessionId, err);
       }

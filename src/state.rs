@@ -7,11 +7,12 @@
 // come from a single renderer and are mostly sequential.
 
 use std::process::Child;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
 use crate::android_compat::PortLock;
 
@@ -35,6 +36,30 @@ pub struct GatewayWsHandle {
 pub struct BrowserCompanionHandle {
     pub port: u16,
     pub token: String,
+}
+
+/// The monitor task and the persistent session it owns must be replaced and
+/// stopped as one state entry. Keeping the ID beside the JoinHandle prevents a
+/// late stop for an older task from aborting the current task's service.
+pub struct SessionForegroundMonitor {
+    pub persistent_session_id: String,
+    pub generation: u64,
+    pub handle: JoinHandle<()>,
+}
+
+static NEXT_SESSION_FOREGROUND_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub fn next_session_foreground_generation() -> u64 {
+    NEXT_SESSION_FOREGROUND_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+pub fn foreground_monitor_matches(
+    current_session: Option<&str>,
+    current_generation: Option<u64>,
+    requested_session: &str,
+    requested_generation: u64,
+) -> bool {
+    current_session == Some(requested_session) && current_generation == Some(requested_generation)
 }
 
 /// Windows Job Object handle used to bind the dashboard process tree to the
@@ -237,6 +262,8 @@ pub struct AppStateInner {
     /// Debounce marker for `connection-auth-expired` emits (a burst of 401s
     /// must not storm the UI with re-login banners).
     pub last_auth_expired_emit: Option<std::time::Instant>,
+    /// Phase-0 Android diagnostic monitor. It owns no task/session content.
+    pub session_foreground_monitor: Option<SessionForegroundMonitor>,
 }
 
 /// A snapshot of how the currently-connected dashboard authenticates, taken
@@ -261,6 +288,9 @@ impl AppStateInner {
 /// Thread-safe wrapper. Tauri manages this via `app.manage(AppState::new())`.
 pub struct AppState {
     pub inner: Mutex<AppStateInner>,
+    /// Serializes foreground start/stop IPC operations without holding the
+    /// synchronous state lock across plugin awaits.
+    pub session_foreground_operation: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -286,7 +316,9 @@ impl AppState {
                 },
                 oauth_session: None,
                 last_auth_expired_emit: None,
+                session_foreground_monitor: None,
             }),
+            session_foreground_operation: tokio::sync::Mutex::new(()),
         }
     }
 }

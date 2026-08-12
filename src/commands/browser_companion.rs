@@ -328,6 +328,7 @@ async fn proxy_desktop_api(
             method: Some(method),
             headers: Some(headers),
             body,
+            suppress_auth_expired_event: false,
         },
         &state,
     )

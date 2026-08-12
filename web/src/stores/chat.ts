@@ -16,6 +16,7 @@ import {
   imagePartFromSource,
 } from "@/lib/message-images";
 import { notifyFromGatewayEvent } from "@/lib/notifications";
+import { stopAndroidSessionForeground } from "@/lib/android-session-foreground";
 import {
   clearActiveTurn,
   rememberActiveTurn,
@@ -1033,6 +1034,7 @@ export const resetStreamStateAtom = atom(null, (_get, set, sessionId: string) =>
 // 故意保留 activeAssistantId / turnStartedAt，迟到的 message.complete 才能收尾正确的消息。
 export const markSessionInterruptedAtom = atom(null, (_get, set, sessionId: string) => {
   const now = Date.now();
+  void stopAndroidSessionForeground(resolvePersistentSessionId(sessionId) ?? sessionId);
   // 用户主动中断后该回合不应再补发完成通知；但内存 activeAssistantId 仍保留
   // 以便迟到 complete 收尾 —— 只清持久化 checkpoint，不动内存。
   clearActiveTurn(resolvePersistentSessionId(sessionId) ?? sessionId);
@@ -1308,7 +1310,9 @@ export const applyGatewayEventAtom = atom(null, (get, set, event: GatewayEvent) 
   // 清除 activeAssistantId），但 WebView 重建场景下必须同步清除，否则下次
   // 重连会把已经完成的旧回合当作在飞回合恢复，误补发通知。
   if (event.type === "message.complete" || event.type === "error") {
-    clearActiveTurn(resolvePersistentSessionId(event.session_id) ?? event.session_id);
+    const persistentSessionId = resolvePersistentSessionId(event.session_id) ?? event.session_id;
+    clearActiveTurn(persistentSessionId);
+    void stopAndroidSessionForeground(persistentSessionId);
   }
   // 通知决策需要 reduce 前的快照（pendingApprovals / activeAssistantId 是
   // 防重放依据），在 set 之外读取——jotai 不承诺 updater 恰好执行一次。

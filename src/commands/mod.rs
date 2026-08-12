@@ -14,6 +14,7 @@ pub mod notify;
 pub mod profiles;
 pub mod runtime_compat;
 pub mod session_export;
+pub mod session_foreground;
 pub mod ui_store;
 pub mod ws_proxy;
 

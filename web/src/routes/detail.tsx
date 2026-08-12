@@ -52,6 +52,10 @@ import {
 import { isRemoteConnection, readImageBytesFromPath, uploadAttachmentFile } from "@/lib/transport";
 import { voiceAutoTtsFromConfig } from "@/lib/voice";
 import {
+  startAndroidSessionForeground,
+  stopAndroidSessionForeground,
+} from "@/lib/android-session-foreground";
+import {
   rememberSessionWorkspace,
   rememberWorkspaceProject,
   resolveSessionWorkspace,
@@ -392,6 +396,14 @@ export function DetailRoute() {
   ) => {
     if (!taskId) return;
     const gatewaySessionId = await ensureGatewaySession();
+    const persistentSessionId = taskId ?? restSessionId;
+    await startAndroidSessionForeground({
+      persistentSessionId,
+      title: "后台链路诊断",
+      state: "starting",
+      heartbeatSequence: 0,
+      timestampMs: Date.now(),
+    });
     if (payload.workspacePath) {
       rememberWorkspaceProject(payload.workspacePath);
       rememberSessionWorkspace(taskId, payload.workspacePath);
@@ -401,32 +413,37 @@ export function DetailRoute() {
     // A `/skill <name>` invocation dispatches to the backend skill registry; the
     // returned payload becomes the transport text while the composer still shows
     // the literal command. Mirrors the new-task path in use-create-and-send-session.
-    let transportText: string | undefined;
-    const skillCommand = resolveComposerSkillCommand(payload.text, payload.skillCommandNames);
-    if (skillCommand) {
-      const dispatched = await dispatchCommand(
-        gatewaySessionId,
-        skillCommand.name,
-        skillCommand.arg,
-      );
-      if (dispatched.type === "skill" && dispatched.message?.trim()) {
-        transportText = dispatched.message;
+    try {
+      let transportText: string | undefined;
+      const skillCommand = resolveComposerSkillCommand(payload.text, payload.skillCommandNames);
+      if (skillCommand) {
+        const dispatched = await dispatchCommand(
+          gatewaySessionId,
+          skillCommand.name,
+          skillCommand.arg,
+        );
+        if (dispatched.type === "skill" && dispatched.message?.trim()) {
+          transportText = dispatched.message;
+        }
       }
+      const prepared = await prepareComposerPrompt(gatewaySessionId, payload, {
+        attachImage,
+        attachImageBytes,
+        attachFileBytes,
+        remote: isRemoteConnection(),
+        readImageBytes: readImageBytesFromPath,
+        detectDroppedPath,
+        uploadFile: uploadAttachmentFile,
+        onAttachmentUpdate: updateAttachment,
+      }, { transportText });
+      await sendPrompt(gatewaySessionId, prepared.promptText, {
+        displayText: prepared.displayText,
+        displayImages: prepared.displayImages,
+      });
+    } catch (error) {
+      await stopAndroidSessionForeground(persistentSessionId);
+      throw error;
     }
-    const prepared = await prepareComposerPrompt(gatewaySessionId, payload, {
-      attachImage,
-      attachImageBytes,
-      attachFileBytes,
-      remote: isRemoteConnection(),
-      readImageBytes: readImageBytesFromPath,
-      detectDroppedPath,
-      uploadFile: uploadAttachmentFile,
-      onAttachmentUpdate: updateAttachment,
-    }, { transportText });
-    await sendPrompt(gatewaySessionId, prepared.promptText, {
-      displayText: prepared.displayText,
-      displayImages: prepared.displayImages,
-    });
   }, [attachImage, attachImageBytes, attachFileBytes, detectDroppedPath, dispatchCommand, ensureGatewaySession, restSessionId, sendPrompt, taskId]);
 
   const onSend = useCallback(async (

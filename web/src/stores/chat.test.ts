@@ -1,7 +1,8 @@
 import { createStore } from "jotai/vanilla";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HermesMessagePart, HermesUIMessage } from "@hermes/protocol";
 import { resolvePersistentSessionId } from "@/lib/session-map";
+import { rememberSessionMapping } from "@/lib/session-map";
 import { __resetUiStoreForTests } from "@/lib/ui-store";
 import {
   applyGatewayEventAtom,
@@ -17,6 +18,13 @@ import {
   startPromptAtom,
   terminateAllStreamsAtom,
 } from "./chat";
+
+const { stopAndroidSessionForeground } = vi.hoisted(() => ({
+  stopAndroidSessionForeground: vi.fn(() => Promise.resolve()),
+}));
+vi.mock("@/lib/android-session-foreground", () => ({
+  stopAndroidSessionForeground,
+}));
 
 describe("session.info session mapping", () => {
   beforeEach(() => {
@@ -40,6 +48,40 @@ describe("session.info session mapping", () => {
     });
 
     expect(resolvePersistentSessionId("gw-info")).toBe("sess-info");
+  });
+});
+
+describe("foreground diagnostic terminal cleanup", () => {
+  beforeEach(() => {
+    stopAndroidSessionForeground.mockClear();
+    __resetUiStoreForTests();
+  });
+
+  afterEach(() => {
+    __resetUiStoreForTests();
+  });
+
+  it.each([
+    { type: "message.complete", payload: { text: "done" } },
+    { type: "error", payload: { message: "failed" } },
+  ])("stops with the resolved persistent id for $type", ({ type, payload }) => {
+    rememberSessionMapping("gw-terminal", "persistent-terminal");
+    const store = createStore();
+    store.set(chatRuntimeBySessionAtom, { "gw-terminal": createEmptyChatRuntime() });
+
+    store.set(applyGatewayEventAtom, { type, session_id: "gw-terminal", payload } as any);
+
+    expect(stopAndroidSessionForeground).toHaveBeenCalledWith("persistent-terminal");
+  });
+
+  it("stops with the resolved persistent id on manual interrupt", () => {
+    rememberSessionMapping("gw-interrupt", "persistent-interrupt");
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "gw-interrupt", text: "hello", now: 1_000 });
+
+    store.set(markSessionInterruptedAtom, "gw-interrupt");
+
+    expect(stopAndroidSessionForeground).toHaveBeenCalledWith("persistent-interrupt");
   });
 });
 

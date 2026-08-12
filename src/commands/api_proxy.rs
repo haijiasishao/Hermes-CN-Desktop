@@ -75,6 +75,10 @@ pub struct ApiRequestInput {
     pub headers: Option<HashMap<String, String>>,
     #[serde(default)]
     pub body: Option<String>,
+    /// Internal callers such as the foreground diagnostic probe must not turn
+    /// an auth response into an event that could carry connection details.
+    #[serde(skip)]
+    pub suppress_auth_expired_event: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -658,7 +662,9 @@ pub async fn api_request_from_state(
         if session.take_dirty() {
             crate::oauth_session::persist_if_dirty(&api_base_url, session);
         }
-        if should_emit_auth_expired(result.status, &result.body) {
+        if !input.suppress_auth_expired_event
+            && should_emit_auth_expired(result.status, &result.body)
+        {
             emit_auth_expired(app, state, &api_base_url, &result.body);
         }
         return Ok(result);
@@ -680,7 +686,7 @@ pub async fn api_request_from_state(
         Ok(result) => result,
         Err(error) => return Err(error),
     };
-    if should_emit_auth_expired(first.status, &first.body) {
+    if !input.suppress_auth_expired_event && should_emit_auth_expired(first.status, &first.body) {
         emit_auth_expired(app, state, &api_base_url, &first.body);
     }
     // Remote tokens are static (entered in Settings or via env); the
@@ -1474,6 +1480,7 @@ mod external_request_tests {
                     "Bearer sk-sensitive".to_string(),
                 )])),
                 body: Some("{\"prompt\":\"hello\"}".to_string()),
+                suppress_auth_expired_event: false,
             },
             target_url,
             &client,

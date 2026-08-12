@@ -94,6 +94,24 @@ describe("useSession: detail URL encoding", () => {
   });
 });
 
+describe("Android detail submit foreground diagnostic contract", () => {
+  it("starts the persistent task foreground monitor before sending and stops it on prepare/send failure", () => {
+    expect(detailSource).toMatch(/import[\s\S]*startAndroidSessionForeground[\s\S]*from ["']@\/lib\/android-session-foreground["']/);
+    expect(detailSource).toMatch(
+      /const persistentSessionId = taskId\s*\?\?\s*restSessionId[\s\S]*persistentSessionId,[\s\S]*title:\s*["']后台链路诊断["'][\s\S]*state:\s*["']starting["']/,
+    );
+    expect(detailSource).not.toMatch(/persistentSessionId:\s*gatewaySessionId/);
+
+    const start = detailSource.indexOf("startAndroidSessionForeground");
+    const send = detailSource.indexOf("sendPrompt(gatewaySessionId");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(start).toBeLessThan(send);
+    expect(detailSource).toMatch(
+      /catch \(error\)[\s\S]{0,500}stopAndroidSessionForeground\(persistentSessionId\)[\s\S]{0,300}throw error/,
+    );
+  });
+});
+
 // ── DetailRoute: history-load error visibility ───────────────────────
 const detailSource = readFileSync(
   resolve(import.meta.dirname ?? __dirname, "../routes/detail.tsx"),

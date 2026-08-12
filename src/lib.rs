@@ -41,6 +41,15 @@ fn shutdown_remote_connection(app: &tauri::AppHandle) {
         relay.notify.notify_waiters();
     }
 
+    if let Some(monitor) = state
+        .inner
+        .lock()
+        .ok()
+        .and_then(|mut inner| inner.session_foreground_monitor.take())
+    {
+        monitor.handle.abort();
+    }
+
     // DashboardHandle::stop() is a no-op for an attached remote handle. Drop
     // it here only to release the local Rust state; never stop a remote agent.
     drop(dashboard_handle);
@@ -58,6 +67,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(commands::debug_export::init());
+    let builder = builder.plugin(commands::session_foreground::init());
     #[cfg(any(feature = "desktop", feature = "android"))]
     let builder = builder.plugin(tauri_plugin_notification::init());
     let app = builder
@@ -154,6 +164,8 @@ pub fn run() {
             commands::ui_store::ui_store_get_turn_stats,
             commands::ui_store::ui_store_get_turn_stats_window,
             commands::ui_store::ui_store_record_event,
+            commands::session_foreground::session_foreground_start,
+            commands::session_foreground::session_foreground_stop,
             // Native notifications and explicit Android permission handling
             #[cfg(any(feature = "desktop", feature = "android"))]
             commands::notify::desktop_notify,

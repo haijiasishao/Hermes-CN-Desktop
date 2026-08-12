@@ -262,6 +262,161 @@ if (!cleartextPattern.test(manifest)) {
 console.log(`manifest_permissions=${requiredPermissions.length} (all present)`);
 console.log("manifest_cleartext=true");
 
+// --- Phase-0 foreground-service boundary audit ---
+const fgsPermissions = [
+  "android.permission.FOREGROUND_SERVICE",
+  "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+];
+for (const permission of fgsPermissions) {
+  const declarationPattern = new RegExp(
+    `<uses-permission\\s+android:name=["']${permission.replaceAll(".", "\\.")}['"]\\s*/>`,
+    "g",
+  );
+  const declarationCount = manifest.match(declarationPattern)?.length ?? 0;
+  if (declarationCount !== 1) {
+    console.error(
+      `Foreground service permission must be declared exactly once: ${permission} (found ${declarationCount})`,
+    );
+    process.exit(1);
+  }
+}
+const foregroundServiceDeclarations = manifest.match(
+  /<service\b[^>]*android:name=["']\.SessionForegroundService["'][^>]*>/g,
+);
+if (foregroundServiceDeclarations?.length !== 1 ||
+    !foregroundServiceDeclarations[0].includes('android:exported="false"') ||
+    !foregroundServiceDeclarations[0].includes('android:foregroundServiceType="dataSync"')) {
+  console.error("Missing non-exported dataSync SessionForegroundService declaration");
+  process.exit(1);
+}
+const phase0AndroidWorkflow = fs.readFileSync(
+  path.join(root, ".github/workflows/android-build.yml"),
+  "utf8",
+);
+const android36Count = phase0AndroidWorkflow.match(/platforms;android-36/g)?.length ?? 0;
+if (android36Count !== 1) {
+  console.error(`Android SDK platform android-36 must be listed exactly once (found ${android36Count})`);
+  process.exit(1);
+}
+const gradle = fs.readFileSync(path.join(root, "gen/android/app/build.gradle.kts"), "utf8");
+if (!/androidx\.core:core-ktx:/.test(gradle)) {
+  console.error("Missing explicit AndroidX Core dependency for ServiceCompat");
+  process.exit(1);
+}
+const foregroundRust = fs.readFileSync(path.join(root, "src/commands/session_foreground.rs"), "utf8");
+for (const command of ["session_foreground_start", "session_foreground_stop"]) {
+  if (!foregroundRust.includes(command)) {
+    console.error(`Missing foreground diagnostic command: ${command}`);
+    process.exit(1);
+  }
+}
+if (/log::(?:debug|info|warn|error)!\([^\n]*(?:token|cookie|prompt|response|url)/i.test(foregroundRust)) {
+  console.error("Foreground diagnostic logging may expose sensitive data");
+  process.exit(1);
+}
+for (const forbidden of ["reqwest::Client", "bearer_auth", "authenticated_sessions_probe"]) {
+  if (foregroundRust.includes(forbidden)) {
+    console.error(`Foreground probe must use shared api proxy; found forbidden ${forbidden}`);
+    process.exit(1);
+  }
+}
+for (const required of [
+  '"/api/sessions?limit=1&offset=0"',
+  "api_request_from_state",
+  "plugin_unavailable",
+  "MAX_PLUGIN_UPDATE_FAILURES",
+]) {
+  if (!foregroundRust.includes(required)) {
+    console.error(`Missing safe foreground monitor contract: ${required}`);
+    process.exit(1);
+  }
+}
+const foregroundPlugin = fs.readFileSync(
+  path.join(root, "gen/android/app/src/main/java/cn/org/hermesagent/mobile/SessionForegroundPlugin.kt"),
+  "utf8",
+);
+const foregroundService = fs.readFileSync(
+  path.join(root, "gen/android/app/src/main/java/cn/org/hermesagent/mobile/SessionForegroundService.kt"),
+  "utf8",
+);
+for (const required of [
+  "EXTRA_SESSION_ID",
+  "EXTRA_TIMESTAMP",
+  'args.action in setOf("start", "update", "stop")',
+  'args.state in setOf("starting", "connected", "probe_failed", "stopped")',
+]) {
+  if (!foregroundPlugin.includes(required)) {
+    console.error(`Missing safe Kotlin plugin contract: ${required}`);
+    process.exit(1);
+  }
+}
+const actionBranches = ["start", "update", "stop"].map((action) => {
+  const marker = `"${action}" ->`;
+  const start = foregroundPlugin.indexOf(marker);
+  const next = ["start", "update", "stop"]
+    .map((candidate) => foregroundPlugin.indexOf(`"${candidate}" ->`, start + marker.length))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0] ?? foregroundPlugin.length;
+  if (start < 0) {
+    console.error(`Missing explicit Kotlin foreground action branch: ${action}`);
+    process.exit(1);
+  }
+  return [action, foregroundPlugin.slice(start, next)];
+});
+const branchText = new Map(actionBranches);
+if (!branchText.get("start")?.includes("ContextCompat.startForegroundService(activity, intent)")) {
+  console.error("Foreground start must use ContextCompat.startForegroundService");
+  process.exit(1);
+}
+if (!branchText.get("update")?.includes("activity.startService(intent)")) {
+  console.error("Foreground update must use activity.startService");
+  process.exit(1);
+}
+if (!branchText.get("stop")?.includes("activity.startService(intent)")) {
+  console.error("Foreground stop must use activity.startService");
+  process.exit(1);
+}
+if (branchText.get("start")?.includes("activity.startService(intent)")) {
+  console.error("Foreground start must not use activity.startService");
+  process.exit(1);
+}
+if (branchText.get("update")?.includes("ContextCompat.startForegroundService(activity, intent)")) {
+  console.error("Foreground update must not use ContextCompat.startForegroundService");
+  process.exit(1);
+}
+if (branchText.get("stop")?.includes("ContextCompat.startForegroundService(activity, intent)")) {
+  console.error("Foreground stop must not use ContextCompat.startForegroundService");
+  process.exit(1);
+}
+if (/if\s*\(\s*stopping\s*\)[\s\S]*?else\s+ContextCompat\.startForegroundService/.test(foregroundPlugin)) {
+  console.error("Foreground actions must not merge stop/startForegroundService branches");
+  process.exit(1);
+}
+if (foregroundPlugin.includes("activity.stopService")) {
+  console.error("Foreground stop must go through service ACTION_STOP");
+  process.exit(1);
+}
+for (const required of [
+  "onCreate",
+  "onStartCommand",
+  "onTaskRemoved",
+  "onDestroy",
+  "onTimeout",
+  "ServiceCompat.stopForeground",
+  "Log.i",
+  "START_NOT_STICKY",
+]) {
+  if (!foregroundService.includes(required)) {
+    console.error(`Missing safe Kotlin service contract: ${required}`);
+    process.exit(1);
+  }
+}
+if (foregroundService.includes("EXTRA_TITLE") || /getStringExtra\(EXTRA_TITLE\)/.test(foregroundService)) {
+  console.error("Foreground diagnostic service must keep a fixed title");
+  process.exit(1);
+}
+console.log("foreground_service_boundary=dataSync/non-exported/safe-bridge");
+
 if (missingRequired.length > 0 || unclassified.length > 0) {
   if (missingRequired.length > 0) console.error(`Missing required Remote commands: ${missingRequired.join(", ")}`);
   if (unclassified.length > 0) console.error(`Unclassified bridge commands: ${unclassified.join(", ")}`);

@@ -53,6 +53,8 @@ import type {
   DesktopNotifyResult,
   NotificationPermissionInput,
   NotificationPermissionResult,
+  AndroidSessionForegroundInput,
+  AndroidSessionForegroundResult,
   DesktopFileDropPayload,
   DownloadExternalImageInput,
   DownloadedImageResult,
@@ -545,6 +547,14 @@ const tauriBridge = {
 
   async notificationPermission(input: NotificationPermissionInput): Promise<NotificationPermissionResult> {
     return invokeCommand("notification_permission", { input });
+  },
+
+  async sessionForegroundStart(input: AndroidSessionForegroundInput): Promise<AndroidSessionForegroundResult> {
+    return invokeCommand("session_foreground_start", { input });
+  },
+
+  async sessionForegroundStop(input: { persistentSessionId: string }): Promise<AndroidSessionForegroundResult> {
+    return invokeCommand("session_foreground_stop", { input });
   },
 
   async terminalStart(input: TerminalStartInput): Promise<TerminalStartResult> {
