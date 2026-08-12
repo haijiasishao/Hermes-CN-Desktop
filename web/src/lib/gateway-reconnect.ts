@@ -74,6 +74,62 @@ export function isDefinitiveMissingSessionError(error: unknown): boolean {
     || /(?:not found|does not exist|unknown|gone|reaped).*(?:session|conversation)/i.test(message);
 }
 
+// ── Reattach snapshot turn resolution ─────────────────────────────────
+//
+// The Android REST snapshot gate currently requires an in-memory
+// activeAssistantId; when the OS rebuilds the WebView while backgrounded the
+// jotai runtime is wiped and the gate skips the catch-up with
+// no_active_assistant even though the persistent session and its REST history
+// survive. This helper decides whether a callable turn context exists —
+// either from live memory or, on Android Remote-only, from the persisted
+// active-turn checkpoint.
+
+export interface ReattachTurnContext {
+  activeAssistantId: string;
+  turnStartedAt: number;
+  restoredFromCheckpoint: boolean;
+}
+
+export type ReattachSnapshotTurnResult =
+  | { ok: true; context: ReattachTurnContext }
+  | { ok: false; reason: "no_active_assistant" };
+
+export function resolveReattachSnapshotTurn(input: {
+  androidRemoteOnly: boolean;
+  runtime?: { activeAssistantId?: string; turnStartedAt?: number };
+  checkpoint?: { activeAssistantId?: string; turnStartedAt: number };
+}): ReattachSnapshotTurnResult {
+  if (input.runtime?.activeAssistantId) {
+    return {
+      ok: true,
+      context: {
+        activeAssistantId: input.runtime.activeAssistantId,
+        turnStartedAt: input.runtime.turnStartedAt ?? Date.now(),
+        restoredFromCheckpoint: false,
+      },
+    };
+  }
+  // Desktop keeps its existing path: no in-memory active assistant means no
+  // snapshot gate, unchanged behavior.
+  if (!input.androidRemoteOnly) return { ok: false, reason: "no_active_assistant" };
+  const checkpoint = input.checkpoint;
+  if (
+    !checkpoint ||
+    typeof checkpoint.turnStartedAt !== "number" ||
+    !Number.isFinite(checkpoint.turnStartedAt)
+  ) {
+    return { ok: false, reason: "no_active_assistant" };
+  }
+  return {
+    ok: true,
+    context: {
+      activeAssistantId: checkpoint.activeAssistantId ?? "restored-turn",
+      turnStartedAt: checkpoint.turnStartedAt,
+      restoredFromCheckpoint: true,
+    },
+  };
+}
+
 function reportDiagnostic(
   deps: ReattachAfterReconnectDeps,
   event: ReattachDiagnostic,

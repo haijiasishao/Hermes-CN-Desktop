@@ -2,7 +2,13 @@ import { readUiValue, writeUiValue } from "@/lib/ui-store";
 
 const STORAGE_KEY = "hermes:gateway-session-map";
 const ACTIVE_PERSISTENT_STORAGE_KEY = "hermes:active-persistent-session";
+const ACTIVE_TURN_STORAGE_KEY = "hermes:active-turn";
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// The active-turn checkpoint only needs to cover the window in which a remote
+// turn can still be in flight while the Android WebView is backgrounded. Six
+// hours is generous for a single turn yet short enough to avoid stale catch-up
+// notifications from a session that ended long ago but whose runtime was lost.
+const ACTIVE_TURN_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_ENTRIES = 200;
 
 interface SessionEntry {
@@ -195,4 +201,89 @@ export function resolveSessionIdAliases(
   }
 
   return Array.from(aliases);
+}
+
+// ── Active-turn checkpoint ─────────────────────────────────────────────
+//
+// The chat runtime (activeAssistantId/turnStartedAt) lives in jotai memory.
+// Android can destroy and rebuild the WebView while the app is backgrounded,
+// wiping that memory even though the persistent session and its REST history
+// survive. The reconnect catch-up path therefore keeps a small persisted
+// checkpoint of the *latest in-flight turn* so a rebuilt client can still run
+// the REST snapshot gate instead of skipping with no_active_assistant.
+// It is deliberately keyed by persistent session id only (gateway ids rotate
+// across reconnects) and expires quickly to avoid stale catch-up alerts.
+
+export interface ActiveTurnCheckpoint {
+  persistentSessionId: string;
+  turnStartedAt: number;
+  activeAssistantId?: string;
+}
+
+interface ActiveTurnEntry extends ActiveTurnCheckpoint {
+  ts: number;
+}
+
+function readActiveTurn(): ActiveTurnEntry | undefined {
+  const entry = readUiValue<unknown>(ACTIVE_TURN_STORAGE_KEY, undefined);
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+  const record = entry as Record<string, unknown>;
+  if (typeof record.persistentSessionId !== "string" || !record.persistentSessionId.trim()) return undefined;
+  if (typeof record.turnStartedAt !== "number" || !Number.isFinite(record.turnStartedAt)) return undefined;
+  if (typeof record.ts !== "number" || !Number.isFinite(record.ts)) return undefined;
+  if (Date.now() - record.ts > ACTIVE_TURN_MAX_AGE_MS) return undefined;
+  const activeAssistantId =
+    typeof record.activeAssistantId === "string" && record.activeAssistantId.trim()
+      ? record.activeAssistantId.trim()
+      : undefined;
+  return {
+    persistentSessionId: record.persistentSessionId.trim(),
+    turnStartedAt: record.turnStartedAt,
+    activeAssistantId,
+    ts: record.ts,
+  };
+}
+
+/** Record the latest in-flight turn for a persistent session (WebView-rebuild-safe). */
+export function rememberActiveTurn(params: {
+  persistentSessionId: string | undefined;
+  turnStartedAt: number;
+  activeAssistantId?: string;
+}): void {
+  const persistentId = cleanSessionId(params?.persistentSessionId);
+  if (!persistentId) return;
+  if (typeof params?.turnStartedAt !== "number" || !Number.isFinite(params.turnStartedAt)) return;
+  const entry: ActiveTurnEntry = {
+    persistentSessionId: persistentId,
+    turnStartedAt: params.turnStartedAt,
+    activeAssistantId: cleanSessionId(params.activeAssistantId),
+    ts: Date.now(),
+  };
+  writeUiValue(ACTIVE_TURN_STORAGE_KEY, entry);
+}
+
+/** Read the fresh active-turn checkpoint for a persistent session, if any. */
+export function getActiveTurn(persistentSessionId: string | undefined): ActiveTurnCheckpoint | undefined {
+  const persistentId = cleanSessionId(persistentSessionId);
+  const entry = readActiveTurn();
+  if (!entry) return undefined;
+  if (persistentId && entry.persistentSessionId !== persistentId) return undefined;
+  const { ts: _ts, ...checkpoint } = entry;
+  return checkpoint;
+}
+
+/**
+ * Clear the active-turn checkpoint. With a matching persistent session id only
+ * that session's checkpoint is removed; without one, every checkpoint is
+ * cleared (client-wide resets such as terminate-all-streams).
+ */
+export function clearActiveTurn(persistentSessionId?: string): void {
+  const persistentId = cleanSessionId(persistentSessionId);
+  if (persistentId) {
+    const entry = readActiveTurn();
+    if (!entry || entry.persistentSessionId !== persistentId) return;
+    writeUiValue(ACTIVE_TURN_STORAGE_KEY, null);
+    return;
+  }
+  writeUiValue(ACTIVE_TURN_STORAGE_KEY, null);
 }

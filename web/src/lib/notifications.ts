@@ -482,6 +482,29 @@ function hasStoredFinalContent(message: HermesUIMessage): boolean {
   );
 }
 
+/**
+ * Find the newest stored assistant that completed at or after the given turn
+ * start, with real final content. Shared by the reconnect-snapshot notifier
+ * and the WebView-rebuild recovery path (which has no live runtime bucket to
+ * consult, so it needs the same match to decide completed vs still-active).
+ */
+export function findCompletedSnapshotAssistant(
+  turnStartedAt: number | undefined,
+  messagesResponse: MessagesResponse | null | undefined,
+): HermesUIMessage | undefined {
+  if (turnStartedAt === undefined) return undefined;
+  const storedMessages = messagesResponseToHermesUIMessages(messagesResponse ?? undefined);
+  return [...storedMessages]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "assistant" &&
+        (message.status === "complete" || message.status === "error") &&
+        message.createdAt >= turnStartedAt &&
+        hasStoredFinalContent(message),
+    );
+}
+
 export function notifyFromReconnectSnapshot(
   sessionId: string,
   runtime: ChatSessionRuntime,
@@ -567,15 +590,7 @@ export function notifyFromReconnectSnapshot(
       latestAssistantCreatedAt: assistantMessages.at(-1)?.createdAt ?? null,
       turnStartedAt: runtime.turnStartedAt,
     });
-    const latestAssistant = [...storedMessages]
-      .reverse()
-      .find(
-        (message) =>
-          message.role === "assistant" &&
-          (message.status === "complete" || message.status === "error") &&
-          message.createdAt >= runtime.turnStartedAt! &&
-          hasStoredFinalContent(message),
-      );
+    const latestAssistant = findCompletedSnapshotAssistant(runtime.turnStartedAt, messagesResponse);
     if (!latestAssistant) {
       recordNotificationDebug("reconnect-snapshot.skipped", {
         reason: "no_matching_final_assistant",

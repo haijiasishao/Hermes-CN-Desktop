@@ -25,6 +25,7 @@ import { getGatewayClient } from "@/lib/gateway-client";
 import {
   isDefinitiveMissingSessionError,
   reattachAfterReconnect,
+  resolveReattachSnapshotTurn,
   type ReattachDiagnostic,
 } from "@/lib/gateway-reconnect";
 import {
@@ -35,9 +36,11 @@ import { buildGatewayModelConfigValue } from "@/lib/provider-id";
 import type { ReasoningEffort } from "@/lib/reasoning-effort";
 import {
   clearActivePersistentSessionId,
+  clearActiveTurn,
   forgetSessionMapping,
   forgetSessionMappingsForPersistentSession,
   getActivePersistentSessionId,
+  getActiveTurn,
   rememberActivePersistentSessionId,
   rememberSessionMapping,
   resolveGatewaySessionId,
@@ -45,7 +48,7 @@ import {
   resolveSessionIdAliases,
 } from "@/lib/session-map";
 import { mirrorSessionWorkspaceMapping } from "@/lib/workspaces";
-import { notifyFromReconnectSnapshot } from "@/lib/notifications";
+import { notifyFromReconnectSnapshot, findCompletedSnapshotAssistant } from "@/lib/notifications";
 import { messagesResponseToHermesUIMessages } from "@/components/chat/message-adapter";
 import { runtime } from "@/lib/runtime";
 import { recordNotificationDebug } from "@/lib/notification-debug";
@@ -224,9 +227,17 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
           return;
         }
         const activeRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
-        if (!activeRuntime?.activeAssistantId) {
+        const turn = resolveReattachSnapshotTurn({
+          androidRemoteOnly: runtime.androidRemoteOnly,
+          runtime: activeRuntime,
+          // A WebView rebuild wipes the jotai runtime; the persisted
+          // active-turn checkpoint is the only surviving record of the
+          // in-flight turn and lets the REST snapshot still run.
+          checkpoint: getActiveTurn(persistentId),
+        });
+        if (!turn.ok) {
           recordNotificationDebug("reattach.snapshot.skipped", {
-            reason: "no_active_assistant",
+            reason: turn.reason,
             gatewaySessionId: gatewaySessionId ?? null,
             persistentSessionId: persistentId,
             runtimeSessionId,
@@ -237,9 +248,10 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
           gatewaySessionId: gatewaySessionId ?? null,
           persistentSessionId: persistentId,
           runtimeSessionId,
-          activeAssistantId: activeRuntime.activeAssistantId,
-          interrupted: Boolean(activeRuntime.interrupted),
-          hasTurnStartedAt: activeRuntime.turnStartedAt !== undefined,
+          activeAssistantId: turn.context.activeAssistantId,
+          restoredFromCheckpoint: turn.context.restoredFromCheckpoint,
+          interrupted: Boolean(activeRuntime?.interrupted),
+          hasTurnStartedAt: turn.context.turnStartedAt !== undefined,
         });
 
         return fetchReattachSnapshot(persistentId)
@@ -253,7 +265,20 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
               uiMessageCount: Array.isArray(messages?.ui_messages) ? messages.ui_messages.length : 0,
             });
             const currentRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
-            if (!currentRuntime?.activeAssistantId) {
+            // Prefer the live bucket when it exists; otherwise fall back to the
+            // checkpoint-derived context (WebView rebuild) so the catch-up
+            // notification and reconciliation can still run.
+            const effectiveRuntime =
+              currentRuntime?.activeAssistantId
+                ? currentRuntime
+                : turn.context.restoredFromCheckpoint
+                  ? {
+                      ...createEmptyChatRuntime(),
+                      activeAssistantId: turn.context.activeAssistantId,
+                      turnStartedAt: turn.context.turnStartedAt,
+                    }
+                  : undefined;
+            if (!effectiveRuntime?.activeAssistantId) {
               recordNotificationDebug("reattach.snapshot.skipped", {
                 reason: "turn_no_longer_active",
                 gatewaySessionId: gatewaySessionId ?? null,
@@ -263,22 +288,29 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
               return;
             }
 
-            notifyFromReconnectSnapshot(runtimeSessionId, currentRuntime, messages);
+            notifyFromReconnectSnapshot(runtimeSessionId, effectiveRuntime, messages);
             store.set(recoverCompletedTurnFromStoredMessagesAtom, {
               sessionId: runtimeSessionId,
               storedMessages: messagesResponseToHermesUIMessages(messages),
             });
 
             // A completed turn no longer has a live gateway session to resume.
-            // Clear the stale ephemeral id so the next prompt resolves/resumes
-            // from the persistent task id instead of sending to a dead socket.
+            // For a rebuilt runtime the live bucket cannot signal completion,
+            // so use the same snapshot match the notifier uses. Clear the
+            // stale ephemeral id and the persisted checkpoint so the next
+            // prompt resolves from the persistent task id and no stale
+            // catch-up fires on a later reconnect.
             const recoveredRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
-            if (!recoveredRuntime?.activeAssistantId) {
+            const snapshotCompleted = turn.context.restoredFromCheckpoint
+              ? findCompletedSnapshotAssistant(turn.context.turnStartedAt, messages) !== undefined
+              : recoveredRuntime?.activeAssistantId === undefined;
+            if (snapshotCompleted) {
               forgetSessionMappingsForPersistentSession(persistentId);
               forgetSessionMapping(gatewaySessionId ?? undefined);
               if (store.get(gwSessionIdAtom) === gatewaySessionId) {
                 store.set(gwSessionIdAtom, null);
               }
+              clearActiveTurn(persistentId);
               recordNotificationDebug("reattach.snapshot.reconciled", {
                 gatewaySessionId: gatewaySessionId ?? null,
                 persistentSessionId: persistentId,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   isDefinitiveMissingSessionError,
   reattachAfterReconnect,
+  resolveReattachSnapshotTurn,
   type ReattachAfterReconnectDeps,
   type ReconnectResumeResult,
 } from "./gateway-reconnect";
@@ -237,5 +238,83 @@ describe("isDefinitiveMissingSessionError", () => {
     new Error("HTTP 503 Service Unavailable"),
   ])("keeps transient resume failures recoverable", (error) => {
     expect(isDefinitiveMissingSessionError(error)).toBe(false);
+  });
+});
+
+// Android can rebuild the WebView while backgrounded (memory pressure,
+// Activity recreation). All in-memory chat runtime — including
+// activeAssistantId/turnStartedAt — is lost even though the persistent session
+// and its REST history survive. The reconnect snapshot gate must therefore
+// fall back to a persisted active-turn checkpoint on Android Remote-only
+// instead of skipping the REST catch-up with no_active_assistant.
+describe("resolveReattachSnapshotTurn", () => {
+  it("keeps the in-memory runtime when it has an active assistant", () => {
+    const result = resolveReattachSnapshotTurn({
+      androidRemoteOnly: true,
+      runtime: { activeAssistantId: "live-a", turnStartedAt: 1000 },
+      checkpoint: undefined,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      context: { activeAssistantId: "live-a", turnStartedAt: 1000, restoredFromCheckpoint: false },
+    });
+  });
+
+  it("restores from a persisted checkpoint when the WebView rebuild lost the runtime", () => {
+    const result = resolveReattachSnapshotTurn({
+      androidRemoteOnly: true,
+      runtime: undefined,
+      checkpoint: { activeAssistantId: "live-b", turnStartedAt: 2000 },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      context: { activeAssistantId: "live-b", turnStartedAt: 2000, restoredFromCheckpoint: true },
+    });
+  });
+
+  it("restores when the runtime bucket exists but its active assistant was cleared", () => {
+    const result = resolveReattachSnapshotTurn({
+      androidRemoteOnly: true,
+      runtime: { activeAssistantId: undefined, turnStartedAt: undefined },
+      checkpoint: { activeAssistantId: "live-c", turnStartedAt: 3000 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.context.restoredFromCheckpoint).toBe(true);
+      expect(result.context.turnStartedAt).toBe(3000);
+    }
+  });
+
+  it("keeps skipping on desktop when the runtime has no active assistant", () => {
+    const result = resolveReattachSnapshotTurn({
+      androidRemoteOnly: false,
+      runtime: undefined,
+      checkpoint: { activeAssistantId: "live-d", turnStartedAt: 4000 },
+    });
+
+    expect(result).toEqual({ ok: false, reason: "no_active_assistant" });
+  });
+
+  it("keeps skipping on Android when no checkpoint exists either", () => {
+    const result = resolveReattachSnapshotTurn({
+      androidRemoteOnly: true,
+      runtime: undefined,
+      checkpoint: undefined,
+    });
+
+    expect(result).toEqual({ ok: false, reason: "no_active_assistant" });
+  });
+
+  it("rejects malformed checkpoints instead of fabricating a turn", () => {
+    const result = resolveReattachSnapshotTurn({
+      androidRemoteOnly: true,
+      runtime: undefined,
+      checkpoint: { activeAssistantId: "live-e", turnStartedAt: Number.NaN },
+    });
+
+    expect(result).toEqual({ ok: false, reason: "no_active_assistant" });
   });
 });

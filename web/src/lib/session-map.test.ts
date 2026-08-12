@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetUiStoreForTests, readUiValue, writeUiValue } from "./ui-store";
 import {
   clearActivePersistentSessionId,
+  clearActiveTurn,
   forgetSessionMapping,
   forgetSessionMappingsForPersistentSession,
   getActivePersistentSessionId,
+  getActiveTurn,
+  rememberActiveTurn,
   rememberGatewaySessionInfo,
   rememberSessionMapping,
   rememberActivePersistentSessionId,
@@ -178,5 +181,104 @@ describe("session-map", () => {
       "gw-live": { persistentId: "sess-1", ts: Date.now() - 1_000 },
     });
     expect(resolveGatewaySessionId("sess-1")).toBe("gw-live");
+  });
+});
+
+describe("active-turn checkpoint", () => {
+  beforeEach(() => {
+    __resetUiStoreForTests();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("stores and reads a recent active turn", () => {
+    rememberActiveTurn({
+      persistentSessionId: "sess-1",
+      turnStartedAt: 1700000000000,
+      activeAssistantId: "live-assistant-1700000000000",
+    });
+
+    expect(getActiveTurn("sess-1")).toEqual({
+      persistentSessionId: "sess-1",
+      turnStartedAt: 1700000000000,
+      activeAssistantId: "live-assistant-1700000000000",
+    });
+  });
+
+  it("returns undefined when no turn was ever recorded", () => {
+    expect(getActiveTurn("sess-1")).toBeUndefined();
+  });
+
+  it("scopes reads to the requested persistent session", () => {
+    rememberActiveTurn({ persistentSessionId: "sess-1", turnStartedAt: 1700000000000 });
+
+    expect(getActiveTurn("sess-other")).toBeUndefined();
+  });
+
+  it("expires checkpoints older than 6 hours", () => {
+    rememberActiveTurn({ persistentSessionId: "sess-1", turnStartedAt: 1700000000000 });
+    const raw = readUiValue<{ persistentSessionId: string; turnStartedAt: number; ts: number }>(
+      "hermes:active-turn",
+      { persistentSessionId: "", turnStartedAt: 0, ts: 0 },
+    );
+    raw.ts = Date.now() - 7 * 60 * 60 * 1000;
+    writeUiValue("hermes:active-turn", raw);
+
+    expect(getActiveTurn("sess-1")).toBeUndefined();
+  });
+
+  it("overwrites the previous turn for the same persistent session", () => {
+    rememberActiveTurn({ persistentSessionId: "sess-1", turnStartedAt: 1700000000000 });
+    rememberActiveTurn({
+      persistentSessionId: "sess-1",
+      turnStartedAt: 1700000006000,
+      activeAssistantId: "live-assistant-1700000006000",
+    });
+
+    expect(getActiveTurn("sess-1")).toEqual({
+      persistentSessionId: "sess-1",
+      turnStartedAt: 1700000006000,
+      activeAssistantId: "live-assistant-1700000006000",
+    });
+  });
+
+  it("clears the checkpoint for a matching persistent session", () => {
+    rememberActiveTurn({ persistentSessionId: "sess-1", turnStartedAt: 1700000000000 });
+
+    clearActiveTurn("sess-1");
+
+    expect(getActiveTurn("sess-1")).toBeUndefined();
+  });
+
+  it("ignores clear requests for a different persistent session", () => {
+    rememberActiveTurn({ persistentSessionId: "sess-1", turnStartedAt: 1700000000000 });
+
+    clearActiveTurn("sess-other");
+
+    expect(getActiveTurn("sess-1")).not.toBeUndefined();
+  });
+
+  it("clears every recorded turn when no session is given", () => {
+    rememberActiveTurn({ persistentSessionId: "sess-1", turnStartedAt: 1700000000000 });
+
+    clearActiveTurn();
+
+    expect(getActiveTurn("sess-1")).toBeUndefined();
+  });
+
+  it("ignores malformed checkpoints instead of throwing", () => {
+    writeUiValue("hermes:active-turn", { persistentSessionId: 42, turnStartedAt: "bad", ts: "bad" });
+
+    expect(getActiveTurn("sess-1")).toBeUndefined();
+  });
+
+  it("resists writing empty or non-numeric checkpoints", () => {
+    rememberActiveTurn({ persistentSessionId: "", turnStartedAt: 1700000000000 });
+    rememberActiveTurn({ persistentSessionId: "sess-1", turnStartedAt: Number.NaN });
+
+    expect(getActiveTurn("sess-1")).toBeUndefined();
   });
 });

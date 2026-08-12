@@ -16,7 +16,12 @@ import {
   imagePartFromSource,
 } from "@/lib/message-images";
 import { notifyFromGatewayEvent } from "@/lib/notifications";
-import { rememberGatewaySessionInfo, resolvePersistentSessionId } from "@/lib/session-map";
+import {
+  clearActiveTurn,
+  rememberActiveTurn,
+  rememberGatewaySessionInfo,
+  resolvePersistentSessionId,
+} from "@/lib/session-map";
 import { recordUiTurnStats, stableTextHash } from "@/lib/ui-store";
 import { routeCliDelegationGatewayEventAtom } from "@/stores/cli-delegations";
 import { routeSubagentGatewayEventAtom } from "@/stores/subagents";
@@ -1006,6 +1011,7 @@ export const rekeyChatSessionRuntimeAtom = atom(
 );
 
 export const resetChatSessionAtom = atom(null, (_get, set, sessionId: string) => {
+  clearActiveTurn(resolvePersistentSessionId(sessionId) ?? sessionId);
   set(chatRuntimeBySessionAtom, (state) => ({
     ...state,
     [sessionId]: createEmptyChatRuntime(),
@@ -1014,6 +1020,7 @@ export const resetChatSessionAtom = atom(null, (_get, set, sessionId: string) =>
 
 export const resetStreamStateAtom = atom(null, (_get, set, sessionId: string) => {
   const now = Date.now();
+  clearActiveTurn(resolvePersistentSessionId(sessionId) ?? sessionId);
   set(chatRuntimeBySessionAtom, (state) =>
     updateSessionRuntime(state, sessionId, (runtime) => ({
       ...resetStream(runtime, now),
@@ -1026,6 +1033,9 @@ export const resetStreamStateAtom = atom(null, (_get, set, sessionId: string) =>
 // 故意保留 activeAssistantId / turnStartedAt，迟到的 message.complete 才能收尾正确的消息。
 export const markSessionInterruptedAtom = atom(null, (_get, set, sessionId: string) => {
   const now = Date.now();
+  // 用户主动中断后该回合不应再补发完成通知；但内存 activeAssistantId 仍保留
+  // 以便迟到 complete 收尾 —— 只清持久化 checkpoint，不动内存。
+  clearActiveTurn(resolvePersistentSessionId(sessionId) ?? sessionId);
   set(chatRuntimeBySessionAtom, (state) =>
     updateSessionRuntime(state, sessionId, (runtime) => ({
       ...runtime,
@@ -1178,6 +1188,14 @@ export const startPromptAtom = atom(
         activeAssistantId: assistantId,
       })),
     );
+    // Persist the in-flight turn checkpoint so a rebuilt Android WebView can
+    // still run the reconnect REST snapshot (rather than skipping it with
+    // no_active_assistant). Cleared when the turn reaches a terminal state.
+    rememberActiveTurn({
+      persistentSessionId: resolvePersistentSessionId(params.sessionId) ?? params.sessionId,
+      turnStartedAt: now,
+      activeAssistantId: assistantId,
+    });
   },
 );
 
@@ -1286,6 +1304,12 @@ export const applyGatewayEventAtom = atom(null, (get, set, event: GatewayEvent) 
   if (event.type === "session.info") {
     rememberGatewaySessionInfo(event.session_id, event.payload);
   }
+  // 回合到达终态后，活动回合检查点不再有效：内存 runtime 还在（reducer 会
+  // 清除 activeAssistantId），但 WebView 重建场景下必须同步清除，否则下次
+  // 重连会把已经完成的旧回合当作在飞回合恢复，误补发通知。
+  if (event.type === "message.complete" || event.type === "error") {
+    clearActiveTurn(resolvePersistentSessionId(event.session_id) ?? event.session_id);
+  }
   // 通知决策需要 reduce 前的快照（pendingApprovals / activeAssistantId 是
   // 防重放依据），在 set 之外读取——jotai 不承诺 updater 恰好执行一次。
   // 副作用本身 fire-and-forget，绝不影响 reducer。
@@ -1310,6 +1334,7 @@ export const setSessionErrorAtom = atom(
   null,
   (_get, set, params: { sessionId: string; message: string }) => {
     const now = Date.now();
+    clearActiveTurn(resolvePersistentSessionId(params.sessionId) ?? params.sessionId);
     set(chatRuntimeBySessionAtom, (state) =>
       updateSessionRuntime(state, params.sessionId, (runtime) => {
         const erroredActive = runtime.activeAssistantId
@@ -1367,6 +1392,10 @@ export const drainLiveMessagesAtom = atom(
 
 export const terminateAllStreamsAtom = atom(null, (_get, set) => {
   const now = Date.now();
+  // Every stream is terminal: no in-flight turn remains anywhere, so drop the
+  // persisted checkpoint too — otherwise a later reconnect would resurrect a
+  // stale turn and re-send a catch-up notification.
+  clearActiveTurn();
   set(chatRuntimeBySessionAtom, (state) => {
     let changed = false;
     const next: ChatRuntimeBySession = {};
