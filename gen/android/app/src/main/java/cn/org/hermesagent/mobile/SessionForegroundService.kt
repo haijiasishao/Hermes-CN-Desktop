@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 
 class SessionForegroundService : Service() {
+  private var terminalDetached = false
   companion object {
     private const val TAG = "SessionForegroundService"
     const val NOTIFICATION_ID = 19041
@@ -43,6 +44,8 @@ class SessionForegroundService : Service() {
       stopAndRemove(sessionId, sequence, state, timestamp)
       return START_NOT_STICKY
     }
+    val terminal = state == "completed" || state == "failed"
+    if (terminal) terminalDetached = true
     ServiceCompat.startForeground(
       this,
       NOTIFICATION_ID,
@@ -50,20 +53,35 @@ class SessionForegroundService : Service() {
       android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
     )
     logEvent("session-fgs.notification.foreground-started", sessionId, sequence, state, timestamp)
+    if (terminal) {
+      ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
+      stopSelf()
+    }
     return START_NOT_STICKY
   }
 
   private fun notification(intent: Intent?): Notification {
     val state = safe(intent?.getStringExtra(EXTRA_STATE), "心跳")
     val sequence = intent?.getLongExtra(EXTRA_SEQUENCE, 0L) ?: 0L
-    return NotificationCompat.Builder(this, CHANNEL_ID)
+    val terminal = state == "completed" || state == "failed"
+    val text = when (state) {
+      "completed" -> "已完成"
+      "failed" -> "执行失败"
+      else -> "$state · 心跳#$sequence"
+    }
+    val builder = NotificationCompat.Builder(this, CHANNEL_ID)
       .setSmallIcon(android.R.drawable.stat_notify_sync)
       .setContentTitle("后台链路诊断")
-      .setContentText("$state · 心跳#$sequence")
-      .setOngoing(true)
+      .setContentText(text)
       .setOnlyAlertOnce(true)
       .setCategory(NotificationCompat.CATEGORY_SERVICE)
-      .build()
+    if (terminal) {
+      builder.setOngoing(false)
+      builder.setUsesChronometer(false)
+    } else {
+      builder.setOngoing(true)
+    }
+    return builder.build()
   }
 
   private fun safe(value: String?, fallback: String): String {
@@ -78,7 +96,9 @@ class SessionForegroundService : Service() {
 
   override fun onDestroy() {
     logEvent("session-fgs.service.destroyed", null)
-    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+    if (!terminalDetached) {
+      ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+    }
     super.onDestroy()
   }
 
@@ -88,6 +108,7 @@ class SessionForegroundService : Service() {
   }
 
   private fun stopAndRemove(sessionId: String?, sequence: Long, state: String?, timestamp: Long) {
+    terminalDetached = false
     ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     logEvent("session-fgs.service.stopped", sessionId, sequence, state, timestamp)
     stopSelf()

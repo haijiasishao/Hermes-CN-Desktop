@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tauri::{
     plugin::{Builder, TauriPlugin},
     AppHandle, Manager, Runtime, State,
@@ -12,6 +13,8 @@ use crate::state::{
 };
 
 const HEARTBEAT_INTERVAL_MS: u64 = 10_000;
+const READY_TIMEOUT_MS: u64 = 5_000;
+const MAX_PROBE_BODY_BYTES: usize = 1024 * 1024;
 
 #[cfg(target_os = "android")]
 struct SessionForegroundPluginHandle<R: Runtime>(tauri::plugin::PluginHandle<R>);
@@ -70,7 +73,6 @@ struct PluginInput {
     timestamp_ms: i64,
 }
 
-const PROBE_PATH: &str = "/api/sessions?limit=1&offset=0";
 const MAX_PLUGIN_UPDATE_FAILURES: u8 = 6;
 
 pub const fn heartbeat_interval_ms() -> u64 {
@@ -96,6 +98,107 @@ async fn plugin(app: &AppHandle, input: PluginInput) -> AppResult<()> {
         Err(AppError::Internal(
             "Android 前台服务仅支持 Android".to_string(),
         ))
+    }
+}
+
+async fn plugin_if_foreground_monitor_owner(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+    generation: u64,
+    input: PluginInput,
+) -> AppResult<bool> {
+    let _operation = state.session_foreground_operation.lock().await;
+    let owns_monitor = {
+        let inner = state.inner.lock()?;
+        foreground_monitor_matches(
+            inner
+                .session_foreground_monitor
+                .as_ref()
+                .map(|m| m.persistent_session_id.as_str()),
+            inner
+                .session_foreground_monitor
+                .as_ref()
+                .map(|m| m.generation),
+            session_id,
+            generation,
+        )
+    };
+    if !owns_monitor {
+        return Ok(false);
+    }
+    plugin(app, input).await?;
+    Ok(true)
+}
+
+async fn terminal_plugin_if_foreground_monitor_owner(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+    generation: u64,
+    input: PluginInput,
+) -> AppResult<bool> {
+    let _operation = state.session_foreground_operation.lock().await;
+    let owns_monitor = {
+        let inner = state.inner.lock()?;
+        foreground_monitor_matches(
+            inner
+                .session_foreground_monitor
+                .as_ref()
+                .map(|m| m.persistent_session_id.as_str()),
+            inner
+                .session_foreground_monitor
+                .as_ref()
+                .map(|m| m.generation),
+            session_id,
+            generation,
+        )
+    };
+    if !owns_monitor {
+        return Ok(false);
+    }
+    plugin(app, input).await?;
+    let mut inner = state.inner.lock()?;
+    if foreground_monitor_matches(
+        inner
+            .session_foreground_monitor
+            .as_ref()
+            .map(|m| m.persistent_session_id.as_str()),
+        inner
+            .session_foreground_monitor
+            .as_ref()
+            .map(|m| m.generation),
+        session_id,
+        generation,
+    ) {
+        inner.session_foreground_monitor.take();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn take_matching_monitor(
+    state: &AppState,
+    session_id: &str,
+    generation: u64,
+) -> AppResult<Option<SessionForegroundMonitor>> {
+    let mut inner = state.inner.lock()?;
+    if foreground_monitor_matches(
+        inner
+            .session_foreground_monitor
+            .as_ref()
+            .map(|m| m.persistent_session_id.as_str()),
+        inner
+            .session_foreground_monitor
+            .as_ref()
+            .map(|m| m.generation),
+        session_id,
+        generation,
+    ) {
+        Ok(inner.session_foreground_monitor.take())
+    } else {
+        Ok(None)
     }
 }
 
@@ -131,6 +234,7 @@ pub async fn session_foreground_start(
         }
     }
     let generation = next_session_foreground_generation();
+    let started_at_ms = input.timestamp_ms;
     let session_id = input.persistent_session_id;
     plugin(
         &app,
@@ -147,25 +251,86 @@ pub async fn session_foreground_start(
     let monitor_app = app.clone();
     let monitor_session_id = session_id.clone();
     let monitor_task_session_id = session_id.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
+        let _ = start_rx.await;
         let mut sequence = 0_u64;
         let mut plugin_failures = 0_u8;
+        let mut baseline_id = None;
+        let mut ready_tx = Some(ready_tx);
+        let mut first_probe = true;
         loop {
             sequence += 1;
             let result = {
                 let app_state = monitor_app.state::<AppState>();
-                probe(&monitor_app, &app_state).await
+                probe(
+                    &monitor_app,
+                    &app_state,
+                    &monitor_task_session_id,
+                    started_at_ms,
+                )
+                .await
             };
             log::debug!(
-                "session-fgs.transport.heartbeat session_id={} sequence={} ok={} status={:?} error_category={:?}",
+                "session-fgs.transport.probe session_id={} sequence={} ok={} status={:?} error_category={:?} terminal={:?}",
                 monitor_task_session_id,
                 sequence,
                 result.ok,
                 result.status,
-                result.error_category
+                result.error_category,
+                result.terminal
             );
-            let update = plugin(
+            if let Some(sender) = ready_tx.take() {
+                baseline_id = result.max_assistant_id;
+                let ready_failed = !result.ok;
+                let _ = sender.send(if ready_failed { Err(()) } else { Ok(()) });
+                if ready_failed {
+                    return;
+                }
+            }
+            if let Some(terminal) = result.terminal_after(baseline_id, first_probe) {
+                let app_state = monitor_app.state::<AppState>();
+                let update = terminal_plugin_if_foreground_monitor_owner(
+                    &monitor_app,
+                    &app_state,
+                    &monitor_task_session_id,
+                    generation,
+                    PluginInput {
+                        action: "update".to_string(),
+                        persistent_session_id: monitor_task_session_id.clone(),
+                        title: "后台链路诊断".to_string(),
+                        state: terminal.as_plugin_state().to_string(),
+                        heartbeat_sequence: sequence,
+                        timestamp_ms: now_ms(),
+                    },
+                )
+                .await;
+                match update {
+                    Ok(true) => return,
+                    Ok(false) => return,
+                    Err(_) => {
+                        plugin_failures = plugin_failures.saturating_add(1);
+                        if plugin_failures >= MAX_PLUGIN_UPDATE_FAILURES {
+                            log::warn!(
+                                "session-fgs.monitor.error session_id={} sequence={} error_category=plugin_unavailable",
+                                monitor_task_session_id,
+                                sequence
+                            );
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(HEARTBEAT_INTERVAL_MS)).await;
+                        continue;
+                    }
+                }
+            }
+            first_probe = false;
+            let app_state = monitor_app.state::<AppState>();
+            let update = plugin_if_foreground_monitor_owner(
                 &monitor_app,
+                &app_state,
+                &monitor_task_session_id,
+                generation,
                 PluginInput {
                     action: "update".to_string(),
                     persistent_session_id: monitor_task_session_id.clone(),
@@ -181,58 +346,39 @@ pub async fn session_foreground_start(
                 },
             )
             .await;
-            if update.is_err() {
-                plugin_failures = plugin_failures.saturating_add(1);
-                if plugin_failures >= MAX_PLUGIN_UPDATE_FAILURES {
-                    log::warn!(
-                        "session-fgs.monitor.error session_id={} sequence={} error_category=plugin_unavailable",
-                        monitor_task_session_id,
-                        sequence
-                    );
-                    break;
+            match update {
+                Ok(true) => plugin_failures = 0,
+                Ok(false) => return,
+                Err(_) => {
+                    plugin_failures = plugin_failures.saturating_add(1);
+                    if plugin_failures >= MAX_PLUGIN_UPDATE_FAILURES {
+                        log::warn!(
+                            "session-fgs.monitor.error session_id={} sequence={} error_category=plugin_unavailable",
+                            monitor_task_session_id,
+                            sequence
+                        );
+                        break;
+                    }
                 }
-            } else {
-                plugin_failures = 0;
             }
             tokio::time::sleep(std::time::Duration::from_millis(HEARTBEAT_INTERVAL_MS)).await;
         }
-        let owns_current_monitor = {
-            let app_state = monitor_app.state::<AppState>();
-            let mut inner = match app_state.inner.lock() {
-                Ok(inner) => inner,
-                Err(_) => return,
-            };
-            let matches = foreground_monitor_matches(
-                inner
-                    .session_foreground_monitor
-                    .as_ref()
-                    .map(|monitor| monitor.persistent_session_id.as_str()),
-                inner
-                    .session_foreground_monitor
-                    .as_ref()
-                    .map(|monitor| monitor.generation),
-                &monitor_task_session_id,
-                generation,
-            );
-            if matches {
-                inner.session_foreground_monitor.take();
-            }
-            matches
-        };
-        if owns_current_monitor {
-            let _ = plugin(
-                &monitor_app,
-                PluginInput {
-                    action: "stop".to_string(),
-                    persistent_session_id: monitor_task_session_id,
-                    title: "后台链路诊断".to_string(),
-                    state: "stopped".to_string(),
-                    heartbeat_sequence: sequence,
-                    timestamp_ms: now_ms(),
-                },
-            )
-            .await;
-        }
+        let app_state = monitor_app.state::<AppState>();
+        let _ = terminal_plugin_if_foreground_monitor_owner(
+            &monitor_app,
+            &app_state,
+            &monitor_task_session_id,
+            generation,
+            PluginInput {
+                action: "stop".to_string(),
+                persistent_session_id: monitor_task_session_id.clone(),
+                title: "后台链路诊断".to_string(),
+                state: "stopped".to_string(),
+                heartbeat_sequence: sequence,
+                timestamp_ms: now_ms(),
+            },
+        )
+        .await;
     });
     let mut task = Some(task);
     let registration_result: AppResult<()> = {
@@ -263,6 +409,39 @@ pub async fn session_foreground_start(
         )
         .await;
         return Err(error);
+    }
+    let _ = start_tx.send(());
+    let ready = tokio::time::timeout(Duration::from_millis(READY_TIMEOUT_MS), ready_rx).await;
+    if !matches!(ready.as_ref(), Ok(Ok(Ok(())))) {
+        let monitor = take_matching_monitor(&state, &session_id, generation)?;
+        if let Some(monitor) = monitor {
+            monitor.handle.abort();
+            let _ = plugin(
+                &app,
+                PluginInput {
+                    action: "stop".to_string(),
+                    persistent_session_id: session_id.clone(),
+                    title: "后台链路诊断".to_string(),
+                    state: "stopped".to_string(),
+                    heartbeat_sequence: 0,
+                    timestamp_ms: now_ms(),
+                },
+            )
+            .await;
+        }
+        let error_category = if ready.is_err() {
+            "baseline_timeout"
+        } else {
+            "baseline_failed"
+        };
+        log::warn!(
+            "session-fgs.monitor.error session_id={} error_category={}",
+            session_id,
+            error_category
+        );
+        return Err(AppError::Internal(
+            "foreground monitor failed to become ready".to_string(),
+        ));
     }
     Ok(SessionForegroundResult {
         ok: true,
@@ -315,18 +494,53 @@ pub async fn session_foreground_stop(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalState {
+    Running,
+    Completed,
+    Failed,
+}
+
+impl TerminalState {
+    fn as_plugin_state(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Running => "connected",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct ProbeResult {
     ok: bool,
     status: Option<u16>,
     error_category: Option<&'static str>,
+    terminal: TerminalState,
+    max_assistant_id: Option<u64>,
 }
 
-async fn probe(app: &AppHandle, state: &AppState) -> ProbeResult {
+impl ProbeResult {
+    fn terminal_after(&self, baseline_id: Option<u64>, first_probe: bool) -> Option<TerminalState> {
+        self.max_assistant_id
+            .filter(|id| !first_probe && baseline_id.map_or(true, |baseline| *id > baseline))
+            .and_then(|_| match self.terminal {
+                TerminalState::Completed | TerminalState::Failed => Some(self.terminal),
+                TerminalState::Running => None,
+            })
+    }
+}
+
+async fn probe(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+    started_at_ms: i64,
+) -> ProbeResult {
     let result = api_request_from_state(
         app,
         ApiRequestInput {
-            path: PROBE_PATH.to_string(),
+            path: session_messages_path(session_id),
             method: Some("GET".to_string()),
             headers: None,
             body: None,
@@ -336,10 +550,29 @@ async fn probe(app: &AppHandle, state: &AppState) -> ProbeResult {
     )
     .await;
     match result {
-        Ok(response) if response.ok => ProbeResult {
-            ok: true,
-            status: Some(response.status),
-            error_category: None,
+        Ok(response) if response.ok => match parse_message_probe(&response.body) {
+            Some(messages) => {
+                let max_assistant_id = messages.iter().map(|m| m.id).max();
+                let terminal = max_assistant_id
+                    .and_then(|id| messages.iter().find(|m| m.id == id))
+                    .filter(|m| message_started_after(m.timestamp_ms, started_at_ms))
+                    .map(|m| m.terminal)
+                    .unwrap_or(TerminalState::Running);
+                ProbeResult {
+                    ok: true,
+                    status: Some(response.status),
+                    error_category: None,
+                    terminal,
+                    max_assistant_id,
+                }
+            }
+            None => ProbeResult {
+                ok: false,
+                status: Some(response.status),
+                error_category: Some("parse"),
+                terminal: TerminalState::Running,
+                max_assistant_id: None,
+            },
         },
         Ok(response) => ProbeResult {
             ok: false,
@@ -349,6 +582,8 @@ async fn probe(app: &AppHandle, state: &AppState) -> ProbeResult {
             } else {
                 "http"
             }),
+            terminal: TerminalState::Running,
+            max_assistant_id: None,
         },
         Err(error) => ProbeResult {
             ok: false,
@@ -359,8 +594,92 @@ async fn probe(app: &AppHandle, state: &AppState) -> ProbeResult {
                 AppError::StateLockPoisoned | AppError::Internal(_) => "internal",
                 _ => "error",
             }),
+            terminal: TerminalState::Running,
+            max_assistant_id: None,
         },
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AssistantMessage {
+    id: u64,
+    timestamp_ms: Option<f64>,
+    terminal: TerminalState,
+}
+
+fn session_messages_path(session_id: &str) -> String {
+    format!(
+        "/api/sessions/{}/messages?limit=50&order=latest",
+        urlencoding::encode(session_id)
+    )
+}
+
+fn parse_message_probe(body: &str) -> Option<Vec<AssistantMessage>> {
+    if body.len() > MAX_PROBE_BODY_BYTES {
+        return None;
+    }
+    let root: serde_json::Value = serde_json::from_str(body).ok()?;
+    let rows = root
+        .get("messages")
+        .or_else(|| root.get("data"))?
+        .as_array()?;
+    Some(
+        rows.iter()
+            .filter_map(|row| {
+                if row.get("role")?.as_str()? != "assistant" {
+                    return None;
+                }
+                let id = row.get("id")?.as_u64()?;
+                let content = row.get("content")?;
+                let nonempty = content.as_str().is_some_and(|s| !s.is_empty())
+                    || content.as_array().is_some_and(|a| !a.is_empty());
+                if !nonempty {
+                    return Some(AssistantMessage {
+                        id,
+                        timestamp_ms: None,
+                        terminal: TerminalState::Running,
+                    });
+                }
+                let finish = row
+                    .get("finish_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let terminal = match finish {
+                    "stop" => TerminalState::Completed,
+                    "error" | "failed" | "content_filter" => TerminalState::Failed,
+                    _ => TerminalState::Running,
+                };
+                Some(AssistantMessage {
+                    id,
+                    timestamp_ms: row
+                        .get("timestamp")
+                        .and_then(|v| v.as_f64())
+                        .map(|s| s * 1000.0),
+                    terminal,
+                })
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+fn match_terminal(body: &str, baseline_id: Option<u64>, started_at_ms: i64) -> TerminalState {
+    let Some(messages) = parse_message_probe(body) else {
+        return TerminalState::Running;
+    };
+    let Some(message) = messages.iter().max_by_key(|m| m.id) else {
+        return TerminalState::Running;
+    };
+    if baseline_id.is_some_and(|id| message.id <= id)
+        || !message_started_after(message.timestamp_ms, started_at_ms)
+    {
+        return TerminalState::Running;
+    }
+    message.terminal
+}
+
+fn message_started_after(timestamp_ms: Option<f64>, started_at_ms: i64) -> bool {
+    started_at_ms == 0 || timestamp_ms.is_some_and(|ts| ts >= started_at_ms as f64)
 }
 
 fn sanitize_title(value: &str) -> String {
@@ -487,19 +806,143 @@ mod tests {
 
     #[test]
     fn probe_contract_has_only_safe_categories() {
-        assert_eq!(PROBE_PATH, "/api/sessions?limit=1&offset=0");
+        assert_eq!(
+            session_messages_path("a/b ?"),
+            "/api/sessions/a%2Fb%20%3F/messages?limit=50&order=latest"
+        );
         assert_eq!(MAX_PLUGIN_UPDATE_FAILURES, 6);
         assert_eq!(
             ProbeResult {
                 ok: false,
                 status: Some(401),
-                error_category: Some("auth")
+                error_category: Some("auth"),
+                terminal: TerminalState::Running,
+                max_assistant_id: None,
             },
             ProbeResult {
                 ok: false,
                 status: Some(401),
-                error_category: Some("auth")
+                error_category: Some("auth"),
+                terminal: TerminalState::Running,
+                max_assistant_id: None,
             },
         );
+    }
+
+    #[test]
+    fn message_matcher_uses_largest_assistant_id_and_baseline() {
+        let body = r#"{"messages":[
+          {"id":7,"role":"assistant","content":"old","finish_reason":"stop"},
+          {"id":8,"role":"assistant","content":"new","finish_reason":"stop"},
+          {"id":99,"role":"user","content":"later"}
+        ]}"#;
+        assert_eq!(match_terminal(body, Some(7), 0), TerminalState::Completed);
+        assert_eq!(match_terminal(body, Some(8), 0), TerminalState::Running);
+    }
+
+    #[test]
+    fn first_probe_only_establishes_baseline() {
+        let body =
+            r#"{"data":[{"id":12,"role":"assistant","content":"done","finish_reason":"stop"}]}"#;
+        let result = ProbeResult {
+            ok: true,
+            status: Some(200),
+            error_category: None,
+            terminal: match_terminal(body, Some(11), 0),
+            max_assistant_id: Some(12),
+        };
+        assert_eq!(result.terminal_after(Some(12), true), None);
+        assert_eq!(
+            result.terminal_after(Some(11), false),
+            Some(TerminalState::Completed)
+        );
+    }
+
+    #[test]
+    fn tool_calls_does_not_fall_back_to_older_stop() {
+        let body = r#"{"messages":[
+          {"id":10,"role":"assistant","content":"done","finish_reason":"stop"},
+          {"id":11,"role":"assistant","content":"tool","finish_reason":"tool_calls"}
+        ]}"#;
+        assert_eq!(match_terminal(body, Some(9), 0), TerminalState::Running);
+    }
+
+    #[test]
+    fn failed_empty_and_malformed_messages_are_safe() {
+        assert_eq!(
+            match_terminal(
+                r#"{"messages":[{"id":2,"role":"assistant","content":"x","finish_reason":"error"}]}"#,
+                Some(1),
+                0
+            ),
+            TerminalState::Failed
+        );
+        assert_eq!(
+            match_terminal(
+                r#"{"messages":[{"id":2,"role":"assistant","content":"","finish_reason":"stop"}]}"#,
+                Some(1),
+                0
+            ),
+            TerminalState::Running
+        );
+        assert_eq!(match_terminal("{", Some(1), 0), TerminalState::Running);
+        assert!(parse_message_probe(&"x".repeat(1_048_577)).is_none());
+    }
+
+    #[test]
+    fn timestamp_boundary_and_ready_timeout_contract_are_present() {
+        assert!(message_started_after(Some(1_234.0), 1_000));
+        assert!(!message_started_after(Some(999.0), 1_000));
+        assert!(message_started_after(Some(1_999.0), 1_999));
+        assert!(message_started_after(Some(2_000.0), 2_000));
+        assert_eq!(READY_TIMEOUT_MS, 5_000);
+    }
+
+    #[test]
+    fn ready_failure_is_fail_closed_and_cleans_the_matching_monitor() {
+        let source = include_str!("session_foreground.rs");
+        assert!(source.contains("let ready = tokio::time::timeout"));
+        assert!(source.contains("matches!(ready.as_ref(), Ok(Ok(Ok(()))))"));
+        assert!(source.contains("foreground_monitor_matches"));
+        assert!(source.contains("monitor.handle.abort()"));
+        assert!(source.contains("action: \"stop\".to_string()"));
+        assert!(source.contains("baseline_timeout"));
+        assert!(source.contains("foreground monitor failed to become ready"));
+        assert!(source.contains("return Err(AppError::Internal("));
+    }
+
+    #[test]
+    fn terminal_update_is_retried_before_any_ordinary_update() {
+        let source = include_str!("session_foreground.rs");
+        let terminal = source
+            .find("if let Some(terminal) = result.terminal_after")
+            .unwrap();
+        let ordinary = source[terminal..].find("state: if result.ok").unwrap();
+        assert!(source[terminal..].contains("tokio::time::sleep"));
+        assert!(source[terminal..terminal + ordinary].contains("plugin_failures"));
+        assert!(!source[terminal..terminal + ordinary].contains("terminal_update_attempted"));
+    }
+
+    #[test]
+    fn every_monitor_plugin_update_is_owner_gated() {
+        let source = include_str!("session_foreground.rs");
+        assert!(source.contains("async fn plugin_if_foreground_monitor_owner"));
+        assert!(source.contains("async fn terminal_plugin_if_foreground_monitor_owner"));
+        assert!(
+            source
+                .matches("plugin_if_foreground_monitor_owner(")
+                .count()
+                >= 1
+        );
+        assert!(
+            source
+                .matches("terminal_plugin_if_foreground_monitor_owner(")
+                .count()
+                >= 1
+        );
+        assert!(
+            source.contains("let _operation = state.session_foreground_operation.lock().await;")
+        );
+        assert!(source.contains("inner.session_foreground_monitor.take()"));
     }
 }

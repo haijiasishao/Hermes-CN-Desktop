@@ -331,10 +331,13 @@ for (const forbidden of ["reqwest::Client", "bearer_auth", "authenticated_sessio
   }
 }
 for (const required of [
-  '"/api/sessions?limit=1&offset=0"',
+  '"/api/sessions/{}/messages?limit=50&order=latest"',
   "api_request_from_state",
   "plugin_unavailable",
   "MAX_PLUGIN_UPDATE_FAILURES",
+  '"completed"',
+  '"failed"',
+  "max_assistant_id",
 ]) {
   if (!foregroundRust.includes(required)) {
     console.error(`Missing safe foreground monitor contract: ${required}`);
@@ -353,7 +356,7 @@ for (const required of [
   "EXTRA_SESSION_ID",
   "EXTRA_TIMESTAMP",
   'args.action in setOf("start", "update", "stop")',
-  'args.state in setOf("starting", "connected", "probe_failed", "stopped")',
+  'args.state in setOf("starting", "connected", "probe_failed", "completed", "failed", "stopped")',
 ]) {
   if (!foregroundPlugin.includes(required)) {
     console.error(`Missing safe Kotlin plugin contract: ${required}`);
@@ -415,6 +418,10 @@ for (const required of [
   "ServiceCompat.stopForeground",
   "Log.i",
   "START_NOT_STICKY",
+  "STOP_FOREGROUND_DETACH",
+  '"已完成"',
+  '"执行失败"',
+  "terminalDetached",
 ]) {
   if (!foregroundService.includes(required)) {
     console.error(`Missing safe Kotlin service contract: ${required}`);

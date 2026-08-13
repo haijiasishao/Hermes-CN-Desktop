@@ -26,11 +26,11 @@ class SessionForegroundPlugin(private val activity: android.app.Activity) : Plug
       val args = invoke.parseArgs(SessionForegroundArgs::class.java)
       require(args.persistentSessionId.isNotBlank()) { "persistentSessionId required" }
       require(args.action in setOf("start", "update", "stop")) { "invalid foreground action" }
-      require(args.state in setOf("starting", "connected", "probe_failed", "stopped")) {
+      require(args.state in setOf("starting", "connected", "probe_failed", "completed", "failed", "stopped")) {
         "invalid foreground state"
       }
       require((args.action == "start" && args.state == "starting") ||
-        (args.action == "update" && args.state in setOf("connected", "probe_failed")) ||
+        (args.action == "update" && args.state in setOf("connected", "probe_failed", "completed", "failed")) ||
         (args.action == "stop" && args.state == "stopped")) { "invalid foreground action/state" }
       val intent = Intent(activity, SessionForegroundService::class.java).apply {
         putExtra(SessionForegroundService.EXTRA_SESSION_ID, args.persistentSessionId)
