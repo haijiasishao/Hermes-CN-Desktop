@@ -2,6 +2,7 @@ package cn.org.hermesagent.mobile
 
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import android.util.Log
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -24,6 +25,7 @@ class SessionForegroundPlugin(private val activity: android.app.Activity) : Plug
   fun sessionForeground(invoke: Invoke) {
     try {
       val args = invoke.parseArgs(SessionForegroundArgs::class.java)
+      Log.e("SessionForegroundPlugin", "DIAG action=${args.action} sessionId=${args.persistentSessionId} state=${args.state} seq=${args.heartbeatSequence} ts=${args.timestampMs} now=${System.currentTimeMillis()}")
       require(args.persistentSessionId.isNotBlank()) { "persistentSessionId required" }
       require(args.action in setOf("start", "update", "stop")) { "invalid foreground action" }
       require(args.state in setOf("starting", "connected", "probe_failed", "completed", "failed", "stopped")) {
@@ -53,8 +55,10 @@ class SessionForegroundPlugin(private val activity: android.app.Activity) : Plug
         }
         else -> error("invalid foreground action")
       }
+      Log.e("SessionForegroundPlugin", "DIAG action=${args.action} RESOLVED ok sessionId=${args.persistentSessionId}")
       invoke.resolve()
     } catch (error: Exception) {
+      Log.e("SessionForegroundPlugin", "DIAG REJECTED: ${error.message}", error)
       invoke.reject(error.message ?: "无法启动后台链路诊断服务")
     }
   }

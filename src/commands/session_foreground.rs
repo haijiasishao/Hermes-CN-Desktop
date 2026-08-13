@@ -216,6 +216,7 @@ pub async fn session_foreground_start(
     if let Some(old_monitor) = old_monitor {
         old_monitor.handle.abort();
         let old_session_id = old_monitor.persistent_session_id;
+        log::error!("session-fgs.DIAG old_monitor_stop session_id={}", old_session_id);
         if plugin(
             &app,
             PluginInput {
@@ -230,12 +231,13 @@ pub async fn session_foreground_start(
         .await
         .is_err()
         {
-            log::warn!("session-fgs.monitor.error error_category=old_service_stop_failed");
+            log::error!("session-fgs.DIAG old_service_stop_failed");
         }
     }
     let generation = next_session_foreground_generation();
     let started_at_ms = input.timestamp_ms;
     let session_id = input.persistent_session_id;
+    log::error!("session-fgs.DIAG plugin_start session_id={} generation={} ts={}", session_id, generation, started_at_ms);
     plugin(
         &app,
         PluginInput {
@@ -272,24 +274,22 @@ pub async fn session_foreground_start(
                 )
                 .await
             };
-            log::debug!(
-                "session-fgs.transport.probe session_id={} sequence={} ok={} status={:?} error_category={:?} terminal={:?}",
-                monitor_task_session_id,
-                sequence,
-                result.ok,
-                result.status,
-                result.error_category,
-                result.terminal
+            log::error!(
+                "session-fgs.DIAG probe session_id={} sequence={} ok={} status={:?} err={:?} terminal={:?} max_id={:?}",
+                monitor_task_session_id, sequence, result.ok, result.status, result.error_category, result.terminal, result.max_assistant_id
             );
             if let Some(sender) = ready_tx.take() {
                 baseline_id = result.max_assistant_id;
                 let ready_failed = !result.ok;
+                log::error!("session-fgs.DIAG baseline session_id={} failed={} baseline_id={:?}", monitor_task_session_id, ready_failed, baseline_id);
                 let _ = sender.send(if ready_failed { Err(()) } else { Ok(()) });
                 if ready_failed {
+                    log::error!("session-fgs.DIAG baseline_fail_closed session_id={}", monitor_task_session_id);
                     return;
                 }
             }
             if let Some(terminal) = result.terminal_after(baseline_id, first_probe) {
+                log::error!("session-fgs.DIAG terminal_detected session_id={} terminal={:?} seq={}", monitor_task_session_id, terminal, sequence);
                 let app_state = monitor_app.state::<AppState>();
                 let update = terminal_plugin_if_foreground_monitor_owner(
                     &monitor_app,
@@ -412,7 +412,9 @@ pub async fn session_foreground_start(
     }
     let _ = start_tx.send(());
     let ready = tokio::time::timeout(Duration::from_millis(READY_TIMEOUT_MS), ready_rx).await;
+    log::error!("session-fgs.DIAG ready_result session_id={} is_ok={:?} ready={:?}", session_id, ready.is_ok(), ready.as_ref().map(|r| r.as_ref().map(|r2| r2.is_ok())));
     if !matches!(ready.as_ref(), Ok(Ok(Ok(())))) {
+        log::error!("session-fgs.DIAG ready_timeout_fail_closed session_id={}", session_id);
         let monitor = take_matching_monitor(&state, &session_id, generation)?;
         if let Some(monitor) = monitor {
             monitor.handle.abort();

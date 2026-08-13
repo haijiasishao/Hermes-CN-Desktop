@@ -24,6 +24,7 @@ export async function startAndroidSessionForeground(input: AndroidSessionForegro
 export async function stopAndroidSessionForeground(persistentSessionId: string): Promise<void> {
   if (!runtime.androidRemoteOnly || !window.hermesDesktop?.sessionForegroundStop) return;
   try {
+    console.error(`[FGS-DIAG] stopAndroidSessionForeground called sessionId=${persistentSessionId} at=${Date.now()}`, new Error().stack);
     await window.hermesDesktop.sessionForegroundStop({ persistentSessionId });
     recordNotificationDebug("session-fgs.stopped", { sessionId: persistentSessionId, ts: Date.now() });
   } catch {

@@ -1312,6 +1312,7 @@ export const applyGatewayEventAtom = atom(null, (get, set, event: GatewayEvent) 
   if (event.type === "message.complete" || event.type === "error") {
     const persistentSessionId = resolvePersistentSessionId(event.session_id) ?? event.session_id;
     clearActiveTurn(persistentSessionId);
+    console.error(`[FGS-DIAG] chat.ts ${event.type} stopFGS sessionId=${event.session_id} persistent=${persistentSessionId} at=${Date.now()}`);
     void stopAndroidSessionForeground(persistentSessionId);
   }
   // 通知决策需要 reduce 前的快照（pendingApprovals / activeAssistantId 是
