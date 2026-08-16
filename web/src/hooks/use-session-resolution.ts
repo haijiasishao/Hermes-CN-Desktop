@@ -8,7 +8,11 @@ import {
   type ChatSessionRuntime,
 } from "@/stores/chat";
 import { isRuntimeRunning } from "@/lib/session-activity";
-import { resolveGatewaySessionId, resolvePersistentSessionId } from "@/lib/session-map";
+import {
+  isPersistentSessionShape,
+  resolveGatewaySessionId,
+  resolvePersistentSessionId,
+} from "@/lib/session-map";
 
 export interface SessionResolution {
   restSessionId: string | undefined;
@@ -21,6 +25,47 @@ export interface SessionResolution {
   isLiveSession: boolean;
 }
 
+export interface GatewaySessionTarget {
+  gatewaySessionId: string;
+  resumePersistentSessionId?: string;
+}
+
+// Decide which id a send should target. A route can retain an old gateway id
+// after reconnect cleanup, while its REST lookup still resolves to the
+// persistent session. In that case the persistent id must be resumed before
+// sending; a live mapped gateway id remains authoritative when present.
+//
+// Safety rule: NEVER submit through a raw ephemeral id. When the route id is
+// not the persistent shape and resolution failed (map pruned by reconnect),
+// the only valid target is the active persistent session — submitting the
+// ephemeral id yields `session not found` (hermes-debug-1786751599120).
+export function resolveGatewaySessionTarget(params: {
+  taskId: string;
+  restSessionId: string | undefined;
+  activeMappedGatewaySessionId: string | undefined;
+  activePersistentSessionId?: string | undefined;
+}): GatewaySessionTarget {
+  if (params.activeMappedGatewaySessionId) {
+    return { gatewaySessionId: params.activeMappedGatewaySessionId };
+  }
+  if (params.restSessionId) {
+    return {
+      gatewaySessionId: params.restSessionId,
+      resumePersistentSessionId: params.restSessionId,
+    };
+  }
+  // traceable persistent fallback: the route id was an ephemeral gateway id
+  // whose mapping vanished (or a bare unknown id). Resume the last known
+  // persistent session instead of submitting the dead id.
+  if (params.activePersistentSessionId) {
+    return {
+      gatewaySessionId: params.activePersistentSessionId,
+      resumePersistentSessionId: params.activePersistentSessionId,
+    };
+  }
+  return { gatewaySessionId: params.taskId };
+}
+
 // Pure so it can be unit-tested without React. Decides which runtime bucket the
 // detail view should render for `taskId`.
 export function resolveSessionRuntime(
@@ -28,7 +73,16 @@ export function resolveSessionRuntime(
   gwSessionId: string | null,
   runtimeBySession: ChatRuntimeBySession,
 ): SessionResolution {
-  const restSessionId = resolvePersistentSessionId(taskId);
+  // REST detail/messages must ONLY ever see the persistent form. When the map
+  // is intact this resolves the gateway→persistent alias; when the map was
+  // pruned by a reconnect the raw taskId would fall back to the gateway id and
+  // /api/sessions/{id} answers 404 (`session not found` on the history pane
+  // after background recovery). If the route id is not already the persistent
+  // shape and cannot be resolved, drop it so callers resume/redirect instead
+  // of issuing a doomed REST request (hermes-debug-1786751599120).
+  const resolvedRestId = taskId ? resolvePersistentSessionId(taskId) : undefined;
+  const restSessionId =
+    resolvedRestId && isPersistentSessionShape(resolvedRestId) ? resolvedRestId : undefined;
 
   // The live gateway session is the ground truth for what is streaming *right
   // now*. When it belongs to the same persistent session this route is showing,
@@ -41,14 +95,25 @@ export function resolveSessionRuntime(
     gwSessionId && resolvePersistentSessionId(gwSessionId) === restSessionId
       ? gwSessionId
       : undefined;
-  const mappedGatewaySessionId = liveGatewaySessionId ?? resolveGatewaySessionId(taskId);
-  const activeMappedGatewaySessionId =
-    mappedGatewaySessionId &&
-    (gwSessionId === mappedGatewaySessionId || runtimeBySession[mappedGatewaySessionId])
-      ? mappedGatewaySessionId
-      : undefined;
-  const runtimeSessionId =
-    taskId && runtimeBySession[taskId] ? taskId : activeMappedGatewaySessionId;
+  // A SEND target must be a gateway session minted by the CURRENT socket era.
+  // Mappings that survived from a previous connection point at gateway
+  // sessions the server has reaped; a prompt.submit to them fails with
+  // `session not found`. So only the live gateway id is ever an active send
+  // target — when it does not belong to this task the caller must resume the
+  // persistent id instead of reusing a stale mapped id. (resolveGatewaySessionId
+  // remains valid for READ-side bucket lookup below.)
+  const activeMappedGatewaySessionId = liveGatewaySessionId ?? undefined;
+  const mappedGatewaySessionIdForRead = resolveGatewaySessionId(taskId);
+  const runtimeSessionId = (() => {
+    if (taskId && runtimeBySession[taskId]) return taskId;
+    if (activeMappedGatewaySessionId && runtimeBySession[activeMappedGatewaySessionId]) {
+      return activeMappedGatewaySessionId;
+    }
+    if (mappedGatewaySessionIdForRead && runtimeBySession[mappedGatewaySessionIdForRead]) {
+      return mappedGatewaySessionIdForRead;
+    }
+    return undefined;
+  })();
   const runtime = taskId
     ? runtimeBySession[runtimeSessionId ?? taskId] ?? createEmptyChatRuntime()
     : createEmptyChatRuntime();
@@ -56,8 +121,9 @@ export function resolveSessionRuntime(
   const isGatewayLinked = Boolean(
     taskId &&
       (gwSessionId === taskId ||
-        gwSessionId === activeMappedGatewaySessionId ||
-        resolvePersistentSessionId(gwSessionId ?? undefined) === restSessionId),
+        (gwSessionId !== null && gwSessionId !== undefined &&
+          (gwSessionId === activeMappedGatewaySessionId ||
+            resolvePersistentSessionId(gwSessionId) === restSessionId))),
   );
 
   // Stay in live mode whenever runtime messages have unsynced content, regardless

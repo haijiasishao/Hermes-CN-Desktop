@@ -27,7 +27,10 @@ import { useConfig, useModelInfo } from "@/hooks/use-config";
 import { useModelOptions } from "@/hooks/use-model-options";
 import { useComposerTimer } from "@/hooks/use-composer-timer";
 import { useStallWatchdog } from "@/hooks/use-stall-watchdog";
-import { useSessionResolution } from "@/hooks/use-session-resolution";
+import {
+  resolveGatewaySessionTarget,
+  useSessionResolution,
+} from "@/hooks/use-session-resolution";
 import { useSessionUsagePolling } from "@/hooks/use-session-usage-polling";
 import { recordModelUsage } from "@/lib/model-usage-log";
 import { readSessionModelOverride } from "@/lib/session-model-override";
@@ -37,6 +40,7 @@ import { resolveComposerSkillCommand } from "@/lib/composer-skills";
 import { formatCompressNotice } from "@/lib/compress-feedback";
 import { formatElapsedTimer } from "@/lib/format";
 import { getGatewayClient } from "@/lib/gateway-client";
+import { getActivePersistentSessionId, resolvePersistentSessionId } from "@/lib/session-map";
 import { useSessionTurnStats } from "@/hooks/use-session-turn-stats";
 import {
   buildComposerContextUsage,
@@ -304,7 +308,16 @@ export function DetailRoute() {
 
   const ensureGatewaySession = useCallback(async (): Promise<string> => {
     if (!taskId) throw new Error("缺少会话 ID");
-    if (restSessionId && taskId === restSessionId && !activeMappedGatewaySessionId) {
+    const target = resolveGatewaySessionTarget({
+      taskId,
+      restSessionId,
+      activeMappedGatewaySessionId,
+      // When the route id is still an ephemeral gateway id whose mapping the
+      // reconnect pruned, resume the last known persistent session instead of
+      // submitting the dead id (`session not found`, hermes-debug-1786751599120).
+      activePersistentSessionId: getActivePersistentSessionId(),
+    });
+    if (target.resumePersistentSessionId) {
       // No URL navigate after the resume — atom + gwSessionIdAtom hold
       // the authoritative state; downstream callers go through
       // resolveGatewaySessionId / resolvePersistentSessionId helpers
@@ -312,9 +325,9 @@ export function DetailRoute() {
       // to live here was the source of #52 (closure-stale replace
       // yanking the URL back to the previous session after rapid
       // switches). See #53 for the broader rework.
-      return await resumeSession(restSessionId);
+      return await resumeSession(target.resumePersistentSessionId);
     }
-    return activeMappedGatewaySessionId ?? taskId;
+    return target.gatewaySessionId;
   }, [activeMappedGatewaySessionId, restSessionId, resumeSession, taskId]);
 
   // Follow the backend's compression tip (issue #305). When a session.resume is
@@ -396,7 +409,10 @@ export function DetailRoute() {
   ) => {
     if (!taskId) return;
     const gatewaySessionId = await ensureGatewaySession();
-    const persistentSessionId = taskId ?? restSessionId;
+    // FGS state is keyed by PERSISTENT session id only; a gateway id rotates
+    // across reconnects and would desync the native foreground service
+    // (stop/update matching). restSessionId resolves the persistent form.
+    const persistentSessionId = restSessionId ?? resolvePersistentSessionId(taskId) ?? taskId;
     await startAndroidSessionForeground({
       persistentSessionId,
       title: "后台链路诊断",
@@ -463,8 +479,23 @@ export function DetailRoute() {
       enqueueQueuedPrompt(taskId, { text: payload.text, attachments: payload.attachments }, Date.now());
       return;
     }
-    await submitPayload(payload, controls.updateAttachment);
-  }, [ensureGatewaySession, runManualCompress, runtimeIsBusy, submitPayload, taskId]);
+    try {
+      await submitPayload(payload, controls.updateAttachment);
+    } catch (error) {
+      // Never swallow a failed send silently (hermes-debug-1786764876908:
+      // third send after a reconnect produced zero feedback — no composer
+      // error, no console line, nothing). Surface it inline so the user can
+      // react, then rethrow for the composer's attachment cleanup.
+      const message = error instanceof Error ? error.message : String(error ?? "未知错误");
+      console.error("Failed to submit session:", error);
+      appendNotice({
+        sessionId: taskId,
+        text: `发送失败：${message}`,
+        level: "error",
+      });
+      throw error;
+    }
+  }, [appendNotice, ensureGatewaySession, runManualCompress, runtimeIsBusy, submitPayload, taskId]);
 
   // ---- Send queue (drain on settle, send-now / edit / delete) --------------
   const queuedPrompts = useQueuedPrompts(taskId);

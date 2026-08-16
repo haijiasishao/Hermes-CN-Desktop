@@ -443,6 +443,7 @@ const ANDROID_REMOTE_HIDDEN_COMMAND_IDS = new Set([
   "command-memory",
   "command-external-memory",
   "command-console",
+  "command-backup",
 ]);
 
 export function getVisibleCommandPaletteItems(

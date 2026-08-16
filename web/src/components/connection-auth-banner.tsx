@@ -20,19 +20,32 @@ export function ConnectionAuthBanner() {
   const desktop = typeof window !== "undefined" ? window.hermesDesktop : undefined;
 
   useEffect(() => {
-    // Tauri event: REST 401 / WS mint 401 carry the gateway base URL.
+    // Tauri native event (REST 401 / WS mint 401 carry the gateway base URL);
+    // the Kotlin-native rebuild routes this through window.HermesBridge.
     let unlisten: (() => void) | undefined;
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen<{ baseUrl?: string }>("connection-auth-expired", (event) => {
-          setBaseUrl(event.payload?.baseUrl ?? null);
-          setExpired(true);
-        }),
-      )
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch(() => {});
+    const listenNative = async () => {
+      const { isNativeBridge, nativeListen } = await import("@/lib/hermes-native-bridge");
+      if (!isNativeBridge()) return false;
+      unlisten = await nativeListen<{ baseUrl?: string }>("connection-auth-expired", (payload) => {
+        setBaseUrl(payload?.baseUrl ?? null);
+        setExpired(true);
+      });
+      return true;
+    };
+    void listenNative().then((used) => {
+      if (used) return;
+      void import("@tauri-apps/api/event")
+        .then(({ listen }) =>
+          listen<{ baseUrl?: string }>("connection-auth-expired", (event) => {
+            setBaseUrl(event.payload?.baseUrl ?? null);
+            setExpired(true);
+          }),
+        )
+        .then((fn) => {
+          unlisten = fn;
+        })
+        .catch(() => {});
+    });
 
     // Gateway event: a 4401/4403 WS close (no base URL — reuse the saved one).
     const off = getGatewayClient().on("gateway.auth_required", () => setExpired(true));

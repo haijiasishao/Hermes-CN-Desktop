@@ -466,7 +466,7 @@ describe("notifyFromGatewayEvent", () => {
     );
   });
 
-  it("records Android native foreground diagnostics without message text", async () => {
+  it("merges completion into the FGS on Android (no standalone notify, no message text)", async () => {
     const { notifyFromGatewayEvent, debugBus } = await loadNotifications();
     const desktopNotify = vi.fn().mockResolvedValue({
       delivered: false,
@@ -488,24 +488,18 @@ describe("notifyFromGatewayEvent", () => {
     );
     await flushAsync();
 
-    const nativeResult = debugBus
+    // Merged design (2026-08-15): on Android the terminal FGS update is the
+    // completion notification; the standalone desktop notify is skipped.
+    expect(desktopNotify).not.toHaveBeenCalled();
+    const merged = debugBus
       .snapshot()
-      .find((entry) => entry.summary === "notification.native.result");
-    expect(nativeResult?.payload).toMatchObject({
-      source: "gateway-event",
-      respectFocus: true,
-      delivered: false,
-      focused: true,
-      visible: false,
-      rawFocused: true,
-      rawVisible: false,
-      effectiveForeground: true,
-      documentVisibilityState: "unavailable",
-      documentHasFocus: null,
-      attentionRequested: false,
-      error: null,
+      .find((entry) => entry.summary === "notification.gateway-event.merged_fgs");
+    expect(merged?.payload).toMatchObject({
+      eventType: "message.complete",
+      sessionId: "s1",
+      kind: "complete",
     });
-    expect(JSON.stringify(nativeResult?.payload)).not.toContain("后台任务");
+    expect(JSON.stringify(merged?.payload)).not.toContain("后台任务");
   });
 
   it("does not notify a completion event when no turn is active", async () => {
@@ -648,20 +642,16 @@ describe("notifyFromReconnectSnapshot", () => {
     notifyFromReconnectSnapshot("s1", runtime, restData);
     await flushAsync();
 
-    expect(desktopNotify).toHaveBeenCalledTimes(1);
-    expect(desktopNotify).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "complete",
-        title: "任务完成",
-        respectFocus: false,
-      }),
-    );
+    // Merged design (2026-08-15): on Android the reattach snapshot converges
+    // the FGS entry (use-gateway snapshotCompleted branch) and the standalone
+    // desktop notify is skipped.
+    expect(desktopNotify).not.toHaveBeenCalled();
     const entries = debugBus.snapshot();
     expect(entries.map((entry) => entry.summary)).toEqual(
       expect.arrayContaining([
         "notification.reconnect-snapshot.started",
         "notification.reconnect-snapshot.matched",
-        "notification.native.result",
+        "notification.reconnect-snapshot.merged_fgs",
       ]),
     );
     const matched = entries.find(
@@ -672,13 +662,13 @@ describe("notifyFromReconnectSnapshot", () => {
       activeAssistantId: "live-assistant-100",
       assistantStatus: "complete",
     });
-    const nativeResult = entries.find((entry) => entry.summary === "notification.native.result");
-    expect(nativeResult?.payload).toMatchObject({
-      source: "reconnect-snapshot",
-      delivered: true,
-      focused: false,
-      visible: true,
-      error: null,
+    const merged = entries.find(
+      (entry) => entry.summary === "notification.reconnect-snapshot.merged_fgs",
+    );
+    expect(merged?.payload).toMatchObject({
+      sessionId: "s1",
+      persistentSessionId: "s1",
+      kind: "complete",
     });
     expect(JSON.stringify(matched?.payload)).not.toContain("好的");
   });
@@ -772,6 +762,57 @@ describe("notifyFromReconnectSnapshot", () => {
     await flushAsync();
 
     expect(desktopNotify).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a mid-turn tool-call round as the terminal answer", async () => {
+    const { notifyFromReconnectSnapshot, debugBus } = await loadNotifications();
+    const desktopNotify = vi.fn();
+    (globalThis as any).window = androidWindow(desktopNotify);
+
+    const runtime = runtimeWith({
+      streamStatus: "connecting",
+      turnStartedAt: 50,
+      activeAssistantId: "live-assistant-100",
+    });
+
+    // Hermes persists every assistant round-trip, including in-flight tool-call
+    // rounds, with a complete status. A stored assistant that still carries a
+    // running tool part is NOT the terminal answer — matching it would converge
+    // the FGS to completed while the agent is still working
+    // (hermes-debug-1786772272797: stored-84739 matched 46s before Turn ended).
+    const restData: MessagesResponse = {
+      session_id: "s1",
+      messages: [],
+      ui_messages: [
+        {
+          id: "mid1",
+          sessionId: "s1",
+          role: "assistant",
+          createdAt: 100,
+          status: "complete",
+          parts: [
+            {
+              type: "tool",
+              toolCallId: "call-1",
+              name: "terminal",
+              state: "running",
+              input: {},
+              startedAt: 100,
+            },
+            { type: "text", text: "正在执行工具" },
+          ],
+        },
+      ],
+    };
+
+    notifyFromReconnectSnapshot("s1", runtime, restData);
+    await flushAsync();
+
+    expect(desktopNotify).not.toHaveBeenCalled();
+    const skipped = debugBus
+      .snapshot()
+      .find((entry) => entry.summary === "notification.reconnect-snapshot.skipped");
+    expect(skipped?.payload).toMatchObject({ reason: "no_matching_final_assistant" });
   });
 
   it("fires error notification when REST shows errored turn", async () => {

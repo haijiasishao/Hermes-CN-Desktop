@@ -89,6 +89,16 @@ export function isTauriDevMode(envDev = import.meta.env.DEV): boolean {
   return envDev;
 }
 
+// ── Kotlin-native transport ────────────────────────────────────────────
+// The Android rebuild injects window.HermesBridge (Kotlin @JavascriptInterface).
+// When present, all bridge commands route through it instead of Tauri IPC,
+// keeping every business call site and test intact.
+import { isNativeBridge, nativeInvoke, nativeListen } from "./hermes-native-bridge";
+
+export function isKotlinNative(): boolean {
+  return isNativeBridge();
+}
+
 const BASE64_CHUNK_SIZE = 0x8000;
 type TauriFileDropPosition = {
   x: number;
@@ -133,6 +143,7 @@ export function arrayBufferToBase64(data: ArrayBuffer): string {
 }
 
 async function ensureInvoke() {
+  if (isNativeBridge()) return nativeInvoke as unknown as typeof invoke;
   if (!invoke) {
     const mod = await import("@tauri-apps/api/core");
     invoke = mod.invoke;
@@ -551,6 +562,10 @@ const tauriBridge = {
 
   async sessionForegroundStart(input: AndroidSessionForegroundInput): Promise<AndroidSessionForegroundResult> {
     return invokeCommand("session_foreground_start", { input });
+  },
+
+  async sessionForegroundUpdate(input: AndroidSessionForegroundInput): Promise<AndroidSessionForegroundResult> {
+    return invokeCommand("session_foreground_update", { input });
   },
 
   async sessionForegroundStop(input: { persistentSessionId: string }): Promise<AndroidSessionForegroundResult> {
@@ -1051,8 +1066,9 @@ export function shouldWaitForManagedRuntimeConfig(config: {
   connectionMode?: "managed" | "local" | "remote";
   managedRuntimeDesiredState?: import("@hermes/protocol").ManagedRuntimeDesiredState;
 }): boolean {
-  if (config.apiBaseUrl) return false;
   const connectionMode = config.connectionMode ?? "managed";
+  if (connectionMode === "remote" || connectionMode === "local") return false;
+  if (config.apiBaseUrl) return false;
   const managedRuntimeShouldRun =
     connectionMode === "managed" &&
     (config.managedRuntimeDesiredState ?? "running") === "running";

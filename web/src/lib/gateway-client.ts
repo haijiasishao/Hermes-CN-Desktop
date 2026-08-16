@@ -1,5 +1,6 @@
 import { parseGatewayEvent, type GatewayEvent } from "@hermes/protocol";
 import { runtime } from "./runtime";
+import { debugBus } from "./debug-bus";
 
 export type ConnectionState = "idle" | "connecting" | "open" | "closed" | "error";
 
@@ -297,7 +298,9 @@ export class GatewayClient {
       this.pending.delete(String(frame.id));
       clearTimeout(p.timer);
       if (frame.error) {
-        p.reject(new Error(frame.error.message ?? `RPC error ${frame.error.code}`));
+        const message = frame.error.message ?? `RPC error ${frame.error.code}`;
+        this.recordRpcFailure(frame.id ?? "unknown", undefined, message);
+        p.reject(new Error(message));
       } else {
         p.resolve(frame.result);
       }
@@ -336,14 +339,23 @@ export class GatewayClient {
     await this.connect(connectTimeoutMs === undefined ? undefined : { timeoutMs: connectTimeoutMs });
 
     return new Promise((resolve, reject) => {
+      const fail = (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error ?? "unknown RPC error");
+        // RPC failures were invisible in debug bundles (hermes-debug-1786764876908):
+        // only REST failures reached the bus, so a dead prompt.submit looked
+        // like a frozen send button. Record every RPC failure — method,
+        // params (redacted to id + string keys), error text.
+        this.recordRpcFailure(method, params, message);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        reject(new Error("WebSocket not connected"));
+        fail(new Error("WebSocket not connected"));
         return;
       }
       const id = `w${this.nextId++}`;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`RPC timeout: ${method}`));
+        fail(new Error(`RPC timeout: ${method}`));
       }, timeoutMs);
 
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
@@ -352,7 +364,7 @@ export class GatewayClient {
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        fail(error);
       }
     });
   }
@@ -362,6 +374,30 @@ export class GatewayClient {
     const set = this.typedListeners.get(type)!;
     set.add(cb);
     return () => set.delete(cb);
+  }
+
+  /**
+   * Record an RPC failure into the exported debug bus (Android-only) so a
+   * dead prompt.submit / session.resume is visible in debug archives. Before
+   * this, only REST failures reached the bus and a frozen send produced zero
+   * evidence (hermes-debug-1786764876908). Redacts params to method + known
+   * string ids — never message text.
+   */
+  private recordRpcFailure(
+    method: string,
+    params: Record<string, unknown> | undefined,
+    message: string,
+  ): void {
+    if (!runtime.androidRemoteOnly) return;
+    const ids = params ? Object.fromEntries(
+      Object.entries(params).filter(([key]) => key.includes("session") || key === "id"),
+    ) : undefined;
+    debugBus.push({
+      type: "gateway",
+      level: "error",
+      summary: `rpc.failure · ${method}`,
+      payload: { method, rpcId: String(method), params: ids, error: message.slice(0, 500) },
+    });
   }
 
   onAny(cb: (ev: GatewayEvent) => void): () => void {

@@ -47,13 +47,23 @@ describe("pickTipRedirect", () => {
     ).toBeNull();
   });
 
-  it("returns null when the active id already equals the tip", () => {
+  it("projects onto the persistent tip even when the active atom already equals the tip", () => {
+    // Regression (hermes-debug-1786751599120): after a background reconnect
+    // the snapshot-completed branch prunes the gateway→persistent map and the
+    // sidebar atom may already hold the persistent id. The old guard
+    // `tip !== activeSessionId` returned null here and left the URL pinned to
+    // the dead gateway id → history 404 + next send `session not found`. The
+    // URL is what needs fixing, so the redirect must fire.
     expect(
       pickTipRedirect(
-        { old: "tip" },
-        { taskId: "old", restSessionId: "old", activeSessionId: "tip" },
+        { "20260815_123456_old": "20260815_123456_tip" },
+        {
+          taskId: "20260815_123456_old",
+          restSessionId: "20260815_123456_old",
+          activeSessionId: "20260815_123456_tip",
+        },
       ),
-    ).toBeNull();
+    ).toBe("20260815_123456_tip");
   });
 
   it("returns null when there is no redirect for the current ids", () => {

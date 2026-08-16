@@ -43,8 +43,11 @@ export const ADVANCED_ITEMS: readonly AdvancedItem[] = [
 
 export function getVisibleAdvancedItems(androidRemoteOnly: boolean): readonly AdvancedItem[] {
   if (!androidRemoteOnly) return ADVANCED_ITEMS;
+  // Android Remote-only: the "/about" page renders the platform-specific
+  // mobile build info instead of desktop update/DevTools content, so it stays
+  // visible. Kernel & environment inspection remain desktop-owned.
   return ADVANCED_ITEMS.filter(
-    (item) => item.path !== "/kernel" && item.path !== "/env" && item.path !== "/about",
+    (item) => item.path !== "/kernel" && item.path !== "/env",
   );
 }
 

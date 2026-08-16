@@ -1,4 +1,7 @@
 import { atom } from "jotai";
+import {
+  readNotificationSettings,
+} from "@/stores/ui";
 import type {
   GatewayEvent,
   GatewayMessageUsageT,
@@ -16,9 +19,14 @@ import {
   imagePartFromSource,
 } from "@/lib/message-images";
 import { notifyFromGatewayEvent } from "@/lib/notifications";
-import { stopAndroidSessionForeground } from "@/lib/android-session-foreground";
+import {
+  foregroundStateForGatewayEvent,
+  stopAndroidSessionForeground,
+  updateAndroidSessionForeground,
+} from "@/lib/android-session-foreground";
 import {
   clearActiveTurn,
+  getActiveTurn,
   rememberActiveTurn,
   rememberGatewaySessionInfo,
   resolvePersistentSessionId,
@@ -175,6 +183,14 @@ function sessionIdFor(runtime: ChatSessionRuntime, event: GatewayEvent): string 
 
 function isStreamingStatus(status: StreamStatus): boolean {
   return status === "streaming" || status === "connecting";
+}
+
+function hasActiveTurn(runtime: ChatSessionRuntime | undefined): boolean {
+  return Boolean(
+    runtime &&
+      !runtime.interrupted &&
+      (runtime.activeAssistantId || runtime.turnStartedAt || isStreamingStatus(runtime.streamStatus)),
+  );
 }
 
 function textFromParts(parts: HermesMessagePart[]): string {
@@ -1302,18 +1318,78 @@ function persistCompletedTurnStats(runtime: ChatSessionRuntime, event: GatewayEv
 }
 
 export const applyGatewayEventAtom = atom(null, (get, set, event: GatewayEvent) => {
-  if (!event.session_id) return;
+  if (!event.session_id) {
+    if (event.type === "gateway.disconnected") {
+      const foregroundState = foregroundStateForGatewayEvent(event);
+      if (foregroundState) {
+        for (const [sessionId, currentRuntime] of Object.entries(get(chatRuntimeBySessionAtom))) {
+          if (!hasActiveTurn(currentRuntime)) continue;
+          const persistentSessionId = resolvePersistentSessionId(sessionId) ?? sessionId;
+          void updateAndroidSessionForeground({
+            persistentSessionId,
+            title: "后台链路诊断",
+            state: foregroundState,
+            heartbeatSequence: 0,
+            timestampMs: Date.now(),
+          });
+        }
+      }
+    }
+    return;
+  }
   if (event.type === "session.info") {
     rememberGatewaySessionInfo(event.session_id, event.payload);
   }
+  const currentRuntime = get(chatRuntimeBySessionAtom)[event.session_id];
+  const foregroundState = foregroundStateForGatewayEvent(event);
   // 回合到达终态后，活动回合检查点不再有效：内存 runtime 还在（reducer 会
   // 清除 activeAssistantId），但 WebView 重建场景下必须同步清除，否则下次
   // 重连会把已经完成的旧回合当作在飞回合恢复，误补发通知。
   if (event.type === "message.complete" || event.type === "error") {
     const persistentSessionId = resolvePersistentSessionId(event.session_id) ?? event.session_id;
+    const terminalState = event.type === "message.complete" ? "completed" : "failed";
+    // 终态更新不依赖内存活跃回合（hasActiveTurn）：WebView 重建后 runtime
+    // 被清空时 complete 事件仍必须收敛 FGS，否则常驻通知永远停留在
+    // "思考中"（hermes-debug-1786772272797 时间线 13:34-13:35）。checkpoint
+    // 或内存活跃回合任一存在即认为该会话的 FGS 应进入终态；历史 idle
+    // 会话（无 checkpoint 无活跃回合）不更新，避免误收敛从未启动的 FGS。
+    // update 按 persistentSessionId 键控且 sequence 单调，重复终态更新幂等。
+    const trackedTurn = hasActiveTurn(currentRuntime) || Boolean(getActiveTurn(persistentSessionId));
+    if (foregroundState && trackedTurn) {
+      // Merged completion design (2026-08-15): the terminal FGS update IS the
+      // task-complete notification now. Alert (sound+vibrate+heads-up) only
+      // when the app is backgrounded AND the user enabled only-background
+      // notifications; foreground terminal updates stay silent (the FGS entry
+      // simply flips to 已完成).
+      const settings = readNotificationSettings();
+      const documentHidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+      const shouldAlert =
+        settings.onComplete &&
+        settings.system &&
+        documentHidden &&
+        settings.onlyBackground;
+      void updateAndroidSessionForeground({
+        persistentSessionId,
+        title: "后台链路诊断",
+        state: terminalState,
+        heartbeatSequence: 0,
+        timestampMs: Date.now(),
+        alert: shouldAlert,
+      });
+    }
     clearActiveTurn(persistentSessionId);
-    console.error(`[FGS-DIAG] chat.ts ${event.type} stopFGS sessionId=${event.session_id} persistent=${persistentSessionId} at=${Date.now()}`);
-    void stopAndroidSessionForeground(persistentSessionId);
+  } else if (
+    foregroundState &&
+    hasActiveTurn(currentRuntime)
+  ) {
+    const persistentSessionId = resolvePersistentSessionId(event.session_id) ?? event.session_id;
+    void updateAndroidSessionForeground({
+      persistentSessionId,
+      title: "后台链路诊断",
+      state: foregroundState,
+      heartbeatSequence: 0,
+      timestampMs: Date.now(),
+    });
   }
   // 通知决策需要 reduce 前的快照（pendingApprovals / activeAssistantId 是
   // 防重放依据），在 set 之外读取——jotai 不承诺 updater 恰好执行一次。

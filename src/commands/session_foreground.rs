@@ -73,13 +73,28 @@ struct PluginInput {
     timestamp_ms: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeDiagnosticPluginInput {
+    action: &'static str,
+    persistent_session_id: String,
+    heartbeat_sequence: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
+    category: &'static str,
+    error_code: &'static str,
+}
+
 const MAX_PLUGIN_UPDATE_FAILURES: u8 = 6;
 
 pub const fn heartbeat_interval_ms() -> u64 {
     HEARTBEAT_INTERVAL_MS
 }
 
-async fn plugin(app: &AppHandle, input: PluginInput) -> AppResult<()> {
+async fn plugin<T>(app: &AppHandle, input: T) -> AppResult<()>
+where
+    T: Serialize + Send + 'static,
+{
     #[cfg(target_os = "android")]
     {
         let handle = app.state::<SessionForegroundPluginHandle<tauri::Wry>>();
@@ -101,13 +116,16 @@ async fn plugin(app: &AppHandle, input: PluginInput) -> AppResult<()> {
     }
 }
 
-async fn plugin_if_foreground_monitor_owner(
+async fn plugin_if_foreground_monitor_owner<T>(
     app: &AppHandle,
     state: &AppState,
     session_id: &str,
     generation: u64,
-    input: PluginInput,
-) -> AppResult<bool> {
+    input: T,
+) -> AppResult<bool>
+where
+    T: Serialize + Send + 'static,
+{
     let _operation = state.session_foreground_operation.lock().await;
     let owns_monitor = {
         let inner = state.inner.lock()?;
@@ -216,7 +234,10 @@ pub async fn session_foreground_start(
     if let Some(old_monitor) = old_monitor {
         old_monitor.handle.abort();
         let old_session_id = old_monitor.persistent_session_id;
-        log::error!("session-fgs.DIAG old_monitor_stop session_id={}", old_session_id);
+        log::error!(
+            "session-fgs.DIAG old_monitor_stop session_id={}",
+            old_session_id
+        );
         if plugin(
             &app,
             PluginInput {
@@ -237,7 +258,12 @@ pub async fn session_foreground_start(
     let generation = next_session_foreground_generation();
     let started_at_ms = input.timestamp_ms;
     let session_id = input.persistent_session_id;
-    log::error!("session-fgs.DIAG plugin_start session_id={} generation={} ts={}", session_id, generation, started_at_ms);
+    log::error!(
+        "session-fgs.DIAG plugin_start session_id={} generation={} ts={}",
+        session_id,
+        generation,
+        started_at_ms
+    );
     plugin(
         &app,
         PluginInput {
@@ -275,21 +301,51 @@ pub async fn session_foreground_start(
                 .await
             };
             log::error!(
-                "session-fgs.DIAG probe session_id={} sequence={} ok={} status={:?} err={:?} terminal={:?} max_id={:?}",
-                monitor_task_session_id, sequence, result.ok, result.status, result.error_category, result.terminal, result.max_assistant_id
+                "session-fgs.DIAG probe session_id={} sequence={} ok={} status={:?} category={:?} code={:?} terminal={:?} max_id={:?}",
+                monitor_task_session_id,
+                sequence,
+                result.ok,
+                result.status,
+                result.error_category,
+                result.error_code.map(ProbeErrorCode::as_str),
+                result.terminal,
+                result.max_assistant_id
             );
+            if !result.ok {
+                // This action is log-only. Detach it so a slow diagnostic IPC
+                // cannot change the probe/baseline timing or fail-closed path.
+                spawn_probe_failure_diagnostic(
+                    &monitor_app,
+                    &monitor_task_session_id,
+                    sequence,
+                    &result,
+                );
+            }
             if let Some(sender) = ready_tx.take() {
                 baseline_id = result.max_assistant_id;
                 let ready_failed = !result.ok;
-                log::error!("session-fgs.DIAG baseline session_id={} failed={} baseline_id={:?}", monitor_task_session_id, ready_failed, baseline_id);
+                log::error!(
+                    "session-fgs.DIAG baseline session_id={} failed={} baseline_id={:?}",
+                    monitor_task_session_id,
+                    ready_failed,
+                    baseline_id
+                );
                 let _ = sender.send(if ready_failed { Err(()) } else { Ok(()) });
                 if ready_failed {
-                    log::error!("session-fgs.DIAG baseline_fail_closed session_id={}", monitor_task_session_id);
+                    log::error!(
+                        "session-fgs.DIAG baseline_fail_closed session_id={}",
+                        monitor_task_session_id
+                    );
                     return;
                 }
             }
             if let Some(terminal) = result.terminal_after(baseline_id, first_probe) {
-                log::error!("session-fgs.DIAG terminal_detected session_id={} terminal={:?} seq={}", monitor_task_session_id, terminal, sequence);
+                log::error!(
+                    "session-fgs.DIAG terminal_detected session_id={} terminal={:?} seq={}",
+                    monitor_task_session_id,
+                    terminal,
+                    sequence
+                );
                 let app_state = monitor_app.state::<AppState>();
                 let update = terminal_plugin_if_foreground_monitor_owner(
                     &monitor_app,
@@ -412,9 +468,17 @@ pub async fn session_foreground_start(
     }
     let _ = start_tx.send(());
     let ready = tokio::time::timeout(Duration::from_millis(READY_TIMEOUT_MS), ready_rx).await;
-    log::error!("session-fgs.DIAG ready_result session_id={} is_ok={:?} ready={:?}", session_id, ready.is_ok(), ready.as_ref().map(|r| r.as_ref().map(|r2| r2.is_ok())));
+    log::error!(
+        "session-fgs.DIAG ready_result session_id={} is_ok={:?} ready={:?}",
+        session_id,
+        ready.is_ok(),
+        ready.as_ref().map(|r| r.as_ref().map(|r2| r2.is_ok()))
+    );
     if !matches!(ready.as_ref(), Ok(Ok(Ok(())))) {
-        log::error!("session-fgs.DIAG ready_timeout_fail_closed session_id={}", session_id);
+        log::error!(
+            "session-fgs.DIAG ready_timeout_fail_closed session_id={}",
+            session_id
+        );
         let monitor = take_matching_monitor(&state, &session_id, generation)?;
         if let Some(monitor) = monitor {
             monitor.handle.abort();
@@ -513,11 +577,47 @@ impl TerminalState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeErrorCode {
+    HttpUnauthorized,
+    HttpForbidden,
+    HttpStatus,
+    InvalidMessagesPayload,
+    DashboardUnreachable,
+    DashboardProbe,
+    AuthSessionExpired,
+    StateLockPoisoned,
+    Internal,
+    ApiProxy,
+    Request,
+    Unknown,
+}
+
+impl ProbeErrorCode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::HttpUnauthorized => "http_unauthorized",
+            Self::HttpForbidden => "http_forbidden",
+            Self::HttpStatus => "http_status",
+            Self::InvalidMessagesPayload => "invalid_messages_payload",
+            Self::DashboardUnreachable => "dashboard_unreachable",
+            Self::DashboardProbe => "dashboard_probe",
+            Self::AuthSessionExpired => "auth_session_expired",
+            Self::StateLockPoisoned => "state_lock_poisoned",
+            Self::Internal => "internal_error",
+            Self::ApiProxy => "api_proxy_error",
+            Self::Request => "request_error",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct ProbeResult {
     ok: bool,
     status: Option<u16>,
     error_category: Option<&'static str>,
+    error_code: Option<ProbeErrorCode>,
     terminal: TerminalState,
     max_assistant_id: Option<u64>,
 }
@@ -530,6 +630,60 @@ impl ProbeResult {
                 TerminalState::Completed | TerminalState::Failed => Some(self.terminal),
                 TerminalState::Running => None,
             })
+    }
+}
+
+fn probe_failure_diagnostic_input(
+    session_id: &str,
+    sequence: u64,
+    result: &ProbeResult,
+) -> ProbeDiagnosticPluginInput {
+    ProbeDiagnosticPluginInput {
+        action: "diagnostic",
+        persistent_session_id: session_id.to_string(),
+        heartbeat_sequence: sequence,
+        status: result.status,
+        category: result.error_category.unwrap_or("error"),
+        error_code: result
+            .error_code
+            .unwrap_or(ProbeErrorCode::Unknown)
+            .as_str(),
+    }
+}
+
+fn spawn_probe_failure_diagnostic(
+    app: &AppHandle,
+    session_id: &str,
+    sequence: u64,
+    result: &ProbeResult,
+) {
+    let app = app.clone();
+    let input = probe_failure_diagnostic_input(session_id, sequence, result);
+    tokio::spawn(async move {
+        let _ = plugin(&app, input).await;
+    });
+}
+
+fn probe_http_failure(status: u16) -> (&'static str, ProbeErrorCode) {
+    match status {
+        401 => ("auth", ProbeErrorCode::HttpUnauthorized),
+        403 => ("auth", ProbeErrorCode::HttpForbidden),
+        _ => ("http", ProbeErrorCode::HttpStatus),
+    }
+}
+
+fn probe_app_error(error: &AppError) -> (&'static str, ProbeErrorCode) {
+    match error {
+        AppError::DashboardUnreachable(_) => ("network", ProbeErrorCode::DashboardUnreachable),
+        AppError::DashboardProbe(_) => ("network", ProbeErrorCode::DashboardProbe),
+        AppError::AuthSessionExpired(_) => ("auth", ProbeErrorCode::AuthSessionExpired),
+        AppError::StateLockPoisoned => ("internal", ProbeErrorCode::StateLockPoisoned),
+        AppError::Internal(_) => ("internal", ProbeErrorCode::Internal),
+        AppError::ProxyError(_) => ("network", ProbeErrorCode::ApiProxy),
+        AppError::InvalidRequest(_) | AppError::OriginViolation(_) => {
+            ("error", ProbeErrorCode::ApiProxy)
+        }
+        _ => ("error", ProbeErrorCode::Request),
     }
 }
 
@@ -564,6 +718,7 @@ async fn probe(
                     ok: true,
                     status: Some(response.status),
                     error_category: None,
+                    error_code: None,
                     terminal,
                     max_assistant_id,
                 }
@@ -572,33 +727,33 @@ async fn probe(
                 ok: false,
                 status: Some(response.status),
                 error_category: Some("parse"),
+                error_code: Some(ProbeErrorCode::InvalidMessagesPayload),
                 terminal: TerminalState::Running,
                 max_assistant_id: None,
             },
         },
-        Ok(response) => ProbeResult {
-            ok: false,
-            status: Some(response.status),
-            error_category: Some(if response.status == 401 || response.status == 403 {
-                "auth"
-            } else {
-                "http"
-            }),
-            terminal: TerminalState::Running,
-            max_assistant_id: None,
-        },
-        Err(error) => ProbeResult {
-            ok: false,
-            status: None,
-            error_category: Some(match error {
-                AppError::DashboardUnreachable(_) | AppError::DashboardProbe(_) => "network",
-                AppError::AuthSessionExpired(_) => "auth",
-                AppError::StateLockPoisoned | AppError::Internal(_) => "internal",
-                _ => "error",
-            }),
-            terminal: TerminalState::Running,
-            max_assistant_id: None,
-        },
+        Ok(response) => {
+            let (error_category, error_code) = probe_http_failure(response.status);
+            ProbeResult {
+                ok: false,
+                status: Some(response.status),
+                error_category: Some(error_category),
+                error_code: Some(error_code),
+                terminal: TerminalState::Running,
+                max_assistant_id: None,
+            }
+        }
+        Err(error) => {
+            let (error_category, error_code) = probe_app_error(&error);
+            ProbeResult {
+                ok: false,
+                status: None,
+                error_category: Some(error_category),
+                error_code: Some(error_code),
+                terminal: TerminalState::Running,
+                max_assistant_id: None,
+            }
+        }
     }
 }
 
@@ -818,6 +973,7 @@ mod tests {
                 ok: false,
                 status: Some(401),
                 error_category: Some("auth"),
+                error_code: Some(ProbeErrorCode::HttpUnauthorized),
                 terminal: TerminalState::Running,
                 max_assistant_id: None,
             },
@@ -825,10 +981,94 @@ mod tests {
                 ok: false,
                 status: Some(401),
                 error_category: Some("auth"),
+                error_code: Some(ProbeErrorCode::HttpUnauthorized),
                 terminal: TerminalState::Running,
                 max_assistant_id: None,
             },
         );
+    }
+
+    #[test]
+    fn failed_probe_diagnostic_payload_is_safe_and_uses_diagnostic_action() {
+        let result = ProbeResult {
+            ok: false,
+            status: Some(401),
+            error_category: Some("auth"),
+            error_code: Some(ProbeErrorCode::HttpUnauthorized),
+            terminal: TerminalState::Running,
+            max_assistant_id: None,
+        };
+        let payload = probe_failure_diagnostic_input("session-1", 7, &result);
+        let encoded = serde_json::to_value(payload).expect("diagnostic payload serializes");
+
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "action": "diagnostic",
+                "persistentSessionId": "session-1",
+                "heartbeatSequence": 7,
+                "status": 401,
+                "category": "auth",
+                "errorCode": "http_unauthorized"
+            })
+        );
+        assert!(!encoded.to_string().contains("token"));
+
+        let plugin_source = include_str!("../../gen/android/app/src/main/java/cn/org/hermesagent/mobile/SessionForegroundPlugin.kt");
+        assert!(plugin_source.contains("args.action == \"diagnostic\""));
+        assert!(plugin_source.contains("invoke.resolve()"));
+    }
+
+    #[test]
+    fn probe_failure_categories_and_codes_are_allowlisted() {
+        let (auth_category, auth_code) = probe_http_failure(401);
+        assert_eq!(
+            (auth_category, auth_code.as_str()),
+            ("auth", "http_unauthorized")
+        );
+
+        let (network_category, network_code) = probe_app_error(&AppError::DashboardUnreachable(
+            "https://remote.example/login?token=secret".to_string(),
+        ));
+        assert_eq!(
+            (network_category, network_code.as_str()),
+            ("network", "dashboard_unreachable")
+        );
+
+        let parse_result = ProbeResult {
+            ok: false,
+            status: Some(200),
+            error_category: Some("parse"),
+            error_code: Some(ProbeErrorCode::InvalidMessagesPayload),
+            terminal: TerminalState::Running,
+            max_assistant_id: None,
+        };
+        let encoded = serde_json::to_string(probe_failure_diagnostic_input(
+            "session-1",
+            2,
+            &parse_result,
+        ))
+        .expect("parse diagnostic payload serializes");
+        assert!(encoded.contains("\"category\":\"parse\""));
+        assert!(encoded.contains("\"errorCode\":\"invalid_messages_payload\""));
+        assert!(!encoded.contains("remote.example"));
+        assert!(!encoded.contains("token"));
+        assert!(!encoded.contains("secret"));
+    }
+
+    #[test]
+    fn probe_diagnostic_is_detached_from_monitor_timing() {
+        let source = include_str!("session_foreground.rs");
+        let probe_failure = source
+            .find("if !result.ok")
+            .expect("probe failure branch must remain present");
+        let baseline = source[probe_failure..]
+            .find("if let Some(sender) = ready_tx.take()")
+            .map(|offset| probe_failure + offset)
+            .expect("baseline branch must remain after probe failure diagnostics");
+        let branch = &source[probe_failure..baseline];
+        assert!(branch.contains("spawn_probe_failure_diagnostic"));
+        assert!(!branch.contains("plugin(") && !branch.contains(".await"));
     }
 
     #[test]
@@ -850,6 +1090,7 @@ mod tests {
             ok: true,
             status: Some(200),
             error_category: None,
+            error_code: None,
             terminal: match_terminal(body, Some(11), 0),
             max_assistant_id: Some(12),
         };

@@ -38,6 +38,7 @@ import {
   type CommandPaletteItem,
 } from "@/lib/command-palette";
 import { isCommandPaletteShortcut } from "@/lib/command-palette-shortcut";
+import { registerBackConsumer } from "@/lib/android-back-request";
 import { fetchJSON } from "@/lib/transport";
 import {
   readWorkspaceProjects,
@@ -166,6 +167,15 @@ export function CommandPalette() {
     const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
+
+  // Android system back closes the palette before walking SPA history.
+  useEffect(() => {
+    if (!open) return;
+    return registerBackConsumer(() => {
+      setOpen(false);
+      return true;
+    });
+  }, [open, setOpen]);
 
   const items = useMemo(
     () => getVisibleCommandPaletteItems(

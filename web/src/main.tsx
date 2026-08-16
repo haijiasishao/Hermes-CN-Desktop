@@ -34,14 +34,31 @@ async function fetchDevToken() {
 }
 
 async function bootstrap() {
-  if (!window.__TAURI_INTERNALS__ && !window.__HERMES_RUNTIME__) {
+  // Kotlin-native Android rebuild: window.HermesBridge is injected by the
+  // WebView host. Treat it like the Tauri shell so installTauriBridge() wires
+  // window.hermesDesktop; its invoke/listen transport auto-switches to the
+  // native bridge (see tauri-bridge.ts / hermes-native-bridge.ts).
+  const isNativeShell =
+    (window as unknown as Record<string, unknown>).HermesBridge !== undefined;
+
+  if (!window.__TAURI_INTERNALS__ && !window.__HERMES_RUNTIME__ && !isNativeShell) {
     const { installBrowserCompanionRuntime } = await import("./lib/browser-companion");
     await installBrowserCompanionRuntime();
   }
 
-  if (window.__TAURI_INTERNALS__ && !window.__HERMES_RUNTIME__) {
+  if ((window.__TAURI_INTERNALS__ || isNativeShell) && !window.__HERMES_RUNTIME__) {
     const { installTauriBridge } = await import("./lib/tauri-bridge");
     await installTauriBridge();
+  }
+
+  if (isNativeShell) {
+    // Kotlin shell: wire the system back button through the frontend layer
+    // protocol (overlays → drawer → history → exit).
+    const { installAndroidBackRequest } = await import("./lib/android-back-request");
+    installAndroidBackRequest();
+    // Mobile keyboard: visualViewport fallback for adjustResize quirks.
+    const { installKeyboardViewportAdapter } = await import("./lib/keyboard-viewport");
+    installKeyboardViewportAdapter();
   }
 
   installExternalLinkHandling();

@@ -11,6 +11,7 @@ import { buildComposerDisplayText, prepareComposerPrompt } from "@/lib/composer-
 import { resolveComposerSkillCommand } from "@/lib/composer-skills";
 import { rememberSessionModelOverride } from "@/lib/session-model-override";
 import { titleFromPrompt, titleWithSessionSuffix } from "@/lib/session-title";
+import { resolvePersistentSessionId } from "@/lib/session-map";
 import { isRemoteConnection, readImageBytesFromPath, uploadAttachmentFile } from "@/lib/transport";
 import {
   rememberSessionWorkspace,
@@ -72,7 +73,14 @@ export function useCreateAndSendSession() {
 
     beginPrompt(sessionId, optimisticDisplayText, submittedAt, optimisticDisplayImages);
     setActiveSessionId(sessionId);
-    navigate(`/tasks/${sessionId}`);
+    // The REST layer (detail history, session detail) only resolves PERSISTENT
+    // session ids — /api/sessions/{id} returns 404 for an ephemeral gateway id
+    // once the mapping is cleaned up on reconnect. Navigate with the persistent
+    // form so the detail route never pins a temporary id (hermes-debug-
+    // 1786751599120: GET /api/sessions/f915c356/messages → 404 after background
+    // reconnect). sessionId is the createSession gateway id; resolve it here.
+    const navigableSessionId = resolvePersistentSessionId(sessionId) ?? sessionId;
+    navigate(`/tasks/${navigableSessionId}`);
 
     void (async () => {
       try {

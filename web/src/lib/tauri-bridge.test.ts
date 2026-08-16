@@ -284,6 +284,15 @@ describe("isTauriDevMode", () => {
     })).toBe(false);
   });
 
+  it("does not wait for managed runtime config for an attached remote client", () => {
+    expect(shouldWaitForManagedRuntimeConfig({
+      apiBaseUrl: "",
+      connectionMode: "remote",
+      backendReady: true,
+      managedRuntimeDesiredState: "stopped",
+    })).toBe(false);
+  });
+
   it("exposes persisted guide and managed runtime lifecycle commands", async () => {
     await installTauriBridge();
 

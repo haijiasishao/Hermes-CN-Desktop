@@ -14,6 +14,15 @@ web/dist/
 /gen/android/local.properties
 /gen/android/app/src/main/assets/
 
+# Kotlin-native Android rebuild: same rules for the standalone android/ project
+/android/app/build/
+/android/.gradle/
+/android/local.properties
+/android/app/src/main/assets/
+
+# Local Hermes planning docs — not part of the repo
+/.hermes/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -13,10 +13,13 @@ import app.tauri.plugin.Plugin
 class SessionForegroundArgs {
   lateinit var action: String
   lateinit var persistentSessionId: String
-  lateinit var title: String
-  lateinit var state: String
+  var title: String? = null
+  var state: String? = null
   var heartbeatSequence: Long = 0
   var timestampMs: Long = 0
+  var status: Int? = null
+  var category: String? = null
+  var errorCode: String? = null
 }
 
 @TauriPlugin
@@ -25,18 +28,24 @@ class SessionForegroundPlugin(private val activity: android.app.Activity) : Plug
   fun sessionForeground(invoke: Invoke) {
     try {
       val args = invoke.parseArgs(SessionForegroundArgs::class.java)
-      Log.e("SessionForegroundPlugin", "DIAG action=${args.action} sessionId=${args.persistentSessionId} state=${args.state} seq=${args.heartbeatSequence} ts=${args.timestampMs} now=${System.currentTimeMillis()}")
       require(args.persistentSessionId.isNotBlank()) { "persistentSessionId required" }
-      require(args.action in setOf("start", "update", "stop")) { "invalid foreground action" }
-      require(args.state in setOf("starting", "connected", "probe_failed", "completed", "failed", "stopped")) {
+      require(args.action in setOf("start", "update", "stop", "diagnostic")) { "invalid foreground action" }
+      if (args.action == "diagnostic") {
+        logProbeFailure(args)
+        invoke.resolve()
+        return
+      }
+      val state = requireNotNull(args.state) { "foreground state required" }
+      Log.e("SessionForegroundPlugin", "DIAG action=${args.action} sessionId=${args.persistentSessionId} state=$state seq=${args.heartbeatSequence} ts=${args.timestampMs} now=${System.currentTimeMillis()}")
+      require(state in setOf("starting", "connected", "probe_failed", "completed", "failed", "stopped")) {
         "invalid foreground state"
       }
-      require((args.action == "start" && args.state == "starting") ||
-        (args.action == "update" && args.state in setOf("connected", "probe_failed", "completed", "failed")) ||
-        (args.action == "stop" && args.state == "stopped")) { "invalid foreground action/state" }
+      require((args.action == "start" && state == "starting") ||
+        (args.action == "update" && state in setOf("connected", "probe_failed", "completed", "failed")) ||
+        (args.action == "stop" && state == "stopped")) { "invalid foreground action/state" }
       val intent = Intent(activity, SessionForegroundService::class.java).apply {
         putExtra(SessionForegroundService.EXTRA_SESSION_ID, args.persistentSessionId)
-        putExtra(SessionForegroundService.EXTRA_STATE, safe(args.state))
+        putExtra(SessionForegroundService.EXTRA_STATE, safe(state))
         putExtra(SessionForegroundService.EXTRA_SEQUENCE, args.heartbeatSequence)
         putExtra(SessionForegroundService.EXTRA_TIMESTAMP, args.timestampMs)
       }
@@ -63,5 +72,38 @@ class SessionForegroundPlugin(private val activity: android.app.Activity) : Plug
     }
   }
 
+  private fun logProbeFailure(args: SessionForegroundArgs) {
+    val sessionId = args.persistentSessionId
+      .replace(Regex("[^A-Za-z0-9_.:-]"), "_")
+      .take(64)
+      .ifEmpty { "unknown" }
+    val sequence = args.heartbeatSequence.coerceIn(0, 1_000_000)
+    val status = args.status?.takeIf { it in 100..599 }?.toString() ?: "none"
+    val category = args.category?.takeIf { it in SAFE_DIAGNOSTIC_CATEGORIES } ?: "unknown"
+    val errorCode = args.errorCode?.takeIf { it in SAFE_DIAGNOSTIC_CODES } ?: "unknown"
+    Log.e(
+      "SessionForegroundPlugin",
+      "probe_error sessionId=$sessionId sequence=$sequence status=$status category=$category code=$errorCode",
+    )
+  }
+
   private fun safe(value: String): String = value.replace(Regex("[\\r\\n]"), " ").trim().take(32)
+
+  companion object {
+    private val SAFE_DIAGNOSTIC_CATEGORIES = setOf("auth", "http", "network", "parse", "internal", "error")
+    private val SAFE_DIAGNOSTIC_CODES = setOf(
+      "http_unauthorized",
+      "http_forbidden",
+      "http_status",
+      "invalid_messages_payload",
+      "dashboard_unreachable",
+      "dashboard_probe",
+      "auth_session_expired",
+      "state_lock_poisoned",
+      "internal_error",
+      "api_proxy_error",
+      "request_error",
+      "unknown",
+    )
+  }
 }

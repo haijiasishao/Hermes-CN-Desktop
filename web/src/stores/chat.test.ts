@@ -2,7 +2,7 @@ import { createStore } from "jotai/vanilla";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HermesMessagePart, HermesUIMessage } from "@hermes/protocol";
 import { resolvePersistentSessionId } from "@/lib/session-map";
-import { rememberSessionMapping } from "@/lib/session-map";
+import { rememberActiveTurn, rememberSessionMapping } from "@/lib/session-map";
 import { __resetUiStoreForTests } from "@/lib/ui-store";
 import {
   applyGatewayEventAtom,
@@ -19,11 +19,20 @@ import {
   terminateAllStreamsAtom,
 } from "./chat";
 
-const { stopAndroidSessionForeground } = vi.hoisted(() => ({
+const { foregroundStateForGatewayEvent, stopAndroidSessionForeground, updateAndroidSessionForeground } = vi.hoisted(() => ({
+  foregroundStateForGatewayEvent: vi.fn((event: { type?: string }) => {
+    if (event.type === "message.complete") return "completed";
+    if (event.type === "error") return "failed";
+    if (event.type === "gateway.disconnected") return "reconnecting";
+    return "thinking";
+  }),
   stopAndroidSessionForeground: vi.fn(() => Promise.resolve()),
+  updateAndroidSessionForeground: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("@/lib/android-session-foreground", () => ({
+  foregroundStateForGatewayEvent,
   stopAndroidSessionForeground,
+  updateAndroidSessionForeground,
 }));
 
 describe("session.info session mapping", () => {
@@ -53,25 +62,123 @@ describe("session.info session mapping", () => {
 
 describe("foreground diagnostic terminal cleanup", () => {
   beforeEach(() => {
+    foregroundStateForGatewayEvent.mockClear();
     stopAndroidSessionForeground.mockClear();
+    updateAndroidSessionForeground.mockClear();
     __resetUiStoreForTests();
   });
 
   afterEach(() => {
     __resetUiStoreForTests();
+    delete (globalThis as any).document;
   });
 
   it.each([
     { type: "message.complete", payload: { text: "done" } },
     { type: "error", payload: { message: "failed" } },
-  ])("stops with the resolved persistent id for $type", ({ type, payload }) => {
+  ])("publishes the terminal state with the resolved persistent id for $type", ({ type, payload }) => {
     rememberSessionMapping("gw-terminal", "persistent-terminal");
     const store = createStore();
-    store.set(chatRuntimeBySessionAtom, { "gw-terminal": createEmptyChatRuntime() });
+    store.set(startPromptAtom, { sessionId: "gw-terminal", text: "hello", now: 1_000 });
 
     store.set(applyGatewayEventAtom, { type, session_id: "gw-terminal", payload } as any);
 
-    expect(stopAndroidSessionForeground).toHaveBeenCalledWith("persistent-terminal");
+    expect(updateAndroidSessionForeground).toHaveBeenCalledWith(expect.objectContaining({
+      persistentSessionId: "persistent-terminal",
+      title: "后台链路诊断",
+      state: type === "message.complete" ? "completed" : "failed",
+    }));
+    expect(stopAndroidSessionForeground).not.toHaveBeenCalled();
+  });
+
+  it("alerts on terminal update only when backgrounded + only-background is on", () => {
+    __resetUiStoreForTests({
+      settings: { system: true, sound: true, onComplete: true, onApproval: true, onlyBackground: true },
+    });
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "gw-alert", text: "hello", now: 1_000 });
+
+    // hidden document + onlyBackground → alert true
+    (globalThis as any).document = { visibilityState: "hidden" };
+    store.set(applyGatewayEventAtom, {
+      type: "message.complete",
+      session_id: "gw-alert",
+      payload: { text: "done" },
+    } as any);
+    expect(updateAndroidSessionForeground).toHaveBeenCalledWith(expect.objectContaining({
+      state: "completed",
+      alert: true,
+    }));
+
+    // visible document → alert false (foreground terminal update stays silent)
+    updateAndroidSessionForeground.mockClear();
+    (globalThis as any).document = { visibilityState: "visible" };
+    store.set(startPromptAtom, { sessionId: "gw-alert2", text: "hello", now: 2_000 });
+    store.set(applyGatewayEventAtom, {
+      type: "message.complete",
+      session_id: "gw-alert2",
+      payload: { text: "done" },
+    } as any);
+    expect(updateAndroidSessionForeground).toHaveBeenCalledWith(expect.objectContaining({
+      state: "completed",
+      alert: false,
+    }));
+  });
+
+  it("does not publish a terminal update for a historical idle event", () => {
+    const store = createStore();
+    store.set(chatRuntimeBySessionAtom, { "gw-history": createEmptyChatRuntime() });
+
+    store.set(applyGatewayEventAtom, {
+      type: "message.complete",
+      session_id: "gw-history",
+      payload: { text: "old reply" },
+    } as any);
+
+    expect(updateAndroidSessionForeground).not.toHaveBeenCalled();
+  });
+
+  it("publishes a terminal update from the persisted active-turn checkpoint after a WebView rebuild", () => {
+    // WebView rebuild wipes the jotai runtime bucket entirely; the persisted
+    // active-turn checkpoint is the only surviving record of the in-flight
+    // turn. A message.complete arriving through the fresh gateway connection
+    // must still converge the FGS off the stale 思考中 (hermes-debug-1786772272797).
+    rememberSessionMapping("gw-rebuilt", "persistent-rebuilt");
+    // Simulate the survived checkpoint (same storage the start path writes).
+    rememberActiveTurn({
+      persistentSessionId: "persistent-rebuilt",
+      turnStartedAt: 1_000,
+      activeAssistantId: "live-assistant-rebuilt",
+    });
+    const store = createStore();
+
+    store.set(applyGatewayEventAtom, {
+      type: "message.complete",
+      session_id: "gw-rebuilt",
+      payload: { text: "done" },
+    } as any);
+
+    expect(updateAndroidSessionForeground).toHaveBeenCalledWith(expect.objectContaining({
+      persistentSessionId: "persistent-rebuilt",
+      title: "后台链路诊断",
+      state: "completed",
+    }));
+  });
+
+  it("publishes reconnecting for active sessions on a transport disconnect", () => {
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "gw-disconnected", text: "hello", now: 1_000 });
+
+    store.set(applyGatewayEventAtom, {
+      type: "gateway.disconnected",
+      payload: { message: "connection lost" },
+    } as any);
+
+    expect(updateAndroidSessionForeground).toHaveBeenCalledWith(expect.objectContaining({
+      persistentSessionId: "gw-disconnected",
+      state: "reconnecting",
+      title: "后台链路诊断",
+    }));
   });
 
   it("stops with the resolved persistent id on manual interrupt", () => {

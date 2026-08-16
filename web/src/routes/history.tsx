@@ -19,6 +19,7 @@ import type { SessionMessage, SessionSummary } from "@hermes/protocol";
 import { chatRuntimeBySessionAtom } from "@/stores/chat";
 import { activeSessionIdAtom } from "@/stores/ui";
 import { runtime } from "@/lib/runtime";
+import { registerBackConsumer } from "@/lib/android-back-request";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
   prefetchSessionMessages,
@@ -791,6 +792,16 @@ function DesktopHistoryRoute() {
       if (isMobile && viewMode === "detail") setViewMode("list");
     }
   }, [filtered, selectedId, isMobile, viewMode]);
+
+  // Android system back returns from the mobile detail view to the list
+  // before walking SPA history.
+  useEffect(() => {
+    if (!isMobile || viewMode !== "detail") return;
+    return registerBackConsumer(() => {
+      setViewMode("list");
+      return true;
+    });
+  }, [isMobile, viewMode]);
 
   // ── Render ──
 

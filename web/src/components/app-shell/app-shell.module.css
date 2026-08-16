@@ -4,6 +4,10 @@
 .shell {
   width: 100vw;
   height: 100vh;
+  /* Mobile keyboard (P6-D): prefer the dynamic viewport unit so the shell
+     shrinks with the on-screen keyboard (Android adjustResize); 100vh stays
+     as the fallback for older WebView/desktop. */
+  height: 100dvh;
   position: relative;
   display: grid;
   grid-template-rows: calc(var(--h-topbar-h) + var(--h-window-control-safe-top, 0px)) 1fr var(--h-statusbar-h);

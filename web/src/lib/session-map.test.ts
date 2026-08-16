@@ -3,10 +3,13 @@ import { __resetUiStoreForTests, readUiValue, writeUiValue } from "./ui-store";
 import {
   clearActivePersistentSessionId,
   clearActiveTurn,
+  forgetAllSessionMappings,
   forgetSessionMapping,
   forgetSessionMappingsForPersistentSession,
   getActivePersistentSessionId,
   getActiveTurn,
+  isPersistentSessionShape,
+  listSessionMappings,
   rememberActiveTurn,
   rememberGatewaySessionInfo,
   rememberSessionMapping,
@@ -136,10 +139,53 @@ describe("session-map", () => {
     rememberSessionMapping("gw-live", "sess-1");
 
     forgetSessionMappingsForPersistentSession("sess-1");
-
     expect(resolveGatewaySessionId("sess-1")).toBeUndefined();
     expect(resolvePersistentSessionId("gw-stale")).toBe("gw-stale");
     expect(resolvePersistentSessionId("gw-live")).toBe("gw-live");
+  });
+
+  it("lists live mappings for reconnect pruning", () => {
+    rememberSessionMapping("gw-stale", "sess-1");
+    rememberSessionMapping("gw-live", "sess-2");
+    const raw = readUiValue<Record<string, { persistentId: string; ts: number }>>(
+      "hermes:gateway-session-map",
+      {},
+    );
+    raw["gw-stale"].ts = Date.now() - 25 * 60 * 60 * 1000; // expired
+    writeUiValue("hermes:gateway-session-map", raw);
+
+    const mappings = listSessionMappings();
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0]).toEqual({ gatewaySessionId: "gw-live", persistentSessionId: "sess-2" });
+  });
+
+  it("clears every gateway mapping with forgetAllSessionMappings", () => {
+    rememberSessionMapping("gw-1", "sess-1");
+    rememberSessionMapping("gw-2", "sess-2");
+
+    forgetAllSessionMappings();
+
+    expect(resolveGatewaySessionId("sess-1")).toBeUndefined();
+    expect(resolveGatewaySessionId("sess-2")).toBeUndefined();
+    expect(listSessionMappings()).toHaveLength(0);
+  });
+
+  it("forgetAllSessionMappings never touches the active persistent marker", () => {
+    rememberSessionMapping("gw-1", "sess-1");
+    rememberActivePersistentSessionId("sess-1");
+
+    forgetAllSessionMappings();
+
+    expect(getActivePersistentSessionId()).toBe("sess-1");
+  });
+
+  it("distinguishes persistent-shaped ids from gateway ids", () => {
+    expect(isPersistentSessionShape("20260815_074418_096214")).toBe(true);
+    expect(isPersistentSessionShape("20260815_074418_096214-branch")).toBe(true);
+    expect(isPersistentSessionShape("20260815_074418_096214/slash")).toBe(false);
+    expect(isPersistentSessionShape("f915c356")).toBe(false);
+    expect(isPersistentSessionShape("2026")).toBe(false);
+    expect(isPersistentSessionShape(undefined)).toBe(false);
   });
 
   it("returns undefined for undefined input", () => {

@@ -16,6 +16,8 @@
     "web:dev": "pnpm run version:sync && pnpm --filter @hermes/web dev",
     "web:build": "pnpm run version:sync && pnpm --filter @hermes/web build",
     "web:build:desktop": "pnpm run version:sync && pnpm --filter @hermes/web build:desktop",
+    "android:sync-assets": "pnpm run version:sync && pnpm --filter @hermes/web build:desktop && node scripts/sync-android-assets.mjs",
+    "test:android-assets": "node --test scripts/sync-android-assets.test.mjs",
     "runtime:install-local": "node scripts/install-local-runtime.mjs",
     "tauri:dev": "pnpm run version:sync && node scripts/tauri-dev-managed.mjs",
     "tauri:dev:managed": "pnpm run version:sync && node scripts/tauri-dev-managed.mjs",

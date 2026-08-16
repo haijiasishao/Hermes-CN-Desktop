@@ -78,6 +78,10 @@ const androidUnsupportedCommands = new Set([
   "write_workspace_file",
 ]);
 
+// These commands are implemented by the pure-Kotlin Android host rather than
+// registered through the desktop Tauri handler.
+const androidNativeCommands = new Set(["session_foreground_update"]);
+
 const requiredRemoteCommands = [
   "get_runtime_config",
   "get_connection_config",
@@ -103,14 +107,25 @@ const requiredRemoteCommands = [
 ];
 
 const missing = [...invokeCommands].filter((command) => !registeredCommands.has(command));
-const unclassified = missing.filter((command) => !androidUnsupportedCommands.has(command));
+const unclassified = missing.filter(
+  (command) =>
+    !androidUnsupportedCommands.has(command) && !androidNativeCommands.has(command),
+);
 const missingRequired = requiredRemoteCommands.filter((command) => !registeredCommands.has(command));
 
 console.log(`bridge_commands=${invokeCommands.size}`);
 console.log(`registered_commands=${registeredCommands.size}`);
 console.log(`explicit_android_unsupported=${androidUnsupportedCommands.size}`);
+console.log(`explicit_android_native=${androidNativeCommands.size}`);
 console.log(`missing_registered_commands=${missing.length}`);
-for (const command of missing) console.log(`  ${androidUnsupportedCommands.has(command) ? "unsupported" : "UNCLASSIFIED"} ${command}`);
+for (const command of missing) {
+  const label = androidUnsupportedCommands.has(command)
+    ? "unsupported"
+    : androidNativeCommands.has(command)
+      ? "android-native"
+      : "UNCLASSIFIED";
+  console.log(`  ${label} ${command}`);
+}
 
 
 // --- Android compile-boundary audit ---
@@ -338,9 +353,39 @@ for (const required of [
   '"completed"',
   '"failed"',
   "max_assistant_id",
+  "ProbeErrorCode",
+  "probe_failure_diagnostic_input",
+  "spawn_probe_failure_diagnostic",
+  'action: "diagnostic"',
 ]) {
   if (!foregroundRust.includes(required)) {
     console.error(`Missing safe foreground monitor contract: ${required}`);
+    process.exit(1);
+  }
+}
+const diagnosticRustStart = foregroundRust.indexOf("struct ProbeDiagnosticPluginInput");
+const diagnosticRustEnd = foregroundRust.indexOf("const MAX_PLUGIN_UPDATE_FAILURES", diagnosticRustStart);
+if (diagnosticRustStart < 0 || diagnosticRustEnd < 0) {
+  console.error("Missing Rust probe diagnostic payload definition");
+  process.exit(1);
+}
+const diagnosticRust = foregroundRust.slice(diagnosticRustStart, diagnosticRustEnd);
+for (const required of [
+  "action:",
+  "persistent_session_id:",
+  "heartbeat_sequence:",
+  "status:",
+  "category:",
+  "error_code:",
+]) {
+  if (!diagnosticRust.includes(required)) {
+    console.error(`Missing safe Rust probe diagnostic field: ${required}`);
+    process.exit(1);
+  }
+}
+for (const forbidden of ["title:", "state:", "body:", "url:", "token", "cookie", "prompt"]) {
+  if (diagnosticRust.toLowerCase().includes(forbidden)) {
+    console.error(`Rust probe diagnostic payload contains forbidden field: ${forbidden}`);
     process.exit(1);
   }
 }
@@ -355,8 +400,11 @@ const foregroundService = fs.readFileSync(
 for (const required of [
   "EXTRA_SESSION_ID",
   "EXTRA_TIMESTAMP",
-  'args.action in setOf("start", "update", "stop")',
-  'args.state in setOf("starting", "connected", "probe_failed", "completed", "failed", "stopped")',
+  'args.action in setOf("start", "update", "stop", "diagnostic")',
+  'state in setOf("starting", "connected", "probe_failed", "completed", "failed", "stopped")',
+  "var status: Int? = null",
+  "var category: String? = null",
+  "var errorCode: String? = null",
 ]) {
   if (!foregroundPlugin.includes(required)) {
     console.error(`Missing safe Kotlin plugin contract: ${required}`);
@@ -408,6 +456,54 @@ if (/if\s*\(\s*stopping\s*\)[\s\S]*?else\s+ContextCompat\.startForegroundService
 if (foregroundPlugin.includes("activity.stopService")) {
   console.error("Foreground stop must go through service ACTION_STOP");
   process.exit(1);
+}
+const diagnosticStart = foregroundPlugin.indexOf('if (args.action == "diagnostic")');
+const diagnosticEnd = foregroundPlugin.indexOf("val state = requireNotNull", diagnosticStart);
+if (diagnosticStart < 0 || diagnosticEnd < 0) {
+  console.error("Missing dedicated foreground probe diagnostic branch");
+  process.exit(1);
+}
+const diagnosticBranch = foregroundPlugin.slice(diagnosticStart, diagnosticEnd);
+for (const required of ["logProbeFailure(args)", "invoke.resolve()", "return"]) {
+  if (!diagnosticBranch.includes(required)) {
+    console.error(`Probe diagnostic branch must ${required}`);
+    process.exit(1);
+  }
+}
+for (const forbidden of [
+  "Intent(",
+  "startService",
+  "ContextCompat.startForegroundService",
+  "ACTION_UPDATE",
+  "ACTION_STOP",
+]) {
+  if (diagnosticBranch.includes(forbidden)) {
+    console.error(`Probe diagnostic branch must not invoke the foreground service: ${forbidden}`);
+    process.exit(1);
+  }
+}
+for (const required of [
+  "SAFE_DIAGNOSTIC_CATEGORIES",
+  "SAFE_DIAGNOSTIC_CODES",
+  "probe_error sessionId=",
+]) {
+  if (!foregroundPlugin.includes(required)) {
+    console.error(`Missing bounded probe diagnostic logging contract: ${required}`);
+    process.exit(1);
+  }
+}
+const diagnosticLoggerStart = foregroundPlugin.indexOf("private fun logProbeFailure");
+const diagnosticLoggerEnd = foregroundPlugin.indexOf("private fun safe", diagnosticLoggerStart);
+const diagnosticLogger = foregroundPlugin.slice(diagnosticLoggerStart, diagnosticLoggerEnd);
+if (!diagnosticLogger.includes("Log.e")) {
+  console.error("Probe diagnostic logger must use Log.e");
+  process.exit(1);
+}
+for (const forbidden of ["title", "state", "body", "url", "token", "cookie", "prompt"]) {
+  if (diagnosticLogger.toLowerCase().includes(forbidden)) {
+    console.error(`Probe diagnostic logger contains forbidden data: ${forbidden}`);
+    process.exit(1);
+  }
 }
 for (const required of [
   "onCreate",

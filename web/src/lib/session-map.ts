@@ -128,6 +128,29 @@ export function forgetSessionMapping(gatewaySessionId: string | undefined) {
   writeMap(map);
 }
 
+/** Enumerate all live gateway→persistent mappings (reconnect pruning). */
+export function listSessionMappings(): Array<{ gatewaySessionId: string; persistentSessionId: string }> {
+  const now = Date.now();
+  return Object.entries(pruneExpired(readMap()))
+    .filter(([, entry]) => now - entry.ts < MAX_AGE_MS)
+    .map(([gatewaySessionId, entry]) => ({
+      gatewaySessionId,
+      persistentSessionId: entry.persistentId,
+    }));
+}
+
+/**
+ * Prune EVERY ephemeral gateway mapping. A reconnect mints a fresh gateway id
+ * and the old socket's gateway sessions are no longer pinnable; leaving stale
+ * ids in the map makes resolveGatewaySessionId hand callers a dead id and a
+ * later prompt.submit fails with `session not found`. Callers should record
+ * route redirects from listSessionMappings() BEFORE clearing so the detail
+ * route can project onto the persistent id.
+ */
+export function forgetAllSessionMappings(): void {
+  writeMap({});
+}
+
 /** Remove every ephemeral gateway id that points at one persistent task. */
 export function forgetSessionMappingsForPersistentSession(persistentSessionId: string | undefined) {
   if (!persistentSessionId) return;
@@ -147,6 +170,23 @@ export function resolvePersistentSessionId(sessionId: string | undefined): strin
   if (!entry) return sessionId;
   if (Date.now() - entry.ts > MAX_AGE_MS) return sessionId;
   return entry.persistentId;
+}
+
+/**
+ * Persistent session ids minted by the backend look like
+ * `20260815_074418_096214` (date_time_stamp). Ephemeral gateway session ids
+ * are short hex blobs (e.g. `f915c356`) that the REST layer must NEVER see —
+ * /api/sessions/{id} answers 404 for them once the reconnect pruned the
+ * gateway→persistent map, which is exactly the `session not found` the detail
+ * page surfaces after a background reconnect. This predicate lets callers
+ * distinguish "this id is already the persistent form" from "this id needs
+ * resolution and resolution just failed".
+ */
+export function isPersistentSessionShape(sessionId: string | undefined): boolean {
+  if (!sessionId) return false;
+  // Backend persistent ids: 8-digit date, underscore, 6-digit time, underscore,
+  // then a non-empty alphanumeric suffix (may contain hyphens from branches).
+  return /^\d{8}_\d{6}_[A-Za-z0-9\-]+$/.test(sessionId);
 }
 
 export function resolveGatewaySessionId(sessionId: string | undefined): string | undefined {

@@ -17,6 +17,7 @@ import type {
 } from "@hermes/protocol";
 import { Alert, Button, Input, LoadingIndicator } from "@hermes/shared-ui";
 import { notifyConnectionAuthRestored } from "@/lib/connection-auth-events";
+import { normalizeProbeResult } from "@/lib/connection-providers";
 import { SettingsHero } from "./settings-hero";
 import s from "./settings.module.css";
 
@@ -107,14 +108,16 @@ export function ConnectionSection({
     const seq = ++probeSeq.current;
     setProbeStatus("probing");
     const timer = window.setTimeout(() => {
-      desktop
-        ?.probeConnectionConfig?.(trimmedRemoteUrl)
+      Promise.resolve(desktop?.probeConnectionConfig?.(trimmedRemoteUrl))
         .then((result) => {
           if (seq !== probeSeq.current) return;
-          if (!result.reachable) setProbeStatus("unreachable");
-          else if (result.authRequired) {
+          const normalized = normalizeProbeResult(result);
+          if (!normalized.reachable) {
+            setProbeStatus("unreachable");
+            setAuthProviders([]);
+          } else if (normalized.authRequired) {
             setProbeStatus("authRequired");
-            setAuthProviders(result.authProviders ?? []);
+            setAuthProviders(normalized.authProviders);
           } else {
             setProbeStatus("reachable");
             setAuthProviders([]);
@@ -123,6 +126,7 @@ export function ConnectionSection({
         .catch(() => {
           if (seq !== probeSeq.current) return;
           setProbeStatus("unreachable");
+          setAuthProviders([]);
         });
     }, PROBE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);

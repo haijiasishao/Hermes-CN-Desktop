@@ -7,7 +7,10 @@ import {
 } from "@/stores/chat";
 import { __resetUiStoreForTests, writeUiValue } from "@/lib/ui-store";
 import { rememberSessionMapping } from "@/lib/session-map";
-import { resolveSessionRuntime } from "./use-session-resolution";
+import {
+  resolveGatewaySessionTarget,
+  resolveSessionRuntime,
+} from "./use-session-resolution";
 
 const MAP_KEY = "hermes:gateway-session-map";
 
@@ -42,20 +45,21 @@ describe("resolveSessionRuntime", () => {
     // relaunch). The route id is the persistent id; the optimistic send wrote
     // into the *live* gateway bucket. Resolution must land on that bucket, not
     // the empty runtimeBySession[persistentId] fallback.
+    const persistentId = "20260815_123456_abcd";
     writeUiValue(MAP_KEY, {
-      "gw-stale": { persistentId: "sess-1", ts: Date.now() - 60_000 },
-      "gw-live": { persistentId: "sess-1", ts: Date.now() - 1_000 },
+      "gw-stale": { persistentId, ts: Date.now() - 60_000 },
+      "gw-live": { persistentId, ts: Date.now() - 1_000 },
     });
     const runtimeBySession: ChatRuntimeBySession = {
       "gw-live": runtimeWith("gw-live", "just sent"),
     };
 
-    const resolved = resolveSessionRuntime("sess-1", "gw-live", runtimeBySession);
+    const resolved = resolveSessionRuntime(persistentId, "gw-live", runtimeBySession);
 
     expect(resolved.runtimeSessionId).toBe("gw-live");
     expect(firstText(resolved.runtime)).toBe("just sent");
     expect(resolved.isLiveSession).toBe(true);
-    expect(resolved.restSessionId).toBe("sess-1");
+    expect(resolved.restSessionId).toBe(persistentId);
   });
 
   it("does not bleed a different background-streaming session into the current view", () => {
@@ -95,5 +99,73 @@ describe("resolveSessionRuntime", () => {
     expect(resolved.runtime.messages).toHaveLength(0);
     expect(resolved.runtimeIsBusy).toBe(false);
     expect(resolved.isLiveSession).toBe(false);
+  });
+
+  it("does not offer a stale pre-reconnect gateway id as a send target", () => {
+    // Regression for `session not found` after background disconnect+reconnect:
+    // the session-map still holds a gateway id minted before the reconnect
+    // (dae122d5); the server has reaped it. activeMappedGatewaySessionId must
+    // only ever surface the LIVE gateway id, so the send path resumes the
+    // persistent id instead of submitting to the dead gateway.
+    rememberSessionMapping("gw-stale", "20260815_123456_abcd");
+    const runtimeBySession: ChatRuntimeBySession = {
+      "gw-stale": runtimeWith("gw-stale", "old"),
+    };
+
+    const resolved = resolveSessionRuntime("20260815_123456_abcd", "gw-live-new", runtimeBySession);
+    // gw-live-new belongs to a DIFFERENT persistent session, so it is not live
+    // for this task; the stale gw-stale must not be resurrected as a target.
+    expect(resolved.activeMappedGatewaySessionId).toBeUndefined();
+    expect(resolved.isGatewayLinked).toBe(false);
+  });
+
+  it("uses the live gateway id for the same persistent task as the send target", () => {
+    const persistentId = "20260815_123456_abcd";
+    rememberSessionMapping("gw-live", persistentId);
+    rememberSessionMapping("gw-stale", persistentId);
+    const runtimeBySession: ChatRuntimeBySession = {
+      "gw-live": runtimeWith("gw-live", "live"),
+    };
+
+    const resolved = resolveSessionRuntime(persistentId, "gw-live", runtimeBySession);
+
+    expect(resolved.activeMappedGatewaySessionId).toBe("gw-live");
+    expect(resolved.runtimeSessionId).toBe("gw-live");
+    expect(firstText(resolved.runtime)).toBe("live");
+  });
+});
+
+describe("resolveGatewaySessionTarget", () => {
+  it("resumes the persistent session when the route still has a stale gateway id", () => {
+    expect(
+      resolveGatewaySessionTarget({
+        taskId: "gw-old",
+        restSessionId: "sess-1",
+        activeMappedGatewaySessionId: undefined,
+      }),
+    ).toEqual({
+      gatewaySessionId: "sess-1",
+      resumePersistentSessionId: "sess-1",
+    });
+  });
+
+  it("uses the live mapped gateway id without resuming", () => {
+    expect(
+      resolveGatewaySessionTarget({
+        taskId: "sess-1",
+        restSessionId: "sess-1",
+        activeMappedGatewaySessionId: "gw-live",
+      }),
+    ).toEqual({ gatewaySessionId: "gw-live" });
+  });
+
+  it("uses taskId when no persistent mapping is available", () => {
+    expect(
+      resolveGatewaySessionTarget({
+        taskId: "gw-new",
+        restSessionId: undefined,
+        activeMappedGatewaySessionId: undefined,
+      }),
+    ).toEqual({ gatewaySessionId: "gw-new" });
   });
 });

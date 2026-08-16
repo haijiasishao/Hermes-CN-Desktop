@@ -112,6 +112,41 @@ describe("GatewayClient", () => {
     await expect(request).rejects.toThrow("WebSocket closed");
   });
 
+  it("records RPC failures in the debug bus on Android (no message text)", async () => {
+    vi.useFakeTimers();
+    const { debugBus } = await import("./debug-bus");
+    debugBus.clear();
+    (globalThis as any).__HERMES_RUNTIME__ = { androidRemoteOnly: true };
+    const runtimeMod = await import("./runtime");
+    vi.spyOn(runtimeMod.runtime, "androidRemoteOnly", "get").mockReturnValue(true);
+
+    const client = new GatewayClient();
+    const connected = client.connect();
+    MockWebSocket.instances[0].open();
+    await connected;
+
+    const request = client.request("session.resume", { session_id: "s1" });
+    await Promise.resolve();
+    expect(MockWebSocket.instances[0].sent).toHaveLength(1);
+
+    vi.advanceTimersByTime(120_000);
+    await expect(request).rejects.toThrow("RPC timeout: session.resume");
+
+    const failed = debugBus.snapshot().find((entry) =>
+      entry.summary.startsWith("rpc.failure"));
+    expect(failed?.payload).toMatchObject({
+      method: "session.resume",
+      params: { session_id: "s1" },
+      error: "RPC timeout: session.resume",
+    });
+    expect(JSON.stringify(failed?.payload)).not.toContain("hi");
+
+    debugBus.clear();
+    delete (globalThis as any).__HERMES_RUNTIME__;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
   it("moves an established connection to closed when the socket closes", async () => {
     const client = new GatewayClient();
     const connected = client.connect();

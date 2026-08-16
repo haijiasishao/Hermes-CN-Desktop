@@ -19,7 +19,7 @@ import { messagesResponseToHermesUIMessages } from "@/components/chat/message-ad
 import { readNotificationSettings, type NotificationSettings } from "@/stores/ui";
 import { resolvePersistentSessionId } from "@/lib/session-map";
 import { queryClient } from "@/lib/query-client";
-import { runtime, type DesktopNotifyResult } from "@/lib/runtime";
+import { runtime as runtimeInfo, type DesktopNotifyResult } from "@/lib/runtime";
 import { recordNotificationDebug } from "@/lib/notification-debug";
 
 export interface NotificationAction {
@@ -254,7 +254,7 @@ export function playChime(): void {
 }
 
 function notificationDiagnostic(message: string, details?: Record<string, unknown>): void {
-  if (!runtime.androidRemoteOnly || typeof console === "undefined") return;
+  if (!runtimeInfo.androidRemoteOnly || typeof console === "undefined") return;
   recordNotificationDebug("diagnostic", { message, ...(details ?? {}) }, "warn");
   try {
     console.warn("[Hermes notification]", message, details ?? {});
@@ -422,6 +422,24 @@ export function notifyFromGatewayEvent(
       hasActiveAssistant: Boolean(prevRuntime?.activeAssistantId),
       settings: notificationSettingsDebug(settings),
     });
+    // Merged completion design (2026-08-15): on Android the terminal FGS
+    // update (chat.ts message.complete branch) IS the completion notification
+    // now — same notification id (1), sound/vibrate/heads-up via the
+    // high-importance channel, and a working content intent. Emitting a second
+    // standalone desktop notification here duplicates the alert and its tap
+    // previously did nothing (no content intent, hermes-debug-1786764876908).
+    // Settings-page "test notification" still bypasses this path (respectFocus
+    // is irrelevant there) so it keeps working as a manual smoke test.
+    const androidRemoteOnly =
+      typeof runtimeInfo !== "undefined" && runtimeInfo?.androidRemoteOnly === true;
+    if (androidRemoteOnly && (action.kind === "complete" || action.kind === "error")) {
+      recordNotificationDebug("gateway-event.merged_fgs", {
+        eventType: event.type,
+        sessionId: event.session_id,
+        kind: action.kind,
+      });
+      return;
+    }
     void bridge
       .desktopNotify({
         kind: action.kind,
@@ -483,6 +501,24 @@ function hasStoredFinalContent(message: HermesUIMessage): boolean {
 }
 
 /**
+ * A terminal assistant message must not carry a still-running tool call.
+ *
+ * The Hermes session history persists every assistant round-trip (including
+ * mid-turn tool-call rounds) with a complete status, so a naive
+ * `status === "complete"` match can classify an in-flight turn as finished —
+ * observed in hermes-debug-1786772272797 where stored-84739
+ * (createdAt=13:31:15, a tool-call round) was treated as the terminal answer
+ * while the server only called Turn ended 46s later at 13:34:52. A real
+ * terminal answer never has a running tool part (completed tool rounds are
+ * stored as done parts on separate tool messages).
+ */
+function hasPendingToolCall(message: HermesUIMessage): boolean {
+  return message.parts.some(
+    (part) => part.type === "tool" && part.state === "running",
+  );
+}
+
+/**
  * Find the newest stored assistant that completed at or after the given turn
  * start, with real final content. Shared by the reconnect-snapshot notifier
  * and the WebView-rebuild recovery path (which has no live runtime bucket to
@@ -501,6 +537,11 @@ export function findCompletedSnapshotAssistant(
         message.role === "assistant" &&
         (message.status === "complete" || message.status === "error") &&
         message.createdAt >= turnStartedAt &&
+        // A mid-turn assistant round (tool-call round) is persisted as
+        // complete too; only a terminal answer without a pending tool call
+        // proves the turn really ended (hermes-debug-1786772272797: an
+        // in-flight tool round was matched and the FGS converged 46s early).
+        !hasPendingToolCall(message) &&
         hasStoredFinalContent(message),
     );
 }
@@ -647,6 +688,23 @@ export function notifyFromReconnectSnapshot(
       settings: notificationSettingsDebug(settings),
       respectFocus: false,
     });
+    // Merged completion design (2026-08-15): on Android the reattach snapshot
+    // path converges the FGS entry to its terminal state (use-gateway.ts
+    // snapshotCompleted branch). That update carries the sound/vibrate alert
+    // and a working content intent; a second standalone notification here
+    // duplicates the alert and its tap previously did nothing (no content
+    // intent, hermes-debug-1786764876908).
+    const androidRemoteOnly =
+      typeof runtimeInfo !== "undefined" && runtimeInfo?.androidRemoteOnly === true;
+    if (androidRemoteOnly) {
+      recordNotificationDebug("reconnect-snapshot.merged_fgs", {
+        sessionId,
+        persistentSessionId,
+        assistantId: latestAssistant.id,
+        kind: isError ? "error" : "complete",
+      });
+      return;
+    }
     void bridge
       .desktopNotify({
         kind: isError ? "error" : "complete",

@@ -58,11 +58,16 @@ describe("Android phase-0 foreground session diagnostic contract", () => {
     expect(service).not.toContain("$url");
   });
 
-  it("stops the diagnostic service on gateway terminal events and manual interrupt", async () => {
+  it("updates terminal state without stopping the detached notification and still stops on manual interrupt", async () => {
     const chat = read("web/src/stores/chat.ts");
+    const terminalStart = chat.indexOf('if (event.type === "message.complete" || event.type === "error") {');
+    const terminalEnd = chat.indexOf("  // 通知决策需要 reduce 前的快照", terminalStart);
+    const terminal = chat.slice(terminalStart, terminalEnd);
     expect(chat).toContain("stopAndroidSessionForeground");
-    expect(chat).toMatch(/message\.complete[\s\S]{0,500}stopAndroidSessionForeground/);
-    expect(chat).toMatch(/event\.type === "error"[\s\S]{0,500}stopAndroidSessionForeground/);
+    expect(terminal).toContain("updateAndroidSessionForeground");
+    expect(terminal).toMatch(/message\.complete[\s\S]{0,800}completed/);
+    expect(terminal).toMatch(/error[\s\S]{0,800}failed/);
+    expect(terminal).not.toContain("stopAndroidSessionForeground");
     expect(chat).toMatch(/markSessionInterruptedAtom[\s\S]{0,500}stopAndroidSessionForeground/);
     expect(chat).toContain("resolvePersistentSessionId");
   });
@@ -72,8 +77,10 @@ describe("Android phase-0 foreground session diagnostic contract", () => {
     const adapter = read("web/src/lib/android-session-foreground.ts");
     const submit = read("web/src/hooks/use-create-and-send-session.ts");
     expect(bridge).toContain("sessionForegroundStart");
+    expect(bridge).toContain("sessionForegroundUpdate");
     expect(bridge).toContain("sessionForegroundStop");
     expect(adapter).toContain("androidRemoteOnly");
+    expect(adapter).toContain("foregroundStateForGatewayEvent");
     expect(adapter).toContain("recordNotificationDebug");
     expect(submit).not.toMatch(/void\s+startAndroidSessionForeground\s*\(/);
     const tryStart = submit.match(
@@ -89,5 +96,32 @@ describe("Android phase-0 foreground session diagnostic contract", () => {
     expect(startCall).toContain("persistentSessionId: sessionId");
     expect(startCall).toContain('title: "后台链路诊断"');
     expect(startCall).toContain("timestampMs: submittedAt");
+  });
+
+  it("normalizes gateway ids to persistent ids before every native FGS call", () => {
+    // Regression for the 23:35-23:39 debug ZIP (hermes-debug-1786721948960):
+    // FGS started with the raw gateway id dae122d5 while updates used the
+    // persistent id 20260814_233534_67bcfc, so SessionForegroundService's
+    // stop matching (stopSelf only when ids match) could never stop the FGS.
+    // The adapter must resolve through the session-map on the way in.
+    const adapter = read("web/src/lib/android-session-foreground.ts");
+    expect(adapter).toContain('import { resolvePersistentSessionId } from "@/lib/session-map"');
+    expect(adapter).toContain("normalizePersistentSessionId");
+    expect(adapter).toMatch(/function normalizePersistentSessionId[\s\S]*resolvePersistentSessionId\(sessionId\)/);
+    // All three entry points run the normalization before the bridge call.
+    expect(adapter).toMatch(/export async function startAndroidSessionForeground[\s\S]*normalizePersistentSessionId\(input\.persistentSessionId\)/);
+    expect(adapter).toMatch(/export async function updateAndroidSessionForeground[\s\S]*normalizePersistentSessionId\(input\.persistentSessionId\)/);
+    expect(adapter).toMatch(/export async function stopAndroidSessionForeground[\s\S]*normalizePersistentSessionId\(persistentSessionId\)/);
+    // Diagnostic records the raw input so the next debug ZIP can prove the fix.
+    expect(adapter).toContain("normalizedFrom");
+  });
+
+  it("resolves the persistent id before FGS start in the detail submit path", () => {
+    // detail.tsx previously started the FGS with taskId ?? restSessionId; a
+    // stale taskId (old gateway id from the pre-reconnect route) leaked into
+    // the native session id. It must prefer the resolved persistent form.
+    const detail = read("web/src/routes/detail.tsx");
+    expect(detail).toMatch(/import[\s\S]*resolvePersistentSessionId[\s\S]*from ["']@\/lib\/session-map["']/);
+    expect(detail).toMatch(/persistentSessionId = restSessionId \?\? resolvePersistentSessionId\(taskId\) \?\? taskId/);
   });
 });

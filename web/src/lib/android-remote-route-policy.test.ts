@@ -15,9 +15,9 @@ describe("Android Remote route policy", () => {
     expect(getAndroidRemoteRouteRedirect("/advanced/env", true)).toBe("/health");
   });
 
-  it("redirects /about and /advanced/about to /health on Android Remote", () => {
-    expect(getAndroidRemoteRouteRedirect("/about", true)).toBe("/health");
-    expect(getAndroidRemoteRouteRedirect("/advanced/about", true)).toBe("/health");
+  it("keeps /about reachable on Android Remote (mobile build-info page)", () => {
+    expect(getAndroidRemoteRouteRedirect("/about", true)).toBeNull();
+    expect(getAndroidRemoteRouteRedirect("/advanced/about", true)).toBeNull();
   });
 
   it("does not redirect /about on desktop shells", () => {
@@ -38,6 +38,14 @@ describe("Android Remote route policy", () => {
 
   it("does not redirect /console on desktop shells", () => {
     expect(getAndroidRemoteRouteRedirect("/console", false)).toBeNull();
+  });
+
+  it("redirects /coding-agents to /health on Android Remote", () => {
+    expect(getAndroidRemoteRouteRedirect("/coding-agents", true)).toBe("/health");
+  });
+
+  it("does not redirect /coding-agents on desktop shells", () => {
+    expect(getAndroidRemoteRouteRedirect("/coding-agents", false)).toBeNull();
   });
 
 });

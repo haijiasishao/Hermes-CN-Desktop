@@ -129,6 +129,17 @@ body[data-hermes-window-type="electron"] :where(button, input, textarea, select,
   }
 }
 
+/* P6-D: guard against accidental horizontal overflow on narrow phones
+   (360/390/430px). `overflow-x: clip` hides the scrollbar and clips content
+   instead of creating a scroll container — the app shell grid already
+   constrains panes, this only catches stray wide elements. */
+html {
+  overflow-x: clip;
+}
+body {
+  overflow-x: clip;
+}
+
 @media (max-width: 720px) {
   /* Bump base font-size so body text on 360-430px screens is ≥ 14px.
      Override tokens rather than hard-coding values so any component that

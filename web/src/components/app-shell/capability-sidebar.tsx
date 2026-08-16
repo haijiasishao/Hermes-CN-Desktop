@@ -57,7 +57,20 @@ export const CONFIG_ITEMS: readonly CapabilityItem[] = [
 
 export function getVisibleConfigItems(androidRemoteOnly: boolean): readonly CapabilityItem[] {
   if (!androidRemoteOnly) return CONFIG_ITEMS;
-  return CONFIG_ITEMS.filter((item) => item.path !== "/console");
+  // Android Remote-only: hide desktop-bridge-dependent entries (console,
+  // coding-agent CLI detection). Everything else is served by the remote
+  // Dashboard REST API (models/voice/profiles/skills/mcp/soul).
+  return CONFIG_ITEMS.filter(
+    (item) => item.path !== "/console" && item.path !== "/coding-agents",
+  );
+}
+
+export function getVisibleBackupItems(androidRemoteOnly: boolean): readonly CapabilityItem[] {
+  if (!androidRemoteOnly) return BACKUP_ITEMS;
+  // Local-profile backup & migration are desktop-owned capabilities; on
+  // Android Remote they would only ever render the "run it on the target
+  // machine" stub. Hide the entry entirely.
+  return [];
 }
 
 export const BACKUP_ITEMS: readonly CapabilityItem[] = [
@@ -75,7 +88,7 @@ export const CAPABILITY_SECTIONS: readonly {
 }[] = [
   { label: "§021 · 配置", items: getVisibleConfigItems(runtime.androidRemoteOnly) },
   { label: "§022 · 自动化", items: AUTOMATION_ITEMS },
-  { label: "§023 · 备份与恢复", items: BACKUP_ITEMS },
+  { label: "§023 · 备份与恢复", items: getVisibleBackupItems(runtime.androidRemoteOnly) },
 ];
 
 export function CapabilitySidebar() {

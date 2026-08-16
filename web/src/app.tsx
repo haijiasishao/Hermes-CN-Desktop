@@ -125,7 +125,7 @@ function BackendApp() {
           <Route path="/env" element={runtime.androidRemoteOnly
             ? <Navigate to="/health" replace />
             : withBoundary(<AdvancedRoute />)} />
-          <Route path="/coding-agents" element={withBoundary(<CodingAgentsRoute />)} />
+          <Route path="/coding-agents" element={remoteSafeRoute("/coding-agents", <CodingAgentsRoute />)} />
           <Route path="/about" element={remoteSafeRoute("/about", <AdvancedRoute />)} />
           <Route path="/advanced/*" element={<RemoteSafeAdvancedRoute />} />
           <Route path="/settings" element={<Navigate to="/common" replace />} />

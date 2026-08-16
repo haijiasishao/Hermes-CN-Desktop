@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Server,
   ShieldCheck,
+  Smartphone,
   Terminal,
   Upload,
   X,
@@ -1637,6 +1638,15 @@ export function AboutSection({ showHeading = true }: SettingsSectionProps) {
   const [desktopUpdateResult, setDesktopUpdateResult] = useState<DesktopUpdateCheckResult | null>(null);
   const [desktopUpdateChecking, setDesktopUpdateChecking] = useState(false);
   const hasDesktopUpdateBridge = typeof window !== "undefined" && Boolean(window.hermesDesktop?.checkDesktopUpdate);
+  const isAndroidRemote = runtime.androidRemoteOnly;
+  // Android shell exposes version/commit/remoteUrl through the Kotlin
+  // runtime_info bridge; the protocol type only models the desktop subset.
+  // Hook must be called unconditionally (rules-of-hooks); the cast is inert
+  // on desktop shells where the extra fields are simply absent.
+  const runtimeInfo = useRuntimeInfo().data;
+  const androidInfo = isAndroidRemote
+    ? (runtimeInfo as RuntimeInfo & { version?: string; commit?: string; remoteUrl?: string } | undefined)
+    : undefined;
 
   const handleCheckDesktopUpdate = async () => {
     setDesktopUpdateChecking(true);
@@ -1660,6 +1670,29 @@ export function AboutSection({ showHeading = true }: SettingsSectionProps) {
     <div className={s.aboutSection}>
       {showHeading && <h2 className={s.heading}>关于</h2>}
       <div className={s.aboutDebugGrid}>
+        {isAndroidRemote ? (
+          <DebugCard icon={<Smartphone size={16} />} title="移动端（Android）" sub="Android 客户端版本与连接信息" wide>
+            <div className={s.runtimeGrid}>
+              <RuntimeField label="应用版本" value={androidInfo?.version ?? "0.7.0-android-kotlin"} />
+              <RuntimeField label="构建提交" value={androidInfo?.commit ? androidInfo.commit.slice(0, 12) : "—"} mono />
+              <RuntimeField
+                label="平台"
+                value={androidInfo ? `${androidInfo.platform ?? "android"}${androidInfo.arch ? ` / ${androidInfo.arch}` : ""}` : "android"}
+              />
+              <RuntimeField
+                label="远端地址"
+                value={androidInfo?.remoteUrl ?? window.__HERMES_RUNTIME__?.apiBaseUrl}
+                mono
+                wide
+              />
+            </div>
+            <p className={s.desc}>
+              本应用为 Android 移动端客户端，仅连接远端 Hermes Dashboard，不携带桌面端内核或本地配置。
+            </p>
+          </DebugCard>
+        ) : null}
+        {!isAndroidRemote && (
+          <>
         <DebugCard icon={<Download size={16} />} title="桌面端更新" sub="检查新版本并前往官网下载覆盖安装" wide>
           <div className={s.runtimeGrid}>
             <RuntimeField label="当前版本" value={versionLabel(DESKTOP_VERSION)} />
@@ -1712,6 +1745,8 @@ export function AboutSection({ showHeading = true }: SettingsSectionProps) {
             用于查看控制台日志、网络请求等，方便排查问题或向社区反馈。再次按下快捷键可以关闭。
           </p>
         </DebugCard>
+          </>
+        )}
 
         <DebugCard icon={<Heart size={16} />} title="致谢与许可" sub="贡献者、支持方与字体署名">
           <div className={s.thanksText}>

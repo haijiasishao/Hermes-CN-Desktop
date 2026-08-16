@@ -37,10 +37,12 @@ import type { ReasoningEffort } from "@/lib/reasoning-effort";
 import {
   clearActivePersistentSessionId,
   clearActiveTurn,
+  forgetAllSessionMappings,
   forgetSessionMapping,
   forgetSessionMappingsForPersistentSession,
   getActivePersistentSessionId,
   getActiveTurn,
+  listSessionMappings,
   rememberActivePersistentSessionId,
   rememberSessionMapping,
   resolveGatewaySessionId,
@@ -51,7 +53,11 @@ import { mirrorSessionWorkspaceMapping } from "@/lib/workspaces";
 import { notifyFromReconnectSnapshot, findCompletedSnapshotAssistant } from "@/lib/notifications";
 import { messagesResponseToHermesUIMessages } from "@/components/chat/message-adapter";
 import { runtime } from "@/lib/runtime";
+import {
+  updateAndroidSessionForeground,
+} from "@/lib/android-session-foreground";
 import { recordNotificationDebug } from "@/lib/notification-debug";
+import { readNotificationSettings } from "@/stores/ui";
 import { fetchSessionMessages } from "@/hooks/use-sessions";
 import { humanizeGatewayError, parseGatewayResult } from "@/lib/gateway-result";
 import {
@@ -78,7 +84,10 @@ import {
   type ImageEntry,
 } from "@/stores/chat";
 import { sessionTipRedirectAtom } from "@/stores/ui";
-import { recordTipRedirect } from "@/lib/session-tip-redirect";
+import {
+  recordCompletedSnapshotRouteRedirect,
+  recordTipRedirect,
+} from "@/lib/session-tip-redirect";
 import { createDeltaCoalescer } from "@/lib/gateway-delta-coalescer";
 import { queryClient as appQueryClient } from "@/lib/query-client";
 import {
@@ -119,6 +128,11 @@ function forEachSubscriber(
 
 let reattachInFlight = false;
 const REATTACH_SNAPSHOT_TIMEOUT_MS = 10_000;
+// Exponential backoff for the Android reattach REST snapshot: 2s/4s/8s/16s.
+// The snapshot is the only path that converges the FGS off a stale 思考中…
+// after a background disconnect, so a transient REST failure must retry
+// instead of leaving the notification stuck (hermes-debug-1786772272797).
+const SNAPSHOT_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 16_000];
 
 function fetchReattachSnapshot(sessionId: string) {
   const controller = new AbortController();
@@ -174,12 +188,36 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
             toSessionId: gatewaySessionId,
           });
         }
-        if (previousGatewaySessionId && previousGatewaySessionId !== gatewaySessionId) {
-          forgetSessionMapping(previousGatewaySessionId);
+        // The gateway session id rotates on every reconnect. ANY ids minted
+        // before this reconnect point at gateway sessions that are no longer
+        // pinnable on the new socket — leaving them mapped means
+        // resolveGatewaySessionId hands the next prompt a dead id and the
+        // server answers `session not found`. Record a route redirect for
+        // every old mapping (so the detail route projects onto the persistent
+        // id), then prune the whole map and re-seed the fresh id only.
+        const oldMappings = listSessionMappings();
+        for (const mapping of oldMappings) {
+          if (mapping.gatewaySessionId === gatewaySessionId) continue;
+          store.set(sessionTipRedirectAtom, (previous) =>
+            recordTipRedirect(previous, mapping.gatewaySessionId, mapping.persistentSessionId),
+          );
+          if (mapping.gatewaySessionId === previousGatewaySessionId) {
+            store.set(rekeyChatSessionRuntimeAtom, {
+              fromSessionId: mapping.gatewaySessionId,
+              toSessionId: gatewaySessionId,
+            });
+          }
         }
-        store.set(gwSessionIdAtom, gatewaySessionId);
+        forgetAllSessionMappings();
         rememberSessionMapping(gatewaySessionId, persistentId);
         rememberActivePersistentSessionId(persistentId);
+        store.set(gwSessionIdAtom, gatewaySessionId);
+        recordNotificationDebug("reattach.mappings.reconciled", {
+          gatewaySessionId,
+          persistentSessionId: persistentId,
+          oldMappingCount: oldMappings.length,
+          previousGatewaySessionId: previousGatewaySessionId ?? null,
+        });
       },
       onResumeFailed: (error) => {
         // A timeout or temporarily wedged backend does not mean the persistent
@@ -226,126 +264,199 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
           });
           return;
         }
-        const activeRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
-        const turn = resolveReattachSnapshotTurn({
-          androidRemoteOnly: runtime.androidRemoteOnly,
-          runtime: activeRuntime,
-          // A WebView rebuild wipes the jotai runtime; the persisted
-          // active-turn checkpoint is the only surviving record of the
-          // in-flight turn and lets the REST snapshot still run.
-          checkpoint: getActiveTurn(persistentId),
-        });
-        if (!turn.ok) {
-          recordNotificationDebug("reattach.snapshot.skipped", {
-            reason: turn.reason,
-            gatewaySessionId: gatewaySessionId ?? null,
-            persistentSessionId: persistentId,
-            runtimeSessionId,
+        // Retry the REST snapshot with exponential backoff. A transient
+        // failure (proxy unreachable, gateway mid-restart) previously left the
+        // FGS stuck on 思考中 forever: the snapshot is the ONLY recovery path
+        // for a turn that completed while the socket was down
+        // (hermes-debug-1786772272797: two REST attempts failed with status 0
+        // while the notification stayed stale). Runs inside the reattach gate
+        // so a completed background turn can still retire before resume.
+        const runSnapshotAttempt = (attempt: number): Promise<"completed" | "active" | undefined> => {
+          // Re-resolve the turn on every attempt: after a WebView rebuild the
+          // jotai runtime may only exist on a later retry (the checkpoint is
+          // the fallback while it does not).
+          const currentRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
+          const currentTurn = resolveReattachSnapshotTurn({
+            androidRemoteOnly: runtime.androidRemoteOnly,
+            runtime: currentRuntime,
+            checkpoint: getActiveTurn(persistentId),
           });
-          return;
-        }
-        recordNotificationDebug("reattach.snapshot.started", {
-          gatewaySessionId: gatewaySessionId ?? null,
-          persistentSessionId: persistentId,
-          runtimeSessionId,
-          activeAssistantId: turn.context.activeAssistantId,
-          restoredFromCheckpoint: turn.context.restoredFromCheckpoint,
-          interrupted: Boolean(activeRuntime?.interrupted),
-          hasTurnStartedAt: turn.context.turnStartedAt !== undefined,
-        });
-
-        return fetchReattachSnapshot(persistentId)
-          .then((messages) => {
-            recordNotificationDebug("reattach.snapshot.loaded", {
+          if (!currentTurn.ok) {
+            recordNotificationDebug("reattach.snapshot.skipped", {
+              reason: currentTurn.reason,
               gatewaySessionId: gatewaySessionId ?? null,
               persistentSessionId: persistentId,
               runtimeSessionId,
-              responsePresent: Boolean(messages),
-              messageCount: Array.isArray(messages?.messages) ? messages.messages.length : 0,
-              uiMessageCount: Array.isArray(messages?.ui_messages) ? messages.ui_messages.length : 0,
             });
-            const currentRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
-            // Prefer the live bucket when it exists; otherwise fall back to the
-            // checkpoint-derived context (WebView rebuild) so the catch-up
-            // notification and reconciliation can still run.
-            const effectiveRuntime =
-              currentRuntime?.activeAssistantId
-                ? currentRuntime
-                : turn.context.restoredFromCheckpoint
-                  ? {
-                      ...createEmptyChatRuntime(),
-                      activeAssistantId: turn.context.activeAssistantId,
-                      turnStartedAt: turn.context.turnStartedAt,
-                    }
-                  : undefined;
-            if (!effectiveRuntime?.activeAssistantId) {
-              recordNotificationDebug("reattach.snapshot.skipped", {
-                reason: "turn_no_longer_active",
-                gatewaySessionId: gatewaySessionId ?? null,
-                persistentSessionId: persistentId,
-                runtimeSessionId,
-              });
-              return;
+            // The route may still be pinned to an OLD gateway id whose mapping
+            // dies with this reconnect (snapshot retired the turn or no turn
+            // was in flight). Project the detail route onto the persistent id
+            // before the map is pruned, so the next prompt resolves through the
+            // live session instead of the dead gateway id (`session not found`).
+            if (gatewaySessionId && gatewaySessionId !== persistentId) {
+              store.set(sessionTipRedirectAtom, (previous) =>
+                recordTipRedirect(previous, gatewaySessionId, persistentId),
+              );
             }
-
-            notifyFromReconnectSnapshot(runtimeSessionId, effectiveRuntime, messages);
-            store.set(recoverCompletedTurnFromStoredMessagesAtom, {
-              sessionId: runtimeSessionId,
-              storedMessages: messagesResponseToHermesUIMessages(messages),
-            });
-
-            // A completed turn no longer has a live gateway session to resume.
-            // For a rebuilt runtime the live bucket cannot signal completion,
-            // so use the same snapshot match the notifier uses. Clear the
-            // stale ephemeral id and the persisted checkpoint so the next
-            // prompt resolves from the persistent task id and no stale
-            // catch-up fires on a later reconnect.
-            const recoveredRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
-            const snapshotCompleted = turn.context.restoredFromCheckpoint
-              ? findCompletedSnapshotAssistant(turn.context.turnStartedAt, messages) !== undefined
-              : recoveredRuntime?.activeAssistantId === undefined;
-            if (snapshotCompleted) {
-              forgetSessionMappingsForPersistentSession(persistentId);
-              forgetSessionMapping(gatewaySessionId ?? undefined);
-              if (store.get(gwSessionIdAtom) === gatewaySessionId) {
-                store.set(gwSessionIdAtom, null);
-              }
-              clearActiveTurn(persistentId);
-              recordNotificationDebug("reattach.snapshot.reconciled", {
-                gatewaySessionId: gatewaySessionId ?? null,
-                persistentSessionId: persistentId,
-                runtimeSessionId,
-                recovered: true,
-              });
-              return "completed";
-            } else {
-              recordNotificationDebug("reattach.snapshot.reconciled", {
-                gatewaySessionId: gatewaySessionId ?? null,
-                persistentSessionId: persistentId,
-                runtimeSessionId,
-                recovered: false,
-              });
-              return "active";
-            }
-          })
-          .catch((error: unknown) => {
-            recordNotificationDebug(
-              "reattach.snapshot.failed",
-              {
-                gatewaySessionId: gatewaySessionId ?? null,
-                persistentSessionId: persistentId,
-                runtimeSessionId,
-                error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
-                aborted:
-                  typeof DOMException !== "undefined" &&
-                  error instanceof DOMException &&
-                  error.name === "AbortError",
-              },
-              "error",
-            );
-            // Reconnect/REST errors remain on the normal recovery path; a
-            // missing snapshot must never affect session.resume or chat state.
+            return Promise.resolve(undefined);
+          }
+          recordNotificationDebug("reattach.snapshot.started", {
+            gatewaySessionId: gatewaySessionId ?? null,
+            persistentSessionId: persistentId,
+            runtimeSessionId,
+            activeAssistantId: currentTurn.context.activeAssistantId,
+            restoredFromCheckpoint: currentTurn.context.restoredFromCheckpoint,
+            interrupted: Boolean(currentRuntime?.interrupted),
+            hasTurnStartedAt: currentTurn.context.turnStartedAt !== undefined,
+            attempt,
           });
+          return fetchReattachSnapshot(persistentId)
+            .then((messages) => {
+              recordNotificationDebug("reattach.snapshot.loaded", {
+                gatewaySessionId: gatewaySessionId ?? null,
+                persistentSessionId: persistentId,
+                runtimeSessionId,
+                responsePresent: Boolean(messages),
+                messageCount: Array.isArray(messages?.messages) ? messages.messages.length : 0,
+                uiMessageCount: Array.isArray(messages?.ui_messages) ? messages.ui_messages.length : 0,
+              });
+              const liveRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
+              // Prefer the live bucket when it exists; otherwise fall back to the
+              // checkpoint-derived context (WebView rebuild) so the catch-up
+              // notification and reconciliation can still run.
+              const effectiveRuntime =
+                liveRuntime?.activeAssistantId
+                  ? liveRuntime
+                  : currentTurn.context.restoredFromCheckpoint
+                    ? {
+                        ...createEmptyChatRuntime(),
+                        activeAssistantId: currentTurn.context.activeAssistantId,
+                        turnStartedAt: currentTurn.context.turnStartedAt,
+                      }
+                    : undefined;
+              if (!effectiveRuntime?.activeAssistantId) {
+                recordNotificationDebug("reattach.snapshot.skipped", {
+                  reason: "turn_no_longer_active",
+                  gatewaySessionId: gatewaySessionId ?? null,
+                  persistentSessionId: persistentId,
+                  runtimeSessionId,
+                });
+                return undefined;
+              }
+
+              notifyFromReconnectSnapshot(runtimeSessionId, effectiveRuntime, messages);
+              store.set(recoverCompletedTurnFromStoredMessagesAtom, {
+                sessionId: runtimeSessionId,
+                storedMessages: messagesResponseToHermesUIMessages(messages),
+              });
+
+              // A completed turn no longer has a live gateway session to resume.
+              // For a rebuilt runtime the live bucket cannot signal completion,
+              // so use the same snapshot match the notifier uses. Clear the
+              // stale ephemeral id and the persisted checkpoint so the next
+              // prompt resolves from the persistent task id and no stale
+              // catch-up fires on a later reconnect.
+              const recoveredRuntime = store.get(chatRuntimeBySessionAtom)[runtimeSessionId];
+              const snapshotCompleted = currentTurn.context.restoredFromCheckpoint
+                ? findCompletedSnapshotAssistant(currentTurn.context.turnStartedAt, messages) !== undefined
+                : recoveredRuntime?.activeAssistantId === undefined;
+              if (snapshotCompleted) {
+                store.set(sessionTipRedirectAtom, (previous) =>
+                  recordCompletedSnapshotRouteRedirect(previous, {
+                    snapshotCompleted,
+                    gatewaySessionId,
+                    persistentSessionId: persistentId,
+                  }),
+                );
+                forgetSessionMappingsForPersistentSession(persistentId);
+                forgetSessionMapping(gatewaySessionId ?? undefined);
+                if (store.get(gwSessionIdAtom) === gatewaySessionId) {
+                  store.set(gwSessionIdAtom, null);
+                }
+                clearActiveTurn(persistentId);
+                // The reattach snapshot just proved the background turn finished.
+                // Converge the persistent FGS entry to its terminal state — the
+                // notification channels/share a single id, so this both flips the
+                // stale "思考中…" label and (when it was completed while
+                // backgrounded) surfaces the merged completion alert. Without
+                // this the FGS stays on 思考中 forever after a background
+                // disconnect (hermes-debug-1786764876908).
+                const snapshotSettings = readNotificationSettings();
+                const snapshotVisible =
+                  typeof document !== "undefined" && document.visibilityState === "visible";
+                const snapshotAlert =
+                  snapshotSettings.onComplete &&
+                  snapshotSettings.system &&
+                  !snapshotVisible &&
+                  snapshotSettings.onlyBackground;
+                updateAndroidSessionForeground({
+                  persistentSessionId: persistentId,
+                  title: "后台链路诊断",
+                  state: snapshotCompleted ? "completed" : "failed",
+                  heartbeatSequence: 0,
+                  timestampMs: Date.now(),
+                  alert: snapshotAlert,
+                });
+                recordNotificationDebug("reattach.snapshot.reconciled", {
+                  gatewaySessionId: gatewaySessionId ?? null,
+                  persistentSessionId: persistentId,
+                  runtimeSessionId,
+                  recovered: true,
+                  attempt,
+                });
+                return "completed";
+              } else {
+                recordNotificationDebug("reattach.snapshot.reconciled", {
+                  gatewaySessionId: gatewaySessionId ?? null,
+                  persistentSessionId: persistentId,
+                  runtimeSessionId,
+                  recovered: false,
+                  attempt,
+                });
+                return "active";
+              }
+            })
+            .catch((error: unknown) => {
+              const aborted =
+                typeof DOMException !== "undefined" &&
+                error instanceof DOMException &&
+                error.name === "AbortError";
+              recordNotificationDebug(
+                "reattach.snapshot.failed",
+                {
+                  gatewaySessionId: gatewaySessionId ?? null,
+                  persistentSessionId: persistentId,
+                  runtimeSessionId,
+                  attempt,
+                  error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+                  aborted,
+                },
+                "error",
+              );
+              // Exponential backoff (2s/4s/8s/16s, 4 attempts ≈ 30s window).
+              // Aborts count as retryable too: the 10s REST timeout firing
+              // means the gateway was mid-restart and the next attempt may
+              // succeed. A missing snapshot must never affect session.resume
+              // or chat state, so the final resolution is always undefined
+              // (proceed with the normal resume path).
+              const nextAttempt = attempt + 1;
+              if (nextAttempt < SNAPSHOT_RETRY_DELAYS_MS.length) {
+                const delayMs = SNAPSHOT_RETRY_DELAYS_MS[attempt];
+                recordNotificationDebug("reattach.snapshot.retry", {
+                  gatewaySessionId: gatewaySessionId ?? null,
+                  persistentSessionId: persistentId,
+                  runtimeSessionId,
+                  nextAttempt,
+                  delayMs,
+                });
+                return new Promise<"completed" | "active" | undefined>((resolve) => {
+                  setTimeout(() => resolve(runSnapshotAttempt(nextAttempt)), delayMs);
+                });
+              }
+              return undefined;
+            });
+        };
+        return runSnapshotAttempt(0);
       },
     });
   } finally {
@@ -625,6 +736,21 @@ export function useGateway() {
       "session.resume",
     );
     const resumed = result.resumed ?? persistentSessionId;
+    // Resume mints a fresh gateway session id for the live socket. Stale ids
+    // mapped to the same persistent session from an earlier connection are
+    // dead; keep the mapping table authoritative by pruning them before
+    // recording the fresh id (mirrors reattach onResumed).
+    for (const mapping of listSessionMappings()) {
+      if (mapping.gatewaySessionId === result.session_id) continue;
+      if (mapping.persistentSessionId !== resumed && mapping.persistentSessionId !== persistentSessionId) {
+        continue;
+      }
+      setSessionTipRedirect((previous) =>
+        recordTipRedirect(previous, mapping.gatewaySessionId, mapping.persistentSessionId),
+      );
+    }
+    forgetSessionMappingsForPersistentSession(resumed);
+    forgetSessionMappingsForPersistentSession(persistentSessionId);
     setGwSessionId(result.session_id);
     resetChatSession(result.session_id);
     rememberSessionMapping(result.session_id, resumed);

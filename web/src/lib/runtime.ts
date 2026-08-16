@@ -171,10 +171,27 @@ export interface UiEventInput {
 export interface AndroidSessionForegroundInput {
   persistentSessionId: string;
   title: string;
-  state: "starting" | "thinking" | "working";
+  state:
+    | "starting"
+    | "connected"
+    | "probe_failed"
+    | "completed"
+    | "failed"
+    | "reconnecting"
+    | "waiting_approval"
+    | "thinking"
+    | "working"
+    | "interrupted";
   heartbeatSequence: number;
   timestampMs: number;
+  /** Terminal (completed/failed) updates with alert=true render through the
+   * high-importance completion channel: sound + vibrate while backgrounded,
+   * same notification id (1) so it REPLACES the persistent FGS notification
+   * instead of adding a second one (merged task-completion design, 2026-08-15). */
+  alert?: boolean;
 }
+
+export type AndroidSessionForegroundState = AndroidSessionForegroundInput["state"];
 
 export interface AndroidSessionForegroundResult { ok: boolean; supported: boolean }
 
@@ -576,6 +593,7 @@ declare global {
       desktopNotify?(input: DesktopNotifyInput): Promise<DesktopNotifyResult>;
       notificationPermission?(input: NotificationPermissionInput): Promise<NotificationPermissionResult>;
       sessionForegroundStart?(input: AndroidSessionForegroundInput): Promise<AndroidSessionForegroundResult>;
+      sessionForegroundUpdate?(input: AndroidSessionForegroundInput): Promise<AndroidSessionForegroundResult>;
       sessionForegroundStop?(input: { persistentSessionId: string }): Promise<AndroidSessionForegroundResult>;
       terminalStart?(input: TerminalStartInput): Promise<TerminalStartResult>;
       terminalOpenExternal?(input: TerminalOpenExternalInput): Promise<ExternalTerminalResult>;

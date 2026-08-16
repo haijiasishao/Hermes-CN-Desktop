@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Remote Dashboard runs on LAN HTTP (http://192.168.x.x:9119). Allow
+         cleartext for all destinations while keeping networkSecurityConfig
+         explicit; tightened per-origin rules can be added later. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

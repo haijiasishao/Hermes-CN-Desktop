@@ -32,10 +32,39 @@ export function recordTipRedirect(
 }
 
 /**
+ * Record the detail-route projection needed after an Android reconnect snapshot
+ * retires a completed turn. The gateway id is ephemeral, so the route must
+ * follow the persistent id before the gateway-to-session map is cleaned up.
+ */
+export function recordCompletedSnapshotRouteRedirect(
+  prev: TipRedirectMap,
+  input: {
+    snapshotCompleted: boolean;
+    gatewaySessionId?: string | null;
+    persistentSessionId?: string | null;
+  },
+): TipRedirectMap {
+  if (!input.snapshotCompleted) return prev;
+  return recordTipRedirect(
+    prev,
+    input.gatewaySessionId ?? undefined,
+    input.persistentSessionId ?? undefined,
+  );
+}
+
+/**
  * Given the current route ids, return the tip the detail route should project
  * onto, or `null` when it is already on the tip or there is no redirect. Never
- * returns a tip equal to the current `taskId`/`activeSessionId`, so re-running
- * the effect after a successful redirect is a no-op (no navigation loop).
+ * returns a tip equal to the current `taskId`, so re-running the effect after
+ * a successful redirect is a no-op (no navigation loop).
+ *
+ * The historical `activeSessionId` guard is deliberately dropped: after a
+ * background reconnect the completed-snapshot branch prunes the
+ * gateway→persistent map AND records the redirect, but the sidebar atom may
+ * already hold the persistent id. Requiring `tip !== activeSessionId` there
+ * returned null and left the URL pinned to the dead gateway id — history REST
+ * 404s and the next send resumes the ephemeral id (`session not found`,
+ * hermes-debug-1786751599120).
  */
 export function pickTipRedirect(
   redirects: TipRedirectMap,
@@ -45,11 +74,11 @@ export function pickTipRedirect(
     activeSessionId?: string | null;
   },
 ): string | null {
-  const { taskId, restSessionId, activeSessionId } = ids;
+  const { taskId, restSessionId } = ids;
   for (const from of [taskId, restSessionId]) {
     if (!from) continue;
     const tip = redirects[from];
-    if (tip && tip !== taskId && tip !== activeSessionId) return tip;
+    if (tip && tip !== taskId) return tip;
   }
   return null;
 }

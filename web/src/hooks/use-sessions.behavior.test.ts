@@ -98,7 +98,7 @@ describe("Android detail submit foreground diagnostic contract", () => {
   it("starts the persistent task foreground monitor before sending and stops it on prepare/send failure", () => {
     expect(detailSource).toMatch(/import[\s\S]*startAndroidSessionForeground[\s\S]*from ["']@\/lib\/android-session-foreground["']/);
     expect(detailSource).toMatch(
-      /const persistentSessionId = taskId\s*\?\?\s*restSessionId[\s\S]*persistentSessionId,[\s\S]*title:\s*["']后台链路诊断["'][\s\S]*state:\s*["']starting["']/,
+      /const persistentSessionId = restSessionId \?\? resolvePersistentSessionId\(taskId\) \?\? taskId[\s\S]*persistentSessionId,[\s\S]*title:\s*["']后台链路诊断["'][\s\S]*state:\s*["']starting["']/,
     );
     expect(detailSource).not.toMatch(/persistentSessionId:\s*gatewaySessionId/);
 

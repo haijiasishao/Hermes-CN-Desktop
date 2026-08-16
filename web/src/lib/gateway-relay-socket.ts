@@ -1,14 +1,8 @@
-// WebSocket-compatible shim over the Rust /api/ws relay (src/commands/ws_proxy.rs).
+// WebSocket-compatible shim over the native /api/ws relay.
 //
-// Packaged webviews (WKWebView / WebView2) may refuse to open ws://127.0.0.1
-// from the tauri:// origin. The Rust process has no such origin restriction, so
-// it opens the runtime's OFFICIAL /api/ws JSON-RPC socket and relays text
-// frames to/from the webview via Tauri commands + events. This class adapts
-// that relay to the subset of the WebSocket interface GatewayClient consumes
-// (on* handler properties, readyState, send, close), so the protocol layer is
-// byte-identical between the native and relay paths.
-//
-// Wire contract (must match ws_proxy.rs):
+// On Tauri this rides the Rust relay (src/commands/ws_proxy.rs); on the
+// Kotlin-native Android rebuild it rides window.HermesBridge's GatewayRelay,
+// which owns the OkHttp WebSocket natively. The wire contract is identical:
 //   invoke gateway_ws_open  { connectionId }  → resolves on WS handshake success
 //   event  gateway-ws-message { connectionId, data }   → one inbound text frame
 //   event  gateway-ws-closed  { connectionId, message } → close/error/EOF
@@ -16,6 +10,8 @@
 //   invoke gateway_ws_close { connectionId }
 // Every event is tagged with connectionId so a stale relay from a previous
 // connection can never deliver into this socket.
+
+import { isNativeBridge, nativeInvoke, nativeListen } from "./hermes-native-bridge";
 
 interface RelayMessagePayload {
   connectionId: string;
@@ -77,17 +73,22 @@ export class GatewayRelaySocket {
 
   private async open(): Promise<void> {
     try {
-      const [{ invoke }, { listen }] = await Promise.all([
-        import("@tauri-apps/api/core"),
-        import("@tauri-apps/api/event"),
-      ]);
+      let invokeFn = async <T = unknown>(command: string, args?: Record<string, unknown>) =>
+        (await import("@tauri-apps/api/core")).invoke<T>(command, args);
+      let listenFn = async <T = unknown>(event: string, handler: (event: { payload: T }) => void) =>
+        (await import("@tauri-apps/api/event")).listen<T>(event, handler);
 
-      this.unlistenMessage = await listen<RelayMessagePayload>("gateway-ws-message", (event) => {
+      if (isNativeBridge()) {
+        invokeFn = nativeInvoke;
+        listenFn = nativeListen;
+      }
+
+      this.unlistenMessage = await listenFn<RelayMessagePayload>("gateway-ws-message", (event) => {
         if (event.payload.connectionId !== this.connectionId) return;
         if (this.readyState !== GatewayRelaySocket.OPEN) return;
         this.onmessage?.({ data: event.payload.data });
       });
-      this.unlistenClosed = await listen<RelayClosedPayload>("gateway-ws-closed", (event) => {
+      this.unlistenClosed = await listenFn<RelayClosedPayload>("gateway-ws-closed", (event) => {
         if (event.payload.connectionId !== this.connectionId) return;
         this.settleClosed(event.payload.message, event.payload.code);
       });
@@ -98,10 +99,10 @@ export class GatewayRelaySocket {
         return;
       }
 
-      await invoke("gateway_ws_open", { input: { connectionId: this.connectionId } });
+      await invokeFn("gateway_ws_open", { input: { connectionId: this.connectionId } });
 
       if (this.closedByUs) {
-        void invoke("gateway_ws_close", { input: { connectionId: this.connectionId } }).catch(() => {});
+        void invokeFn("gateway_ws_close", { input: { connectionId: this.connectionId } }).catch(() => {});
         this.detachListeners();
         return;
       }
@@ -124,10 +125,10 @@ export class GatewayRelaySocket {
       // Native WebSocket throws on send-before-open; GatewayClient catches it.
       throw new Error("Relay socket is not open");
     }
-    void import("@tauri-apps/api/core")
-      .then(({ invoke }) =>
-        invoke("gateway_ws_send", { input: { connectionId: this.connectionId, data } }),
-      )
+    let sendFn = async <T = unknown>(command: string, args?: Record<string, unknown>) =>
+      (await import("@tauri-apps/api/core")).invoke<T>(command, args);
+    if (isNativeBridge()) sendFn = nativeInvoke;
+    void sendFn("gateway_ws_send", { input: { connectionId: this.connectionId, data } })
       .catch((error) => {
         // An async send failure means the relay died under us — surface it as
         // a connection loss so GatewayClient's reconnect path takes over.
@@ -140,8 +141,10 @@ export class GatewayRelaySocket {
     if (this.readyState === GatewayRelaySocket.CLOSED) return;
     this.closedByUs = true;
     this.readyState = GatewayRelaySocket.CLOSING;
-    void import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke("gateway_ws_close", { input: { connectionId: this.connectionId } }))
+    let closeFn = async <T = unknown>(command: string, args?: Record<string, unknown>) =>
+      (await import("@tauri-apps/api/core")).invoke<T>(command, args);
+    if (isNativeBridge()) closeFn = nativeInvoke;
+    void closeFn("gateway_ws_close", { input: { connectionId: this.connectionId } })
       .catch(() => {});
     this.settleClosed("closed");
   }

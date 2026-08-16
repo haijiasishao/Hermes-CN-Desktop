@@ -6,6 +6,7 @@ import { PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 import { IconButton } from "@hermes/shared-ui";
 import { appSidebarVisibleAtom } from "@/stores/ui";
 import { useIsMobile } from "@/hooks/use-media-query";
+import { registerBackConsumer } from "@/lib/android-back-request";
 import { AppTopBar } from "./app-top-bar";
 import { AppSidebar } from "./app-sidebar";
 import { AppStatusBar } from "./app-status-bar";
@@ -27,6 +28,15 @@ export function AppShell({ children }: AppShellProps) {
     if (isMobile && sidebarVisible) setSidebarVisible(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, isMobile]);
+
+  // Android system back closes the mobile drawer before walking history.
+  useEffect(() => {
+    if (!isMobile || !sidebarVisible) return;
+    return registerBackConsumer(() => {
+      setSidebarVisible(false);
+      return true;
+    });
+  }, [isMobile, sidebarVisible, setSidebarVisible]);
 
   const toggleLabel = sidebarVisible ? "隐藏左侧边栏" : "显示左侧边栏";
 
